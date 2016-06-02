@@ -1,0 +1,24 @@
+Source: wsclean
+Section: science
+Priority: extra
+Maintainer: Gijs Molenaar <gijs@pythonic.nl>
+Build-Depends: debhelper (>= 8.0.0), cmake, libboost-dev, libboost-system-dev,
+ libboost-thread-dev, libcasacore2-dev, libfftw3-dev, libcfitsio3-dev,
+ libgsl0-dev, libboost-filesystem-dev
+Standards-Version: 3.9.2
+Homepage: http://sourceforge.net/projects/wsclean/
+
+Package: wsclean
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: fast generic widefield imager
+ WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
+ w-stacking algorithm and can make use of the w-snapshot algorithm. As of
+ Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
+ array configuration. It supports full-sky imaging and proper beam correction
+ for homogeneous dipole arrays such as the MWA. 
+ .
+ WSClean allows Hogbom and Cotton-Schwab cleaning, and can clean polarizations
+ joinedly. All operations are performed on the CPU (it is not specialized for
+ GPUs).
+
