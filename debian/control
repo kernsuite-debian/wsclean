@@ -3,7 +3,7 @@ Section: science
 Priority: extra
 Maintainer: Gijs Molenaar <gijs@pythonic.nl>
 Build-Depends: debhelper (>= 8.0.0), cmake, libboost-dev, libboost-system-dev,
- libboost-thread-dev, libcasacore2-dev, libfftw3-dev, libcfitsio3-dev,
+ libboost-thread-dev, casacore-dev, libfftw3-dev, libcfitsio3-dev,
  libgsl0-dev, libboost-filesystem-dev
 Standards-Version: 3.9.2
 Homepage: http://sourceforge.net/projects/wsclean/
