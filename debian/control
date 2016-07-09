@@ -1,24 +1,32 @@
 Source: wsclean
 Section: science
-Priority: extra
+Priority: optional
 Maintainer: Gijs Molenaar <gijs@pythonic.nl>
-Build-Depends: debhelper (>= 8.0.0), cmake, libboost-dev, libboost-system-dev,
- libboost-thread-dev, casacore-dev, libfftw3-dev, libcfitsio3-dev,
- libgsl0-dev, libboost-filesystem-dev
-Standards-Version: 3.9.2
+Build-Depends: casacore-dev,
+               cmake,
+               debhelper (>= 9),
+               libboost-dev,
+               libboost-filesystem-dev,
+               libboost-system-dev,
+               libboost-thread-dev,
+               libcfitsio3-dev,
+               libfftw3-dev,
+               libgsl0-dev
+Standards-Version: 3.9.8
+Vcs-Git: https://anonscm.debian.org/git/debian-astro/packages/wsclean.git
+Vcs-Browser: https://anonscm.debian.org/cgit/debian-astro/packages/wsclean.git
 Homepage: http://sourceforge.net/projects/wsclean/
 
 Package: wsclean
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: fast generic widefield imager
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Fast generic widefield interferometric imager
  WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
  w-stacking algorithm and can make use of the w-snapshot algorithm. As of
  Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
  array configuration. It supports full-sky imaging and proper beam correction
- for homogeneous dipole arrays such as the MWA. 
+ for homogeneous dipole arrays such as the MWA.
  .
  WSClean allows Hogbom and Cotton-Schwab cleaning, and can clean polarizations
  joinedly. All operations are performed on the CPU (it is not specialized for
  GPUs).
-
