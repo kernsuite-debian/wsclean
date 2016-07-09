@@ -50,6 +50,8 @@ void print_help()
 		"   Default: only reorder when in channel imaging mode.\n"
 		"-tempdir <directory>\n"
 		"   Set the temporary directory used when reordering files. Default: same directory as input measurement set.\n"
+		"-no-dirty\n"
+		"   Do not save the dirty image.\n"
 		"-saveweights\n"
 		"   Save the gridded weights in the a fits file named <image-prefix>-weights.fits.\n"
 		"-saveuv\n"
@@ -60,6 +62,8 @@ void print_help()
 		"   weighting as used by the imager. Only available for LOFAR.\n"
 		"-reuse-primary-beam\n"
 		"   If a primary beam image exists on disk, reuse those images (not implemented yet).\n"
+		"-use-differential-lofar-beam\n"
+		"   Assume the visibilities have already been beam-corrected for the reference direction.\n"
 		"-update-model-required (default), and\n"
 		"-no-update-model-required\n"
 		"   These two options specify wether the model data column is required to\n"
@@ -67,12 +71,14 @@ void print_help()
 		"   the model data column.\n"
 		"-verbose (or -v)\n"
 		"   Increase verbosity of output.\n"
+		"-log-time\n"
+		"   Add date and time to each line in the output.\n"
 		"-quiet\n"
 		"   Do not output anything but errors.\n"
 		"\n"
 		"  ** WEIGHTING OPTIONS **\n"
 		"-weight <weightmode>\n"
-		"   Weightmode can be: natural, mwa, uniform, briggs. Default: uniform. When using Briggs' weighting,\n"
+		"   Weightmode can be: natural, uniform, briggs. Default: uniform. When using Briggs' weighting,\n"
 		"   add the robustness parameter, like: \"-weight briggs 0.5\".\n"
 		"-superweight <factor>\n"
 		"   Increase the weight gridding box size, similar to Casa's superuniform weighting scheme. Default: 1.0\n"
@@ -203,14 +209,14 @@ void print_help()
 		"   Cleaning gain for major iterations: Ratio of peak that will be subtracted in each major\n"
 		"   iteration. To use major iterations, 0.85 is a good value. Default: 1.0\n"
 		"-joinpolarizations\n"
-		"   Perform cleaning by searching for peaks in the sum of squares of the polarizations (either\n"
-		"   I^2+Q^2+U^2+V^2, XX^2+real(XY)^2+imag(XY)^2+YY^2, or XX^2+YY^2), but subtract components from\n"
-		"   individual channels. Only possible when imaging all Stokes or all linear parameters. Default: off.\n"
+		"   Perform cleaning by searching for peaks in the sum of squares of the polarizations, but\n"
+		"   subtract components from the individual images. Only possible when imaging two or four Stokes\n"
+		"   or linear parameters. Default: off.\n"
 		"-joinchannels\n"
 		"   Perform cleaning by searching for peaks in the MFS image, but subtract components from individual channels.\n"
 		"   This will turn on mfsweighting by default. Default: off.\n"
 		"-multiscale\n"
-		"   Clean on different scales. This is a new experimental algorithm. Default: off.\n"
+		"   Clean on different scales. This is a new algorithm. Default: off.\n"
 		"   This parameter invokes the v1.9 multiscale algorithm, which is slower but more accurate\n"
 		"   compared to the older algorithm, and therefore the recommended one to use.\n"
 		"   The older algorithm is now invoked with -fast-multiscale.\n"
@@ -263,6 +269,12 @@ void print_help()
 		"   Decrease the number of channels as specified by -channelsout to the given number for\n"
 		"   deconvolution. Only possible in combination with one of the -fit-spectral options.\n"
 		"   Proper residuals/restored images will only be returned when mgain < 1.\n"
+		"-squared-channel-joining\n"
+		"   Use with -joinchannels to perform peak finding in the sum of squared values over\n"
+		"   channels, instead of the normal sum. This is useful for imaging QU polarizations\n"
+		"   with non-zero rotation measures, for which the normal sum is insensitive.\n"
+		"-force-dynamic-join\n"
+		"   Use alternative joined clean algorithm (feature for testing).\n"
 		"\n"
 		"  ** RESTORATION OPTIONS **\n"
 		"-beamsize <arcsec>\n"
@@ -318,6 +330,10 @@ int main(int argc, char *argv[])
 		else if(param == "v" || param == "verbose")
 		{
 			Logger::SetVerbosity(Logger::VerboseVerbosity);
+		}
+		else if(param == "log-time")
+		{
+			Logger::SetLogTime(true);
 		}
 		else if(param == "tempdir")
 		{
@@ -415,6 +431,10 @@ int main(int argc, char *argv[])
 		{
 			settings.reusePrimaryBeam = true;
 		}
+		else if(param == "use-differential-lofar-beam")
+		{
+			settings.useDifferentialLofarBeam = true;
+		}
 		else if(param == "negative")
 		{
 			settings.allowNegativeComponents = true;
@@ -482,11 +502,11 @@ int main(int argc, char *argv[])
 			std::string gridModeStr = argv[argi];
 			boost::to_lower(gridModeStr);
 			if(gridModeStr == "kb" || gridModeStr == "kaiserbessel" || gridModeStr == "kaiser-bessel")
-				settings.gridMode = WStackingGridder::KaiserBesselKernel;
+				settings.gridMode = KaiserBesselKernel;
 			else if(gridModeStr == "rect")
-				settings.gridMode = WStackingGridder::RectangularKernel;
+				settings.gridMode = RectangularKernel;
 			else if(gridModeStr == "nn" || gridModeStr == "nearestneighbour")
-				settings.gridMode = WStackingGridder::NearestNeighbourGridding;
+				settings.gridMode = NearestNeighbourGridding;
 			else
 				throw std::runtime_error("Invalid gridding mode: should be either kb (Kaiser-Bessel) or nn (NearestNeighbour)");
 		}
@@ -636,6 +656,14 @@ int main(int argc, char *argv[])
 			++argi;
 			settings.deconvolutionChannelCount = atoi(argv[argi]);
 		}
+		else if(param == "squared-channel-joining")
+		{
+			settings.squaredJoins = true;
+		}
+		else if(param == "force-dynamic-join")
+		{
+			settings.forceDynamicJoin = true;
+		}
 		else if(param == "field")
 		{
 			++argi;
@@ -647,8 +675,6 @@ int main(int argc, char *argv[])
 			std::string weightArg = argv[argi];
 			if(weightArg == "natural")
 				settings.weightMode = WeightMode::NaturalWeighted;
-			else if(weightArg == "mwa")
-				settings.weightMode = WeightMode::DistanceWeighted;
 			else if(weightArg == "uniform")
 				settings.weightMode = WeightMode::UniformWeighted;
 			else if(weightArg == "briggs")
@@ -781,13 +807,21 @@ int main(int argc, char *argv[])
 			std::string modeStr = argv[argi];
 			boost::to_lower(modeStr);
 			if(modeStr == "normal")
-				settings.visibilityWeightingMode = InversionAlgorithm::NormalVisibilityWeighting;
+				settings.visibilityWeightingMode = MeasurementSetGridder::NormalVisibilityWeighting;
 			else if(modeStr == "squared")
-				settings.visibilityWeightingMode = InversionAlgorithm::SquaredVisibilityWeighting;
+				settings.visibilityWeightingMode = MeasurementSetGridder::SquaredVisibilityWeighting;
 			else if(modeStr == "unit")
-				settings.visibilityWeightingMode = InversionAlgorithm::UnitVisibilityWeighting;
+				settings.visibilityWeightingMode = MeasurementSetGridder::UnitVisibilityWeighting;
 			else
 				throw std::runtime_error("Unknown weighting mode: " + modeStr);
+		}
+		else if(param == "use-idg")
+		{
+			settings.useIDG = true;
+		}
+		else if(param == "no-dirty")
+		{
+			settings.isDirtySaved = false;
 		}
 		else {
 			throw std::runtime_error("Unknown parameter: " + param);

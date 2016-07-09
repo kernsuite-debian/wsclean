@@ -3,7 +3,9 @@
 
 #include "wstackinggridder.h"
 #include "inversionalgorithm.h"
+
 #include "../msselection.h"
+#include "../system.h"
 
 #include "../deconvolution/deconvolutionalgorithm.h"
 
@@ -39,13 +41,13 @@ public:
 	std::set<PolarizationEnum> polarizations;
 	WeightMode weightMode;
 	std::string prefixName;
-	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isGriddingImageSaved, dftPrediction, dftWithBeam;
+	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved, dftPrediction, dftWithBeam;
 	std::string temporaryDirectory;
 	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfsWeighting;
 	bool normalizeForWeighting;
-	bool applyPrimaryBeam, reusePrimaryBeam;
-	enum WStackingGridder::GridModeEnum gridMode;
-	enum InversionAlgorithm::VisibilityWeightingMode visibilityWeightingMode;
+	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, useIDG;
+	enum GridModeEnum gridMode;
+	enum MeasurementSetGridder::VisibilityWeightingMode visibilityWeightingMode;
 	
 	/** @{
 	 * These settings all relate to the deconvolution.
@@ -53,7 +55,7 @@ public:
 	double deconvolutionThreshold, deconvolutionGain, deconvolutionMGain;
 	size_t deconvolutionIterationCount;
 	bool allowNegativeComponents, stopOnNegativeComponents;
-	bool useMultiscale, useFastMultiscale;
+	bool useMultiscale, useFastMultiscale, squaredJoins, forceDynamicJoin;
 	double multiscaleDeconvolutionThresholdBias, multiscaleDeconvolutionScaleBias;
 	bool multiscaleNormalizeResponse;
 	ao::uvector<double> multiscaleScaleList;
@@ -106,7 +108,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	tukeyTaperInLambda(0.0), tukeyInnerTaperInLambda(0.0),
 	edgeTaperInLambda(0.0), edgeTukeyTaperInLambda(0.0),
 	nWLayers(0), antialiasingKernelSize(7), overSamplingFactor(63),
-	threadCount(sysconf(_SC_NPROCESSORS_ONLN)),
+	threadCount(System::ProcessorCount()),
 	fieldId(0),
 	startTimestep(0), endTimestep(0),
 	startChannel(0), endChannel(0),
@@ -117,7 +119,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	weightMode(WeightMode::UniformWeighted),
 	prefixName("wsclean"),
 	smallInversion(true), makePSF(false), makePSFOnly(false), isWeightImageSaved(false),
-	isUVImageSaved(false), isGriddingImageSaved(false),
+	isUVImageSaved(false), isDirtySaved(true), isGriddingImageSaved(false),
 	dftPrediction(false), dftWithBeam(false),
 	temporaryDirectory(),
 	forceReorder(false), forceNoReorder(false),
@@ -126,8 +128,10 @@ inline WSCleanSettings::WSCleanSettings() :
 	mfsWeighting(false),
 	normalizeForWeighting(true),
 	applyPrimaryBeam(false), reusePrimaryBeam(false),
-	gridMode(WStackingGridder::KaiserBesselKernel),
-	visibilityWeightingMode(InversionAlgorithm::NormalVisibilityWeighting),
+	useDifferentialLofarBeam(false),
+	useIDG(false),
+	gridMode(KaiserBesselKernel),
+	visibilityWeightingMode(MeasurementSetGridder::NormalVisibilityWeighting),
 // Deconvolution default settings:
 	deconvolutionThreshold(0.0),
 	deconvolutionGain(0.1),
@@ -137,6 +141,8 @@ inline WSCleanSettings::WSCleanSettings() :
 	stopOnNegativeComponents(false),
 	useMultiscale(false),
 	useFastMultiscale(false),
+	squaredJoins(false),
+	forceDynamicJoin(false),
 	multiscaleDeconvolutionThresholdBias(0.7),
 	multiscaleDeconvolutionScaleBias(0.6),
 	multiscaleNormalizeResponse(false),

@@ -25,7 +25,7 @@ public:
 	
 	//void PerformMajorIteration(size_t& iterCounter, size_t nIter, DynamicSet& modelSet, DynamicSet& dirtySet, const ao::uvector<const double*>& psfs, bool& reachedMajorThreshold);
 	
-	virtual void ExecuteMajorIteration(DynamicSet& dataImage, DynamicSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold);	
+	virtual void ExecuteMajorIteration(DynamicSet& dataImage, DynamicSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold)  ;
 private:
 	class ImageBufferAllocator& _allocator;
 	size_t _width, _height;
@@ -41,7 +41,8 @@ private:
 			rms(0.0),
 			maxImageValueX(0), maxImageValueY(0),
 			isActive(false),
-			nComponentsCleaned(0)
+			nComponentsCleaned(0),
+			totalFluxCleaned(0.0)
 		{ }
 		
 		double scale;
@@ -51,6 +52,7 @@ private:
 		size_t maxImageValueX, maxImageValueY;
 		bool isActive;
 		size_t nComponentsCleaned;
+		double totalFluxCleaned;
 	};
 	std::vector<MultiScaleAlgorithm::ScaleInfo> _scaleInfos;
 	ao::uvector<double> _manualScaleList;

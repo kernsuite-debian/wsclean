@@ -16,11 +16,16 @@ MultiScaleAlgorithm::MultiScaleAlgorithm(ImageBufferAllocator& allocator, double
 MultiScaleAlgorithm::~MultiScaleAlgorithm()
 {
 	Logger::Info << "Multi-scale cleaning summary:\n";
+	size_t sumComponents = 0;
+	double sumFlux = 0.0;
 	for(size_t scaleIndex=0; scaleIndex!=_scaleInfos.size(); ++scaleIndex)
 	{
 		const ScaleInfo& scaleEntry = _scaleInfos[scaleIndex];
-		Logger::Info << "- Scale " << round(scaleEntry.scale) << " px, nr of components cleaned: " << scaleEntry.nComponentsCleaned << '\n';
+		Logger::Info << "- Scale " << round(scaleEntry.scale) << " px, nr of components cleaned: " << scaleEntry.nComponentsCleaned << " (" << scaleEntry.totalFluxCleaned << " Jy)\n";
+		sumComponents += scaleEntry.nComponentsCleaned;
+		sumFlux += scaleEntry.totalFluxCleaned;
 	}
+	Logger::Info << "Total: " << sumComponents << " components (" << sumFlux << " Jy)\n";
 }
 
 
@@ -89,7 +94,7 @@ void MultiScaleAlgorithm::ExecuteMajorIteration(DynamicSet& dirtySet, DynamicSet
 		_allocator.Allocate(_width*_height, doubleConvolvedPSFs[i]);
 	}
 	
-	DynamicSet individualConvolvedImages(&dirtySet.Table(), dirtySet.Allocator(), dirtySet.ChannelsInDeconvolution(), _width, _height);
+	DynamicSet individualConvolvedImages(&dirtySet.Table(), dirtySet.Allocator(), dirtySet.ChannelsInDeconvolution(), dirtySet.SquareJoinedChannels(), _width, _height);
 	
 	//
 	// The minor iteration loop
@@ -371,6 +376,7 @@ void MultiScaleAlgorithm::addComponentToModel(double* model, size_t scaleWithPea
 		MultiScaleTransforms::AddShapeComponent(model, _width, _height, _scaleInfos[scaleWithPeak].scale, _scaleInfos[scaleWithPeak].maxImageValueX, _scaleInfos[scaleWithPeak].maxImageValueY, componentGain);
 	
 	_scaleInfos[scaleWithPeak].nComponentsCleaned++;
+	_scaleInfos[scaleWithPeak].totalFluxCleaned += componentGain;
 }
 
 double* MultiScaleAlgorithm::getConvolvedPSF(size_t psfIndex, size_t scaleIndex, const ao::uvector<const double*>& psfs, double* scratch,const std::unique_ptr<std::unique_ptr<ImageBufferAllocator::Ptr[]>[]>& convolvedPSFs)

@@ -15,7 +15,7 @@
 
 #include "msprovider.h"
 
-class PartitionedMS final : public MSProvider
+class PartitionedMS : public MSProvider
 {
 public:
 	class Handle;
@@ -36,39 +36,40 @@ public:
 	
 	PartitionedMS(const Handle& handle, size_t partIndex, PolarizationEnum polarization, size_t bandIndex);
 	
-	virtual ~PartitionedMS() override;
+	virtual ~PartitionedMS();
 	
-	virtual casacore::MeasurementSet &MS() override { openMS(); return *_ms; }
+	PartitionedMS(const PartitionedMS&) = delete;
+	PartitionedMS& operator=(const PartitionedMS&) = delete;
 	
-	virtual size_t RowId() const override { return _currentRow; }
+	virtual casacore::MeasurementSet &MS()   { openMS(); return *_ms; }
 	
-	virtual bool CurrentRowAvailable() override;
+	virtual size_t RowId() const   { return _currentRow; }
 	
-	virtual void NextRow() override;
+	virtual bool CurrentRowAvailable()  ;
 	
-	virtual void Reset() override;
+	virtual void NextRow()  ;
 	
-	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId) override;
+	virtual void Reset()  ;
 	
-	virtual void ReadData(std::complex<float>* buffer) override;
+	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId)  ;
 	
-	virtual void ReadModel(std::complex<float>* buffer) override;
+	virtual void ReadData(std::complex<float>* buffer)  ;
 	
-	virtual void WriteModel(size_t rowId, std::complex<float>* buffer) override;
+	virtual void ReadModel(std::complex<float>* buffer)  ;
 	
-	virtual void ReadWeights(float* buffer) override;
+	virtual void WriteModel(size_t rowId, std::complex<float>* buffer)  ;
 	
-	virtual void ReadWeights(std::complex<float>* buffer) override;
+	virtual void ReadWeights(float* buffer)  ;
 	
-	virtual void ReopenRW() override { }
+	virtual void ReadWeights(std::complex<float>* buffer)  ;
 	
-	virtual double StartTime() override { return _metaHeader.startTime; }
+	virtual void ReopenRW()   { }
+	
+	virtual double StartTime()   { return _metaHeader.startTime; }
 	
 	static Handle Partition(const string& msPath, const std::vector<ChannelRange>& channels, class MSSelection& selection, const string& dataColumnName, bool includeWeights, bool includeModel, bool initialModelRequired, bool modelUpdateRequired, const std::set<PolarizationEnum>& polsOut, const std::string& temporaryDirectory);
 	
-	virtual void MakeMSRowToRowIdMapping(std::vector<size_t>& msToId, const MSSelection& selection) override;
-	
-	virtual void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow, const MSSelection& selection) override;
+	virtual void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow)  ;
 	
 	class Handle {
 	public:
@@ -91,21 +92,21 @@ public:
 	private:
 		struct HandleData
 		{
-			HandleData(const std::string& msPath, const string& dataColumnName, const std::string& temporaryDirectory, const std::vector<ChannelRange>& channels, bool modelUpdateRequired, const std::set<PolarizationEnum>& polarizations, const MSSelection& selection) :
-			_msPath(msPath), _dataColumnName(dataColumnName), _temporaryDirectory(temporaryDirectory), _channels(channels), _modelUpdateRequired(modelUpdateRequired),
+			HandleData(const std::string& msPath, const string& dataColumnName, const std::string& temporaryDirectory, const std::vector<ChannelRange>& channels, bool initialModelRequired, bool modelUpdateRequired, const std::set<PolarizationEnum>& polarizations, const MSSelection& selection) :
+			_msPath(msPath), _dataColumnName(dataColumnName), _temporaryDirectory(temporaryDirectory), _channels(channels), _initialModelRequired(initialModelRequired), _modelUpdateRequired(modelUpdateRequired),
 			_polarizations(polarizations), _selection(selection), _referenceCount(1) { }
 			
 			std::string _msPath, _dataColumnName, _temporaryDirectory;
 			std::vector<ChannelRange> _channels;
-			bool _modelUpdateRequired;
+			bool _initialModelRequired, _modelUpdateRequired;
 			std::set<PolarizationEnum> _polarizations;
 			MSSelection _selection;
 			size_t _referenceCount;
 		} *_data;
 		
 		void decrease();
-		Handle(const std::string& msPath, const string& dataColumnName, const std::string& temporaryDirectory, const std::vector<ChannelRange>& channels, bool modelUpdateRequired, const std::set<PolarizationEnum>& polarizations, const MSSelection& selection) :
-			_data(new HandleData(msPath, dataColumnName, temporaryDirectory, channels, modelUpdateRequired, polarizations, selection))
+		Handle(const std::string& msPath, const string& dataColumnName, const std::string& temporaryDirectory, const std::vector<ChannelRange>& channels, bool initialModelRequired, bool modelUpdateRequired, const std::set<PolarizationEnum>& polarizations, const MSSelection& selection) :
+			_data(new HandleData(msPath, dataColumnName, temporaryDirectory, channels, initialModelRequired, modelUpdateRequired, polarizations, selection))
 		{
 		}
 	};
@@ -116,6 +117,7 @@ private:
 	
 	void openMS();
 	
+	Handle _handle;
 	std::string _msPath;
 	std::unique_ptr<casacore::MeasurementSet> _ms;
 	std::ifstream _metaFile, _weightFile, _dataFile;
