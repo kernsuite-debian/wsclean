@@ -1,0 +1,28 @@
+ASCL-Id: 1408.023
+Bug-Database: https://sourceforge.net/p/wsclean/tickets/
+Name: WSClean
+Reference: 
+ Author: >
+     Offringa, A. R. and McKinley, B. and Hurley-Walker, N. and Briggs,
+     F. H. and Wayth, R. B. and Kaplan, D. L. and Bell, M. E. and Feng, L. and
+     Neben, A. R. and Hughes, J. D. and Rhee, J. and Murphy, T. and Bhat,
+     N. D. R. and Bernardi, G. and Bowman, J. D. and Cappallo, R. J. and
+     Corey, B. E. and Deshpande, A. A. and Emrich, D. and Ewall-Wice, A. and
+     Gaensler, B. M. and Goeke, R. and Greenhill, L. J. and Hazelton,
+     B. J. and Hindson, L. and Johnston-Hollitt, M. and Jacobs, D. C. and
+     Kasper, J. C. and Kratzenberg, E. and Lenc, E. and Lonsdale, C. J. and
+     Lynch, M. J. and McWhirter, S. R. and Mitchell, D. A. and Morales,
+     M. F. and Morgan, E. and Kudryavtseva, N. and Oberoi, D. and Ord,
+     S. M. and Pindor, B. and Procopio, P. and Prabu, T. and Riding, J. and
+     Roshi, D. A. and Shankar, N. U. and Srivani, K. S. and Subrahmanyan,
+     R. and Tingay, S. J. and Waterson, M. and Webster, R. L. and Whitney,
+     A. R. and Williams, A. and Williams, C. L.
+ Title: "WSCLEAN: an implementation of a fast, generic wide-field imager for radio astronomy"
+ Journal: Monthly Notices of the Royal Astronomical Society 
+ Year: 2014 
+ Volume: 444 
+ Pages: 606 - 619
+ Eprint: http://mnras.oxfordjournals.org/content/444/1/606
+ URL: http://adsabs.harvard.edu/abs/2014MNRAS.444..606O 
+ Doi: 10.1093/mnras/stu1368 
+Repository: https://sourceforge.net/p/wsclean/code/ci/master/tree/
