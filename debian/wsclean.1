@@ -1,0 +1,367 @@
+.TH wsclean "1" "2016-07-09" "wsclean"
+.SH NAME
+WSClean \- Fast generic widefield interferometric imager
+.SH SYNOPSIS
+\fBwsclean\fR [options] <input-ms> [<2nd-ms> [..]]
+.SH DESCRIPTION
+WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
+w-stacking algorithm and can make use of the w-snapshot algorithm. As of
+Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
+array configuration. It supports full-sky imaging and proper beam correction
+for homogeneous dipole arrays such as the MWA.
+.PP
+WSClean allows Hogbom and Cotton-Schwab cleaning, and can clean polarizations
+joinedly. All operations are performed on the CPU (it is not specialized for
+GPUs).
+.SH OPTIONS
+.SS GENERAL OPTIONS
+.TP
+\fB\-version\fR
+Print WSClean's version and exit.
+.TP
+\fB\-j\fR \fI<threads>\fR
+Specify number of computing threads to use, i.e., number of cpu cores
+that will be used. Default: use all cpu cores.
+.TP
+\fB\-mem\fR \fI<percentage>\fR
+Limit memory usage to the given fraction of the total system
+memory. This is an approximate value. Default: 100.
+.TP
+\fB\-absmem\fR \fI<memory limit>\fR
+Like \-mem, but this specifies a fixed amount of memory in gigabytes.
+.TP
+\fB\-reorder\fR, \fB\-no-reorder\fR
+Force or disable reordering of Measurement Set. This can be faster
+when the measurement set needs to be iterated several times, such as
+with many major iterations or in channel imaging mode. Default: only
+reorder when in channel imaging mode.
+.TP
+\fB\-tempdir\fR \fI<directory>\fR
+Set the temporary directory used when reordering files. Default: same directory as input measurement set.
+.TP
+\fB\-no-dirty\fR
+Do not save the dirty image.
+.TP
+\fB\-saveweights\fR
+Save the gridded weights in the a fits file named <image-prefix>-weights.fits.
+.TP
+\fB\-saveuv\fR
+Save the gridded uv plane, i.e., the FFT of the residual image. The UV plane is complex, hence
+two images will be output: <prefix>-uv-real.fits and <prefix>-uv-imag.fits.
+.TP
+\fB\-apply-primary-beam\fR
+Calculate and apply the primary beam and save images for the Jones components, with weighting identical to the
+weighting as used by the imager. Only available for LOFAR.
+.TP
+\fB\-reuse-primary-beam\fR
+If a primary beam image exists on disk, reuse those images (not implemented yet).
+.TP
+\fB\-use-differential-lofar-beam\fR
+Assume the visibilities have already been beam-corrected for the reference direction.
+.TP
+\fB\-update-model-required\fR (default), \fB\-no-update-model-required\fR
+These two options specify whether the model data column is required to
+contain valid model data after imaging. It can save time to not update
+the model data column.
+.TP
+\fB\-verbose\fR (or \fB\-v\fR)
+Increase verbosity of output.
+.TP
+\fB\-log-time\fR
+Add date and time to each line in the output.
+.TP
+\fB\-quiet\fR
+Do not output anything but errors.
+.SS WEIGHTING OPTIONS
+.TP
+\fB\-weight\fR \fI<weightmode>\fR
+Weightmode can be: natural, uniform, briggs. Default: uniform. When using Briggs' weighting,
+add the robustness parameter, like: "-weight briggs 0.5".
+.TP
+\fB\-superweight\fR \fI<factor>\fR
+Increase the weight gridding box size, similar to Casa's superuniform weighting scheme. Default: 1.0
+The factor can be rational and can be less than one for subpixel weighting.
+.TP
+\fB\-mfsweighting\fR
+In spectral mode, calculate the weights as if the image was made using MFS. This makes sure that the sum of
+channel images equals the MFS weights. Otherwise, the channel image will become a bit more naturally weighted.
+This is only relevant for weighting modes that require gridding (i.e., Uniform, Briggs').
+Default: off, unless -joinchannels is specified.
+.TP
+\fB\-nomfsweighting\fR
+Opposite of -mfsweighting; can be used to turn off MFS weighting in -joinchannels mode.
+.TP
+\fB\-weighting-rank-filter\fR \fI<level>\fR
+Filter the weights and set high weights to the local mean. The level parameter specifies
+the filter level; any value larger than level*localmean will be set to level*localmean.
+.TP
+\fB\-weighting-rank-filter-size\fR \fI<size>\fR
+Set size of weighting rank filter. Default: 16.
+.TP
+\fB\-taper-gaussian\fR \fI<beamsize>\fR
+Taper the weights with a Gaussian function. This will reduce the contribution of long baselines.
+The beamsize is by default in asec, but a unit can be specified ("2amin").
+.TP
+\fB\-taper-tukey\fR \fI<lambda>\fR
+Taper the outer weights with a Tukey transition. Lambda specifies the size of the transition; use in
+combination with -maxuv-l.
+.TP
+\fB\-taper-inner-tukey\fR \fI<lambda>\fR
+Taper the weights with a Tukey transition. Lambda specifies the size of the transition; use in
+combination with -minuv-l.
+.TP
+\fB\-taper-edge\fR \fI<lambda>\fR
+Taper the weights with a rectangle, to keep a space of lambda between the edge and gridded visibilities.
+.TP
+\fB\-taper-edge-tukey\fR \fI<lambda>\fR
+Taper the edge weights with a Tukey window. Lambda is the size of the Tukey transition. When -taper-edge
+is also specified, the Tukey transition starts inside the inner rectangle.
+.SS INVERSION OPTIONS
+.TP
+\fB\-name\fR \fI<image-prefix>\fR
+Use image-prefix as prefix for output files. Default is 'wsclean'.
+.TP
+\fB\-size\fR \fI<width>\fR \fI<height>\fR
+Default: 2048 x 2048
+.TP
+\fB\-trim\fR \fI<width>\fR \fI<height>\fR
+After inversion, trim the image to the given size.
+.TP
+\fB\-scale\fR \fI<pixel-scale>\fR
+Scale of a pixel. Default unit is degrees, but can be specificied, e.g. -scale 20asec. Default: 0.01deg.
+.TP
+\fB\-nwlayers\fR \fI<nwlayers>\fR
+Number of w-layers to use. Default: minimum suggested #w-layers for first MS.
+.TP
+\fB\-nwlayers-for-size\fR \fI<width>\fR \fI<height>\fR
+Use the minimum suggested w-layers for an image of the given size. Can e.g. be used to increase
+accuracy when predicting small part of full image. 
+.TP
+\fB\-channelsout\fR \fI<count>\fR
+Splits the bandwidth and makes count nr. of images. Default: 1.
+.TP
+\fB\-predict\fR
+Only perform a single prediction for an existing image. Doesn't do any imaging or cleaning.
+The input images should have the same name as the model output images would have in normal imaging mode.
+.TP
+\fB\-predict-channels\fR \fI<nchannels>\fR
+Interpolate from a given number of images to the number of channels that are predicted
+as specified by -channelsout. Will interpolate using the frequencies of the images.
+Use one the -fit-spectral-... options to specify the interpolation method / freedom.
+Only used when -predict is specified.
+.TP
+\fB\-subtract-model\fR
+Subtract the model from the data column in the first iteration. This can be used to reimage
+an already cleaned image, e.g. at a different resolution.
+.TP
+\fB\-nosmallinversion\fR, \fB\-smallinversion\fR
+Perform inversion at the Nyquist resolution and upscale the image to the requested image size afterwards.
+This speeds up inversion considerably, but makes aliasing slightly worse. This effect is
+in most cases <1%. Default: on.
+.TP
+\fB\-gridmode\fR \fI<"nn", "kb" or "rect">\fR
+Kernel and mode used for gridding: kb = Kaiser-Bessel (default with 7 pixels), nn = nearest
+neighbour (no kernel), rect = rectangular window. Default: kb.
+.TP
+\fB\-gkernelsize\fR \fI<size>\fR
+Gridding antialiasing kernel size. Default: 7.
+.TP
+\fB\-oversampling\fR \fI<factor>\fR
+Oversampling factor used during gridding. Default: 63.
+.TP
+\fB\-make-psf\fR
+Always make the psf, even when no cleaning is performed.
+.TP
+\fB\-make-psf-only\fR
+Only make the psf, no images are made.
+.TP
+\fB\-savegridding\fR
+Save the gridding correction image. This shows the effect of the antialiasing filter. Default: not saved.
+.TP
+\fB\-dft-prediction\fR
+Predict via a direct Fourier transform. This is slow, but can account for direction-dependent effects. This has
+only effect when -mgain is set or -predict is given.
+.TP
+\fB\-dft-with-beam\fR
+Apply the beam during DFT. Currently only works for LOFAR.
+.TP
+\fB\-visibility-weighting-mode\fR \fB[normal/squared/unit]\fR
+Specify visibility weighting modi. Affects how the weights (normally) stored in
+WEIGHT_SPECTRUM column are applied. Useful for estimating e.g. EoR power spectra errors.
+Normally one would use this in combination with \-no-normalize-for-weighting.
+.TP
+\fB\-no-normalize-for-weighting\fR
+Disable the normalization for the weights, which makes the PSF's peak one. See
+\fB\-visibility-weighting-mode. Only useful with natural weighting.\fR
+.SS DATA SELECTION OPTIONS
+.TP
+\fB\-pol\fR \fI<list>\fR
+Default: 'I'. Possible values: XX, XY, YX, YY, I, Q, U, V, RR, RL, LR or LL (case insensitive).
+Multiple values can be separated with commas, e.g.: 'xx,xy,yx,yy'. Two or four polarizations can be
+joinedly cleaned (see '-joinpolarizations'), but this is not the default. I, Q, U and V
+polarizations will be directly calculated from the visibilities, which is not appropriate for
+telescopes with non-orthogonal feeds, such as MWA and LOFAR. The 'xy' polarization will output both
+a real and an imaginary image, which allows calculating true Stokes polarizations for those
+telescopes.
+.TP
+\fB\-interval\fR \fI<start-index>\fR \fI<end-index>\fR
+Only image the given time interval. Indices specify the timesteps, end index is exclusive.
+Default: image all time steps.
+.TP
+\fB\-intervalsout\fR \fI<count>\fR
+Number of intervals to image inside the selected global interval. Default: 1
+.TP
+\fB\-channelrange\fR \fI<start-channel>\fR \fI<end-channel>\fR
+Only image the given channel range. Indices specify channel indices, end index is exclusive.
+Default: image all channels.
+.TP
+\fB\-field\fR \fI<fieldid>\fR
+Image the given field id. Default: first field (id 0).
+.TP
+\fB\-datacolumn\fR \fI<columnname>\fR
+Default: CORRECTED_DATA if it exists, otherwise DATA will be used.
+.TP
+\fB\-maxuvw-m\fR \fI<meters>\fR, \fB\-minuvw-m\fR \fI<meters>\fR
+Set the min/max baseline distance in meters.
+.TP
+\fB\-maxuv-l\fR \fI<lambda>\fR, \fB\-minuv-l\fR \fI<lambda>\fR
+Set the min/max uv distance in lambda.
+.TP
+\fB\-maxw\fR \fI<percentage>\fR
+Do not grid visibilities with a w-value higher than the given percentage of the max w, to save speed.
+Default: grid everything
+.SS DECONVOLUTION OPTIONS
+.TP
+\fB\-niter\fR \fI<niter>\fR
+Maximum number of clean iterations to perform. Default: 0
+.TP
+\fB\-threshold\fR \fI<threshold>\fR
+Stopping clean thresholding in Jy. Default: 0.0
+.TP
+\fB\-gain\fR \fI<gain>\fR
+Cleaning gain: Ratio of peak that will be subtracted in each iteration. Default: 0.1
+.TP
+\fB\-mgain\fR \fI<gain>\fR
+Cleaning gain for major iterations: Ratio of peak that will be subtracted in each major
+iteration. To use major iterations, 0.85 is a good value. Default: 1.0
+.TP
+\fB\-joinpolarizations\fR
+Perform cleaning by searching for peaks in the sum of squares of the polarizations, but
+subtract components from the individual images. Only possible when imaging two or four Stokes
+or linear parameters. Default: off.
+.TP
+\fB\-joinchannels\fR
+Perform cleaning by searching for peaks in the MFS image, but subtract components from individual channels.
+This will turn on mfsweighting by default. Default: off.
+.TP
+\fB\-multiscale\fR
+Clean on different scales. This is a new algorithm. Default: off.
+This parameter invokes the v1.9 multiscale algorithm, which is slower but more accurate
+compared to the older algorithm, and therefore the recommended one to use.
+The older algorithm is now invoked with -fast-multiscale.
+.TP
+\fB\-fast-multiscale\fR
+Clean on different scales. This is a new fast experimental algorithm. Default: off.
+This method used to be invoked with -multiscale before v1.9, but the newer multiscale
+algorithm is somewhat more accurate and therefore recommended.
+.TP
+\fB\-multiscale-threshold-bias\fR
+Parameter to lower the threshold for larger scales. The used threshold for a scale
+is threshold(scale)=pointsource_threshold x tbias^scale. A lower bias will clean
+larger scales deeper. Default: 0.7
+.TP
+\fB\-multiscale-scale-bias\fR
+Parameter to prevent cleaning small scales in the large-scale iterations. A higher
+bias will give more focus to larger scales. Default: 0.6
+.TP
+\fB\-multiscale-scales\fR \fI<comma-separated list of sizes in pixels>\fR
+Sets a list of scales to use in multi-scale cleaning. If unset, WSClean will select the delta
+(zero) scale, scales starting at four times the synthesized PSF, and increase by a factor of
+two until the maximum scale is reached. Example: -multiscale-scales 0,5,12.5
+.TP
+\fB\-iuwt\fR
+Use the IUWT deconvolution algorithm.
+.TP
+\fB\-moresane-ext\fR \fI<location>\fR
+Use the MoreSane deconvolution algorithm, installed at the specified location.
+.TP
+\fB\-moresane-arg\fR \fI<arguments>\fR
+Pass the specified arguments to moresane. Note that multiple parameters have to be
+enclosed in quotes.
+.TP
+\fB\-moresane-sl\fR \fI<sl1,sl2,...>\fR
+MoreSane --sigmalevel setting for each major loop iteration. Useful to start at high
+levels and go down with subsequent loops, e.g. 20,10,5
+.TP
+\fB\-cleanborder\fR \fI<percentage>\fR
+Set the border size in which no cleaning is performed, in percentage of the width/height of the image.
+With an image size of 1000 and clean border of 1%, each border is 10 pixels. Default: 5 (%).
+.TP
+\fB\-fitsmask\fR \fI<mask>\fR
+Use the specified fits-file as mask during cleaning.
+.TP
+\fB\-casamask\fR \fI<mask>\fR
+Use the specified CASA mask as mask during cleaning.
+.TP
+\fB\-smallpsf\fR
+Resize the psf to speed up minor clean iterations. Not the default.
+.TP
+\fB\-nonegative\fR
+Do not allow negative components during cleaning. Not the default.
+.TP
+\fB\-negative\fR
+Default on: opposite of -nonegative.
+.TP
+\fB\-stopnegative\fR
+Stop on negative components. Not the default.
+.TP
+\fB\-fit-spectral-pol\fR \fI<nterms>\fR
+Fit a polynomial over frequency to each clean component. This has only effect
+when the channels are joined with -joinchannels.
+.TP
+\fB\-fit-spectral-log-pol\fR \fI<nterms>\fR
+Like fit-spectral-pol, but fits a logarithmic polynomial over frequency instead.
+.TP
+\fB\-deconvolution-channels\fR \fI<nchannels>\fR
+Decrease the number of channels as specified by -channelsout to the given number for
+deconvolution. Only possible in combination with one of the -fit-spectral options.
+Proper residuals/restored images will only be returned when mgain\fR \fI< 1.
+.TP
+\fB\-squared-channel-joining\fR
+Use with -joinchannels to perform peak finding in the sum of squared values over
+channels, instead of the normal sum. This is useful for imaging QU polarizations
+with non-zero rotation measures, for which the normal sum is insensitive.
+.TP
+\fB\-force-dynamic-join\fR
+Use alternative joined clean algorithm (feature for testing).
+.SS RESTORATION OPTIONS
+.TP
+\fB\-beamsize\fR \fI<arcsec>\fR
+Set the FWHM beam size in arcsec for restoring the clean components. Default: longest projected
+baseline defines restoring beam.
+.TP
+\fB\-beamshape\fR \fI<maj in arcsec>\fR \fI<min in arcsec>\fR \fI<position angle in deg>\fR
+Set the FWHM beam shape for restoring the clean components. Defaults units for maj and min are arcsec, and
+degrees for PA. Can be overridden, e.g. '-beamshape 1amin 1amin 3deg'.
+.TP
+\fB\-fitbeam\fR
+Determine beam shape by fitting the PSF (default if PSF is made).
+.TP
+\fB\-nofitbeam\fR
+Do not determine beam shape from the PSF.
+.TP
+\fB\-theoreticbeam\fR
+Write the beam in output fits files as calculated from the longest projected baseline.
+This method results in slightly less accurate integrated fluxes, but in simple imaging provide
+a beam size even without making the PSF. Default: off.
+.TP
+\fB\-circularbeam\fR
+Force the beam to be circular: bmin will be set to bmaj.
+.TP
+\fB\-ellipticalbeam\fR
+Allow the beam to be elliptical. Default.
+.SH AUTHOR
+André Offringa <offringa@gmail.com>
+
+
+
