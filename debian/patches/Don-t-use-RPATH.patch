@@ -1,0 +1,43 @@
+From: Ole Streicher <olebole@debian.org>
+Date: Tue, 27 Sep 2016 22:24:50 +0200
+Subject: Don't use RPATH
+
+This is not needed since the lib will be installed in the standard dir.
+CMAKE gets here confused since the actual install dir differs from the final
+place.
+---
+ CMakeLists.txt | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3666f5e..6a2ec0b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -89,19 +89,19 @@ add_definitions(-DHAVE_GSL)
+ # LD_LIBRARY_PATH doesn't have to be set.
+ 
+ # use, i.e. don't skip the full RPATH for the build tree
+-SET(CMAKE_SKIP_BUILD_RPATH  FALSE)
++#SET(CMAKE_SKIP_BUILD_RPATH  FALSE)
+ # when building, don't use the install RPATH already
+ # (but later on when installing)
+-SET(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE) 
+-SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
++#SET(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE) 
++#SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+ # add the automatically determined parts of the RPATH
+ # which point to directories outside the build tree to the install RPATH
+-SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
++#SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+ # the RPATH to be used when installing, but only if it's not a system directory
+-LIST(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/lib" isSystemDir)
+-IF("${isSystemDir}" STREQUAL "-1")
+-   SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+-ENDIF("${isSystemDir}" STREQUAL "-1")
++#LIST(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/lib" isSystemDir)
++#IF("${isSystemDir}" STREQUAL "-1")
++#   SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
++#ENDIF("${isSystemDir}" STREQUAL "-1")
+ 
+ add_library(wsclean-object OBJECT
+   casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialfitter.cpp progressbar.cpp stopwatch.cpp
