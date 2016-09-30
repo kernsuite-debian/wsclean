@@ -22,6 +22,7 @@ Homepage: http://sourceforge.net/projects/wsclean/
 Package: wsclean
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
+Suggests: wsclean-dev
 Description: Fast generic widefield interferometric imager
  WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
  w-stacking algorithm and can make use of the w-snapshot algorithm. As of
@@ -32,3 +33,40 @@ Description: Fast generic widefield interferometric imager
  WSClean allows Hogbom and Cotton-Schwab cleaning, and can clean polarizations
  joinedly. All operations are performed on the CPU (it is not specialized for
  GPUs).
+
+Package: libwsclean0
+Architecture: any
+Multi-Arch: same
+Section: libs
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Fast generic widefield interferometric imager (development files)
+ WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
+ w-stacking algorithm and can make use of the w-snapshot algorithm. As of
+ Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
+ array configuration. It supports full-sky imaging and proper beam correction
+ for homogeneous dipole arrays such as the MWA.
+ .
+ WSClean allows Hogbom and Cotton-Schwab cleaning, and can clean polarizations
+ joinedly. All operations are performed on the CPU (it is not specialized for
+ GPUs).
+ .
+ This package contains the shared library.
+
+Package: wsclean-dev
+Architecture: any
+Section: libdevel
+Depends: libwsclean0 (= ${binary:Version}),${misc:Depends}, ${shlibs:Depends}
+Recommends: wsclean
+Description: Fast generic widefield interferometric imager (shared library)
+ WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
+ w-stacking algorithm and can make use of the w-snapshot algorithm. As of
+ Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
+ array configuration. It supports full-sky imaging and proper beam correction
+ for homogeneous dipole arrays such as the MWA.
+ .
+ WSClean allows Hogbom and Cotton-Schwab cleaning, and can clean polarizations
+ joinedly. All operations are performed on the CPU (it is not specialized for
+ GPUs).
+ .
+ This package contains the header file to compile own programs against the
+ shared library.

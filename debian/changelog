@@ -1,3 +1,9 @@
+wsclean (1.12-2) unstable; urgency=low
+
+  * Build and use shared lib for libwsclean
+
+ -- Ole Streicher <olebole@debian.org>  Fri, 30 Sep 2016 14:28:08 +0200
+
 wsclean (1.12-1) unstable; urgency=low
 
   * Initial release. Closes: #830124
