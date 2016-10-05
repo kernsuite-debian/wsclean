@@ -3,11 +3,11 @@ Date: Fri, 30 Sep 2016 14:06:27 +0200
 Subject: Build and use shared lib for libwsclean
 
 ---
- CMakeLists.txt | 8 +++++---
- 1 file changed, 5 insertions(+), 3 deletions(-)
+ CMakeLists.txt | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6a2ec0b..a80a64a 100644
+index 6a2ec0b..64059ef 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -123,13 +123,15 @@ add_library(wsclean-lib STATIC ${WSCLEANFILES})
@@ -28,11 +28,12 @@ index 6a2ec0b..a80a64a 100644
  
  set_target_properties(wsclean-object PROPERTIES COMPILE_FLAGS "-std=c++0x")
  set_target_properties(wsclean PROPERTIES COMPILE_FLAGS "-std=c++0x")
-@@ -137,7 +139,7 @@ set_target_properties(wsclean-lib PROPERTIES COMPILE_FLAGS "-std=c++0x")
+@@ -137,7 +139,8 @@ set_target_properties(wsclean-lib PROPERTIES COMPILE_FLAGS "-std=c++0x")
  set_target_properties(wsclean-shared PROPERTIES COMPILE_FLAGS "-std=c++0x")
  
  install(TARGETS wsclean DESTINATION bin)
 -install(TARGETS wsclean-lib DESTINATION lib)
++install(TARGETS wsclean-lib DESTINATION lib/${DEB_BUILD_MULTIARCH})
 +install(TARGETS wsclean-shared DESTINATION lib/${DEB_BUILD_MULTIARCH})
  install(FILES interface/wscleaninterface.h DESTINATION include)
  

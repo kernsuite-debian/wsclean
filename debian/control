@@ -68,5 +68,5 @@ Description: Fast generic widefield interferometric imager (shared library)
  joinedly. All operations are performed on the CPU (it is not specialized for
  GPUs).
  .
- This package contains the header file to compile own programs against the
- shared library.
+ This package contains the static library and the the header file to
+ compile own programs against the library.
