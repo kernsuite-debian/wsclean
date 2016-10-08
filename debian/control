@@ -39,7 +39,7 @@ Architecture: any-amd64 any-i386
 Multi-Arch: same
 Section: libs
 Depends: ${misc:Depends}, ${shlibs:Depends}
-Description: Fast generic widefield interferometric imager (development files)
+Description: Fast generic widefield interferometric imager (shared library)
  WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
  w-stacking algorithm and can make use of the w-snapshot algorithm. As of
  Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
@@ -57,7 +57,7 @@ Architecture: any-amd64 any-i386
 Section: libdevel
 Depends: libwsclean0 (= ${binary:Version}),${misc:Depends}, ${shlibs:Depends}
 Recommends: wsclean
-Description: Fast generic widefield interferometric imager (shared library)
+Description: Fast generic widefield interferometric imager (development files)
  WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
  w-stacking algorithm and can make use of the w-snapshot algorithm. As of
  Feb 2014, it is 2-12 times faster than CASA's w-projection, depending on the
