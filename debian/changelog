@@ -1,3 +1,12 @@
+wsclean (1.12-3) unstable; urgency=low
+
+  * Add static lib to -dev
+  * Limit to x86 architectures. Closes: #840037
+  * Fix short description of lib and -dev
+  * Make uscan more restrictive to exclude path names in version number
+
+ -- Ole Streicher <olebole@debian.org>  Tue, 18 Oct 2016 16:09:46 +0200
+
 wsclean (1.12-2) unstable; urgency=low
 
   * Build and use shared lib for libwsclean
