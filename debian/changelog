@@ -1,3 +1,9 @@
+wsclean (1.12-6) unstable; urgency=medium
+
+  * Use portable settings to build
+
+ -- Ole Streicher <olebole@debian.org>  Thu, 20 Oct 2016 10:38:59 +0200
+
 wsclean (1.12-5) unstable; urgency=medium
 
   * Fix dependencies of libwsclean0 and wsclean
