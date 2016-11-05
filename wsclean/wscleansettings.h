@@ -26,8 +26,11 @@ public:
 	size_t widthForNWCalculation, heightForNWCalculation;
 	size_t channelsOut, intervalsOut;
 	double pixelScaleX, pixelScaleY;
+	bool restoreOnly;
+	std::string restoreModel, restoreInput, restoreOutput;
 	double manualBeamMajorSize, manualBeamMinorSize, manualBeamPA;
 	bool fittedBeam, theoreticBeam, circularBeam;
+	bool continuedRun;
 	double memFraction, absMemLimit, minUVWInMeters, maxUVWInMeters, minUVInLambda, maxUVInLambda, wLimit, rankFilterLevel;
 	size_t rankFilterSize;
 	double gaussianTaperBeamSize, tukeyTaperInLambda, tukeyInnerTaperInLambda, edgeTaperInLambda, edgeTukeyTaperInLambda;
@@ -39,6 +42,7 @@ public:
 	size_t predictionChannels;
 	std::string dataColumnName;
 	std::set<PolarizationEnum> polarizations;
+	std::set<size_t> spectralWindows;
 	WeightMode weightMode;
 	std::string prefixName;
 	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved, dftPrediction, dftWithBeam;
@@ -48,11 +52,16 @@ public:
 	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, useIDG;
 	enum GridModeEnum gridMode;
 	enum MeasurementSetGridder::VisibilityWeightingMode visibilityWeightingMode;
+	double baselineDependentAveragingInWavelengths;
+	bool simulateNoise;
+	double simulatedNoiseStdDev;
 	
 	/** @{
 	 * These settings all relate to the deconvolution.
 	 */
 	double deconvolutionThreshold, deconvolutionGain, deconvolutionMGain;
+	bool autoDeconvolutionThreshold;
+	double autoDeconvolutionThresholdSigma;
 	size_t deconvolutionIterationCount;
 	bool allowNegativeComponents, stopOnNegativeComponents;
 	bool useMultiscale, useFastMultiscale, squaredJoins, forceDynamicJoin;
@@ -61,7 +70,7 @@ public:
 	ao::uvector<double> multiscaleScaleList;
 	double deconvolutionBorderRatio;
 	std::string fitsDeconvolutionMask, casaDeconvolutionMask;
-	bool useMoreSaneDeconvolution, useIUWTDeconvolution;
+	bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
 	std::string moreSaneLocation, moreSaneArgs;
 	ao::uvector<double> moreSaneSigmaLevels;
 	enum SpectralFittingMode spectralFittingMode;
@@ -98,8 +107,11 @@ inline WSCleanSettings::WSCleanSettings() :
 	widthForNWCalculation(0), heightForNWCalculation(0),
 	channelsOut(1), intervalsOut(1),
 	pixelScaleX(0.01 * M_PI / 180.0), pixelScaleY(0.01 * M_PI / 180.0),
+	restoreOnly(false),
+	restoreModel(), restoreInput(), restoreOutput(),
 	manualBeamMajorSize(0.0), manualBeamMinorSize(0.0),
 	manualBeamPA(0.0), fittedBeam(true), theoreticBeam(false), circularBeam(false),
+	continuedRun(false),
 	memFraction(1.0), absMemLimit(0.0),
 	minUVWInMeters(0.0), maxUVWInMeters(0.0),
 	minUVInLambda(0.0), maxUVInLambda(0.0), wLimit(0.0),
@@ -132,10 +144,15 @@ inline WSCleanSettings::WSCleanSettings() :
 	useIDG(false),
 	gridMode(KaiserBesselKernel),
 	visibilityWeightingMode(MeasurementSetGridder::NormalVisibilityWeighting),
+	baselineDependentAveragingInWavelengths(0.0),
+	simulateNoise(false),
+	simulatedNoiseStdDev(0.0),
 // Deconvolution default settings:
 	deconvolutionThreshold(0.0),
 	deconvolutionGain(0.1),
 	deconvolutionMGain(1.0),
+	autoDeconvolutionThreshold(false),
+	autoDeconvolutionThresholdSigma(3.0),
 	deconvolutionIterationCount(0),
 	allowNegativeComponents(true), 
 	stopOnNegativeComponents(false),
@@ -152,6 +169,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	casaDeconvolutionMask(),
 	useMoreSaneDeconvolution(false),
 	useIUWTDeconvolution(false),
+	iuwtSNRTest(false),
 	moreSaneLocation(),
 	moreSaneArgs(),
 	spectralFittingMode(NoSpectralFitting),

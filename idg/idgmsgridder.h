@@ -5,7 +5,8 @@
 
 #include "../wsclean/msgridderbase.h"
 
-#include "interface.h"
+//#include "interface.h"
+#include <idg.h>
 
 #include "../lane.h"
 #include "../uvector.h"
@@ -40,7 +41,7 @@ private:
 		return 1; // TODO
 	}
 		
-	void constructGridders(const MultiBandData& selectedBands, size_t nStations);
+	void constructGridders(const MultiBandData& selectedBands, size_t nStations, bool constructDegridders);
 	
 	void gridMeasurementSet(MSGridderBase::MSData& msData);
 	void gridThreadFunction();
@@ -61,7 +62,8 @@ private:
 		size_t rowId;
 	};
 	
-	std::vector<HighLevelGridderInterface*> _interfaces;
+	std::vector<idg::GridderPlan*> _gridderPlans;
+	std::vector<idg::DegridderPlan*> _degridderPlans;
 	size_t _kernelSize;
 	ao::uvector<std::complex<double>> _grid;
 	ao::uvector<double> _image;

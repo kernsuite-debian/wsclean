@@ -8,6 +8,7 @@
 #include <casacore/tables/Tables/ArrayColumn.h>
 
 #include <complex>
+#include <set>
 
 namespace casacore {
 	class MeasurementSet;
@@ -24,6 +25,9 @@ class MSSelection;
 class MSProvider
 {
 public:
+	friend class MSRowProvider;
+	friend class DirectMSRowProvider;
+
 	virtual ~MSProvider() { }
 	
 	virtual casacore::MeasurementSet &MS() = 0;
@@ -37,6 +41,8 @@ public:
 	virtual void Reset() = 0;
 	
 	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId) = 0;
+	
+	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId, size_t& antenna1, size_t& antenna2) = 0;
 	
 	virtual void ReadData(std::complex<float>* buffer) = 0;
 	
@@ -65,7 +71,7 @@ protected:
 	
 	static void getRowRange(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow);
 	
-	static void getRowRangeAndIDMap(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow, vector<size_t>& idToMSRow);
+	static void getRowRangeAndIDMap(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow, const std::set<size_t>& dataDescIdMap, vector<size_t>& idToMSRow);
 	
 	static void copyRealToComplex(std::complex<float>* dest, const float* source, size_t n)
 	{

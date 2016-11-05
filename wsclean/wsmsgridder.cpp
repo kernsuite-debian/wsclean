@@ -6,7 +6,7 @@
 #include "../imageweights.h"
 #include "../buffered_lane.h"
 #include "../fftresampler.h"
-#include "../imageoperations.h"
+#include "../image.h"
 
 #include "../msproviders/msprovider.h"
 
@@ -400,7 +400,10 @@ void WSMSGridder::Invert()
 		Logger::Info << "Not dividing by normalization factor of " << totalWeight()/2.0 << ".\n";
 		_gridder->FinalizeImage(2.0, true);
 	}
-	Logger::Info << "Gridded visibility count: " << double(GriddedVisibilityCount()) << ", effective count after weighting: " << EffectiveGriddedVisibilityCount() << '\n';
+	Logger::Info << "Gridded visibility count: " << double(GriddedVisibilityCount());
+	if(Weighting().IsNatural())
+		Logger::Info << ", effective count after weighting: " << EffectiveGriddedVisibilityCount();
+	Logger::Info << '\n';
 	
 	if(ImageWidth()!=_actualInversionWidth || ImageHeight()!=_actualInversionHeight)
 	{
@@ -432,13 +435,13 @@ void WSMSGridder::Invert()
 		// Perform trimming
 		
 		double *trimmed = _imageBufferAllocator->Allocate(TrimWidth() * TrimHeight());
-		ImageOperations::Trim(trimmed, TrimWidth(), TrimHeight(), _gridder->RealImage(), ImageWidth(), ImageHeight());
+		Image::Trim(trimmed, TrimWidth(), TrimHeight(), _gridder->RealImage(), ImageWidth(), ImageHeight());
 		_gridder->ReplaceRealImageBuffer(trimmed);
 		
 		if(IsComplex())
 		{
 			double *trimmedImag = _imageBufferAllocator->Allocate(TrimWidth() * TrimHeight());
-			ImageOperations::Trim(trimmedImag, TrimWidth(), TrimHeight(), _gridder->ImaginaryImage(), ImageWidth(), ImageHeight());
+			Image::Trim(trimmedImag, TrimWidth(), TrimHeight(), _gridder->ImaginaryImage(), ImageWidth(), ImageHeight());
 			_gridder->ReplaceImaginaryImageBuffer(trimmedImag);
 		}
 	}
@@ -476,13 +479,13 @@ void WSMSGridder::Predict(double* real, double* imaginary)
 		// The input is of size TrimWidth() x TrimHeight()
 		// This will make the model image of size ImageWidth() x ImageHeight()
 		_imageBufferAllocator->Allocate(ImageWidth() * ImageHeight(), untrimmedReal);
-		ImageOperations::Untrim(untrimmedReal.data(), ImageWidth(), ImageHeight(), real, TrimWidth(), TrimHeight());
+		Image::Untrim(untrimmedReal.data(), ImageWidth(), ImageHeight(), real, TrimWidth(), TrimHeight());
 		real = untrimmedReal.data();
 		
 		if(IsComplex())
 		{
 			_imageBufferAllocator->Allocate(ImageWidth() * ImageHeight(), untrimmedImag);
-			ImageOperations::Untrim(untrimmedImag.data(), ImageWidth(), ImageHeight(), imaginary, TrimWidth(), TrimHeight());
+			Image::Untrim(untrimmedImag.data(), ImageWidth(), ImageHeight(), imaginary, TrimWidth(), TrimHeight());
 			imaginary = untrimmedImag.data();
 		}
 	}

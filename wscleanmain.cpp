@@ -43,6 +43,12 @@ void print_help()
 		"   Default: 100.\n"
 		"-absmem <memory limit>\n"
 		"   Like -mem, but this specifies a fixed amount of memory in gigabytes.\n"
+		"-verbose (or -v)\n"
+		"   Increase verbosity of output.\n"
+		"-log-time\n"
+		"   Add date and time to each line in the output.\n"
+		"-quiet\n"
+		"   Do not output anything but errors.\n"
 		"-reorder\n"
 		"-no-reorder\n"
 		"   Force or disable reordering of Measurement Set. This can be faster when the measurement set needs to\n"
@@ -50,6 +56,11 @@ void print_help()
 		"   Default: only reorder when in channel imaging mode.\n"
 		"-tempdir <directory>\n"
 		"   Set the temporary directory used when reordering files. Default: same directory as input measurement set.\n"
+		"-update-model-required (default), and\n"
+		"-no-update-model-required\n"
+		"   These two options specify wether the model data column is required to\n"
+		"   contain valid model data after imaging. It can save time to not update\n"
+		"   the model data column.\n"
 		"-no-dirty\n"
 		"   Do not save the dirty image.\n"
 		"-saveweights\n"
@@ -64,17 +75,6 @@ void print_help()
 		"   If a primary beam image exists on disk, reuse those images (not implemented yet).\n"
 		"-use-differential-lofar-beam\n"
 		"   Assume the visibilities have already been beam-corrected for the reference direction.\n"
-		"-update-model-required (default), and\n"
-		"-no-update-model-required\n"
-		"   These two options specify wether the model data column is required to\n"
-		"   contain valid model data after imaging. It can save time to not update\n"
-		"   the model data column.\n"
-		"-verbose (or -v)\n"
-		"   Increase verbosity of output.\n"
-		"-log-time\n"
-		"   Add date and time to each line in the output.\n"
-		"-quiet\n"
-		"   Do not output anything but errors.\n"
 		"\n"
 		"  ** WEIGHTING OPTIONS **\n"
 		"-weight <weightmode>\n"
@@ -116,27 +116,31 @@ void print_help()
 		"-size <width> <height>\n"
 		"   Default: 2048 x 2048\n"
 		"-trim <width> <height>\n"
-		"   After inversion, trim the image to the given size.\n"
+		"   After inversion, trim the image to the given size. Default: no trimming.\n"
 		"-scale <pixel-scale>\n"
 		"   Scale of a pixel. Default unit is degrees, but can be specificied, e.g. -scale 20asec. Default: 0.01deg.\n"
-		"-nwlayers <nwlayers>\n"
-		"   Number of w-layers to use. Default: minimum suggested #w-layers for first MS.\n"
-		"-nwlayers-for-size <width> <height>\n"
-		"   Use the minimum suggested w-layers for an image of the given size. Can e.g. be used to increase\n"
-		"   accuracy when predicting small part of full image. \n"
-		"-channelsout <count>\n"
-		"   Splits the bandwidth and makes count nr. of images. Default: 1.\n"
 		"-predict\n"
 		"   Only perform a single prediction for an existing image. Doesn't do any imaging or cleaning.\n"
 		"   The input images should have the same name as the model output images would have in normal imaging mode.\n"
 		"-predict-channels <nchannels>\n"
 		"   Interpolate from a given number of images to the number of channels that are predicted\n"
 		"   as specified by -channelsout. Will interpolate using the frequencies of the images.\n"
-		"   Use one the -fit-spectral-... options to specify the interpolation method / freedom.\n"
+		"   Use one of the -fit-spectral-... options to specify the interpolation method / freedom.\n"
 		"   Only used when -predict is specified.\n"
+		"-continue\n"
+		"   Will continue an earlier WSClean run. Earlier model images will be read and model visibilities will be\n"
+		"   subtracted to create the first dirty residual. CS should have been used in the earlier run, and model data"
+		"   should have been written to the measurement set for this to work. Default: off.\n"
 		"-subtract-model\n"
 		"   Subtract the model from the data column in the first iteration. This can be used to reimage\n"
 		"   an already cleaned image, e.g. at a different resolution.\n"
+		"-channelsout <count>\n"
+		"   Splits the bandwidth and makes count nr. of images. Default: 1.\n"
+		"-nwlayers <nwlayers>\n"
+		"   Number of w-layers to use. Default: minimum suggested #w-layers for first MS.\n"
+		"-nwlayers-for-size <width> <height>\n"
+		"   Use the minimum suggested w-layers for an image of the given size. Can e.g. be used to increase\n"
+		"   accuracy when predicting small part of full image. \n"
 		"-nosmallinversion and -smallinversion\n"
 		"   Perform inversion at the Nyquist resolution and upscale the image to the requested image size afterwards.\n"
 		"   This speeds up inversion considerably, but makes aliasing slightly worse. This effect is\n"
@@ -166,6 +170,11 @@ void print_help()
 		"-no-normalize-for-weighting\n"
 		"   Disable the normalization for the weights, which makes the PSF's peak one. See\n"
 		"   -visibility-weighting-mode. Only useful with natural weighting.\n"
+		"-baseline-averaging <size-in-wavelengths>\n"
+		"   Enable baseline-dependent averaging. The specified size is in number of wavelengths (i.e., uvw-units). One way\n"
+		"   to calculate this is with <baseline in nr. of lambdas> * 2pi * <acceptable integration in s> / (24*60*60).\n"
+		"-simulate-noise <stddev-in-jy>\n"
+		"   Will replace every visibility by a Gaussian distributed value with given standard deviation before imaging.\n"
 		"\n"
 		"  ** DATA SELECTION OPTIONS **\n"
 		"-pol <list>\n"
@@ -186,6 +195,8 @@ void print_help()
 		"   Default: image all channels.\n"
 		"-field <fieldid>\n"
 		"   Image the given field id. Default: first field (id 0).\n"
+		"-spws <list>\n"
+		"   Selects only the spws given in the list. list should be a comma-separated list of integers. Default: all spws.\n"
 		"-datacolumn <columnname>\n"
 		"   Default: CORRECTED_DATA if it exists, otherwise DATA will be used.\n"
 		"-maxuvw-m <meters>\n"
@@ -203,6 +214,8 @@ void print_help()
 		"   Maximum number of clean iterations to perform. Default: 0\n"
 		"-threshold <threshold>\n"
 		"   Stopping clean thresholding in Jy. Default: 0.0\n"
+		"-auto-threshold <sigma>\n"
+		"   Estimate noise level using a robust estimator and stop at sigma x stddev.\n"
 		"-gain <gain>\n"
 		"   Cleaning gain: Ratio of peak that will be subtracted in each iteration. Default: 0.1\n"
 		"-mgain <gain>\n"
@@ -237,6 +250,9 @@ void print_help()
 		"   two until the maximum scale is reached. Example: -multiscale-scales 0,5,12.5\n"
 		"-iuwt\n"
 		"   Use the IUWT deconvolution algorithm.\n"
+		"-iuwt-snr-test / -no-iuwt-snr-test\n"
+		"   Stop (/do not stop) IUWT when the SNR decreases. This might help limitting divergence, but can\n"
+		"   occasionally also stop the algorithm too early. Default: no SNR test.\n"
 		"-moresane-ext <location>\n"
 		"   Use the MoreSane deconvolution algorithm, installed at the specified location.\n"
 		"-moresane-arg <arguments>\n"
@@ -247,7 +263,8 @@ void print_help()
 		"   levels and go down with subsequent loops, e.g. 20,10,5\n"
 		"-cleanborder <percentage>\n"
 		"   Set the border size in which no cleaning is performed, in percentage of the width/height of the image.\n"
-		"   With an image size of 1000 and clean border of 1%, each border is 10 pixels. Default: 5 (%).\n"
+		"   With an image size of 1000 and clean border of 1%, each border is 10 pixels. \n"
+		"   Default: 5 (%) when trim is not specified, 0% when trim was specified.\n"
 		"-fitsmask <mask>\n"
 		"   Use the specified fits-file as mask during cleaning.\n"
 		"-casamask <mask>\n"
@@ -277,24 +294,30 @@ void print_help()
 		"   Use alternative joined clean algorithm (feature for testing).\n"
 		"\n"
 		"  ** RESTORATION OPTIONS **\n"
+//		"-restore <input model> <input residual> <output image>\n"
+//		"   Restore the model image onto the residual image and save it in output image. By\n"
+//		"   default, the beam parameters are read from the residual image. If this parameter\n"
+//		"   is given, wsclean will do the restoring and then exit: no cleaning is performed.\n"
 		"-beamsize <arcsec>\n"
-		"   Set the FWHM beam size in arcsec for restoring the clean components. Default: longest projected\n"
-		"   baseline defines restoring beam.\n"
+		"   Set a circular beam size (FWHM) in arcsec for restoring the clean components. This is\n"
+		"   the same as -beamshape <size> <size> 0.\n"
 		"-beamshape <maj in arcsec> <min in arcsec> <position angle in deg>\n"
 		"   Set the FWHM beam shape for restoring the clean components. Defaults units for maj and min are arcsec, and\n"
-		"   degrees for PA. Can be overriden, e.g. '-beamshape 1amin 1amin 3deg'.\n"
+		"   degrees for PA. Can be overriden, e.g. '-beamshape 1amin 1amin 3deg'. Default: shape of PSF.\n"
 		"-fitbeam\n"
 		"   Determine beam shape by fitting the PSF (default if PSF is made).\n"
 		"-nofitbeam\n"
 		"   Do not determine beam shape from the PSF.\n"
 		"-theoreticbeam\n"
 		"   Write the beam in output fits files as calculated from the longest projected baseline.\n"
-		"   This method results in slightly less accurate integrated fluxes, but in simple imaging provide\n"
-		"   a beam size even without making the PSF. Default: off.\n"
+		"   This method results in slightly less accurate beam size/integrated fluxes, but provides a beam size\n"
+		"   without making the PSF for quick imaging. Default: off.\n"
 		"-circularbeam\n"
 		"   Force the beam to be circular: bmin will be set to bmaj.\n"
 		"-ellipticalbeam\n"
-		"   Allow the beam to be elliptical. Default.\n";
+		"   Allow the beam to be elliptical. Default.\n"
+		"\n"
+		"For detailed help, check the WSClean website: http://wsclean.sourceforge.net/ .\n";
 }
 #endif
 
@@ -315,6 +338,7 @@ int main(int argc, char *argv[])
 	WSCleanSettings& settings = wsclean.Settings();;
 	int argi = 1;
 	bool mfsWeighting = false, noMFSWeighting = false, predictionMode = false;
+	bool hasCleanBorder = false;
 	while(argi < argc && argv[argi][0] == '-')
 	{
 		const std::string param = argv[argi][1]=='-' ? (&argv[argi][2]) : (&argv[argi][1]);
@@ -357,6 +381,13 @@ int main(int argc, char *argv[])
 			++argi;
 			settings.predictionChannels = atoi(argv[argi]);
 		}
+		else if(param == "continue")
+		{
+			settings.continuedRun = true;
+			// Always make a PSF -- otherwise no beam size is available for
+			// restoring the existing model.
+			settings.makePSF = true;
+		}
 		else if(param == "subtract-model")
 		{
 			settings.subtractModel = true;
@@ -374,6 +405,8 @@ int main(int argc, char *argv[])
 		{
 			settings.trimmedImageWidth = atoi(argv[argi+1]);
 			settings.trimmedImageHeight = atoi(argv[argi+2]);
+			if(!hasCleanBorder)
+				settings.deconvolutionBorderRatio = 0;
 			argi += 2;
 		}
 		else if(param == "scale")
@@ -412,6 +445,12 @@ int main(int argc, char *argv[])
 		{
 			++argi;
 			settings.deconvolutionThreshold = atof(argv[argi]);
+		}
+		else if(param == "auto-threshold")
+		{
+			++argi;
+			settings.autoDeconvolutionThreshold = true;
+			settings.autoDeconvolutionThresholdSigma = atof(argv[argi]);
 		}
 		else if(param == "datacolumn")
 		{
@@ -454,6 +493,14 @@ int main(int argc, char *argv[])
 			// seems not to work when allowing negative components. The algorithm
 			// becomes unstable. Hence, turn negative components off.
 			settings.allowNegativeComponents = false;
+		}
+		else if(param == "iuwt-snr-test")
+		{
+			settings.iuwtSNRTest = true;
+		}
+		else if(param == "no-iuwt-snr-test")
+		{
+			settings.iuwtSNRTest = false;
 		}
 		else if(param == "moresane-ext")
 		{
@@ -620,6 +667,7 @@ int main(int argc, char *argv[])
 		{
 			++argi;
 			settings.deconvolutionBorderRatio = atof(argv[argi])*0.01;
+			hasCleanBorder = true;
 		}
 		else if(param == "fitsmask")
 		{
@@ -669,6 +717,13 @@ int main(int argc, char *argv[])
 			++argi;
 			settings.fieldId = atoi(argv[argi]);
 		}
+		else if(param == "spws")
+		{
+			++argi;
+			ao::uvector<int> list;
+			NumberList::ParseIntList(argv[argi], list);
+			settings.spectralWindows.insert(list.begin(), list.end());
+		}
 		else if(param == "weight")
 		{
 			++argi;
@@ -688,6 +743,14 @@ int main(int argc, char *argv[])
 		{
 			++argi;
 			settings.weightMode.SetSuperWeight(atof(argv[argi]));
+		}
+		else if(param == "restore")
+		{
+			settings.restoreOnly = true;
+			settings.restoreModel = argv[argi+1];
+			settings.restoreInput = argv[argi+2];
+			settings.restoreOutput = argv[argi+3];
+			argi += 3;
 		}
 		else if(param == "beamsize")
 		{
@@ -801,6 +864,17 @@ int main(int argc, char *argv[])
 		{
 			settings.normalizeForWeighting = false;
 		}
+		else if(param == "baseline-averaging")
+		{
+			++argi;
+			settings.baselineDependentAveragingInWavelengths = atof(argv[argi]);
+		}
+		else if(param == "simulate-noise")
+		{
+			++argi;
+			settings.simulateNoise = true;
+			settings.simulatedNoiseStdDev = atof(argv[argi]);
+		}
 		else if(param == "visibility-weighting-mode")
 		{
 			++argi;
@@ -852,7 +926,9 @@ int main(int argc, char *argv[])
 	
 	settings.Validate();
 	
-	if(predictionMode)
+	if(settings.restoreOnly)
+		;
+	else if(predictionMode)
 		wsclean.RunPredict();
 	else
 		wsclean.RunClean();
