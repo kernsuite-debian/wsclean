@@ -10,7 +10,7 @@ place.
  1 file changed, 8 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3666f5e..6a2ec0b 100644
+index 9cae1ec..0e9cc89 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -89,19 +89,19 @@ add_definitions(-DHAVE_GSL)
@@ -40,4 +40,4 @@ index 3666f5e..6a2ec0b 100644
 +#ENDIF("${isSystemDir}" STREQUAL "-1")
  
  add_library(wsclean-object OBJECT
-   casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialfitter.cpp progressbar.cpp stopwatch.cpp
+   casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialfitter.cpp progressbar.cpp stopwatch.cpp

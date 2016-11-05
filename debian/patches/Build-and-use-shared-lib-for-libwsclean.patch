@@ -3,22 +3,13 @@ Date: Fri, 30 Sep 2016 14:06:27 +0200
 Subject: Build and use shared lib for libwsclean
 
 ---
- CMakeLists.txt | 13 ++++++++-----
- 1 file changed, 8 insertions(+), 5 deletions(-)
+ CMakeLists.txt | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 6a2ec0b..40afc1d 100644
+index 0e9cc89..41508b0 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -34,7 +34,7 @@ find_library(GSL_LIB NAMES gsl)
- find_path(GSL_INCLUDE_DIR NAMES gsl/gsl_version.h)
- find_library(GSL_CBLAS_LIB NAMES gslcblas)
- 
--set(CASA_LIBS ${CASA_MS_LIB} ${CASA_TABLES_LIB} ${CASA_MEASURES_LIB} ${CASA_CASA_LIB} ${CASA_FITS_LIB} ${DL_LIB})
-+set(CASA_LIBS ${CASA_MS_LIB} ${CASA_TABLES_LIB} ${CASA_MEASURES_LIB} ${CASA_CASA_LIB} ${CASA_FITS_LIB})
- 
- find_path(CASA_INCLUDE_DIR NAMES casacore/ms/MeasurementSets/MeasurementSet.h PATHS /usr/local/include/)
- 
 @@ -123,13 +123,15 @@ add_library(wsclean-lib STATIC ${WSCLEANFILES})
  set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
  
@@ -26,7 +17,7 @@ index 6a2ec0b..40afc1d 100644
 -target_link_libraries(wsclean-shared)
 +set_target_properties(wsclean-shared PROPERTIES OUTPUT_NAME wsclean)
 +SET_TARGET_PROPERTIES(wsclean-shared PROPERTIES SOVERSION 0)
-+target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS})
++target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS})
  
  add_executable(wsclean wscleanmain.cpp)
 -target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS})
