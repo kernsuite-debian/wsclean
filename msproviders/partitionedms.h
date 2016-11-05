@@ -53,6 +53,8 @@ public:
 	
 	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId)  ;
 	
+	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId, size_t& antenna1, size_t& antenna2);
+	
 	virtual void ReadData(std::complex<float>* buffer)  ;
 	
 	virtual void ReadModel(std::complex<float>* buffer)  ;
@@ -67,7 +69,7 @@ public:
 	
 	virtual double StartTime()   { return _metaHeader.startTime; }
 	
-	static Handle Partition(const string& msPath, const std::vector<ChannelRange>& channels, class MSSelection& selection, const string& dataColumnName, bool includeWeights, bool includeModel, bool initialModelRequired, bool modelUpdateRequired, const std::set<PolarizationEnum>& polsOut, const std::string& temporaryDirectory);
+	static Handle Partition(const string& msPath, const std::vector<ChannelRange>& channels, class MSSelection& selection, const string& dataColumnName, bool includeModel, bool initialModelRequired, const class WSCleanSettings& settings);
 	
 	virtual void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow)  ;
 	
@@ -137,7 +139,7 @@ private:
 	struct MetaRecord
 	{
 		double u, v, w;
-		uint32_t dataDescId;
+		uint16_t antenna1, antenna2, dataDescId;
 	};
 	struct PartHeader
 	{

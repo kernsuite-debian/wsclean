@@ -1,8 +1,14 @@
 #include "partitionedms.h"
 
-#include "../multibanddata.h"
+#include "averagingmsrowprovider.h"
+#include "directmsrowprovider.h"
+#include "msrowprovider.h"
+#include "noisemsrowprovider.h"
+
 #include "../progressbar.h"
+
 #include "../wsclean/logger.h"
+#include "../wsclean/wscleansettings.h"
 
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -139,6 +145,22 @@ void PartitionedMS::ReadMeta(double& u, double& v, double& w, size_t& dataDescId
 	v = record.v;
 	w = record.w;
 	dataDescId = record.dataDescId;
+}
+
+void PartitionedMS::ReadMeta(double& u, double& v, double& w, size_t& dataDescId, size_t& antenna1, size_t& antenna2)
+{
+	if(!_metaPtrIsOk)
+		_metaFile.seekg(-sizeof(MetaRecord), std::ios::cur);
+	_metaPtrIsOk = false;
+	
+	MetaRecord record;
+	_metaFile.read(reinterpret_cast<char*>(&record), sizeof(MetaRecord));
+	u = record.u;
+	v = record.v;
+	w = record.w;
+	dataDescId = record.dataDescId;
+	antenna1 = record.antenna1;
+	antenna2 = record.antenna2;
 }
 
 void PartitionedMS::ReadData(std::complex<float>* buffer)
@@ -281,10 +303,13 @@ struct PartitionFiles
  * - Weights (single, only needed when imaging PSF)
  * - Model, optionally
  */
-PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::vector<ChannelRange>& channels, MSSelection& selection, const string& dataColumnName, bool includeWeights, bool includeModel, bool initialModelRequired, bool modelUpdateRequired, const std::set<PolarizationEnum>& polsOut, const std::string& temporaryDirectory)
+PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::vector<ChannelRange>& channels, MSSelection& selection, const string& dataColumnName, bool includeModel, bool initialModelRequired, const WSCleanSettings& settings)
 {
+	const bool modelUpdateRequired = settings.modelUpdateRequired;
+	const std::set<PolarizationEnum> polsOut = settings.polarizations;
+	const std::string& temporaryDirectory = settings.temporaryDirectory;
+	
 	size_t channelParts = channels.size();
-	casacore::MeasurementSet ms(msPath);
 	
 	if(channelParts != 1)
 	{
@@ -311,8 +336,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 			PartitionFiles& f = files[fileIndex];
 			std::string partPrefix = getPartPrefix(msPath, part, *p, channels[part].dataDescId, temporaryDirectory);
 			f.data = new std::ofstream(partPrefix + ".tmp");
-			if(includeWeights)
-				f.weight = new std::ofstream(partPrefix + "-w.tmp");
+			f.weight = new std::ofstream(partPrefix + "-w.tmp");
 			if(initialModelRequired)
 				f.model = new std::ofstream(partPrefix + "-m.tmp");
 			f.data->seekp(sizeof(PartHeader), std::ios::beg);
@@ -320,71 +344,28 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 			++fileIndex;
 		}
 	}
-	std::vector<PolarizationEnum> msPolarizations = GetMSPolarizations(ms);
 	
-	MultiBandData band(ms.spectralWindow(), ms.dataDescription());
-	casacore::ROScalarColumn<int> antenna1Column(ms, casacore::MS::columnName(casacore::MSMainEnums::ANTENNA1));
-	casacore::ROScalarColumn<int> antenna2Column(ms, casacore::MS::columnName(casacore::MSMainEnums::ANTENNA2));
-	casacore::ROScalarColumn<int> fieldIdColumn(ms, casacore::MS::columnName(casacore::MSMainEnums::FIELD_ID));
-	casacore::ROScalarColumn<double> timeColumn(ms, casacore::MS::columnName(casacore::MSMainEnums::TIME));
-	casacore::MEpoch::ROScalarColumn timeEpochColumn(ms, casacore::MS::columnName(casacore::MSMainEnums::TIME));
-	casacore::ROArrayColumn<double> uvwColumn(ms, casacore::MS::columnName(casacore::MSMainEnums::UVW));
-	std::unique_ptr<casacore::ROArrayColumn<float>> weightSpectrumColumn;
-	std::unique_ptr<casacore::ROArrayColumn<float>> weightScalarColumn;
-	casacore::ROArrayColumn<casacore::Complex> dataColumn(ms, dataColumnName);
-	casacore::ROArrayColumn<bool> flagColumn(ms, casacore::MS::columnName(casacore::MSMainEnums::FLAG));
-	casacore::ROScalarColumn<int> dataDescIdColumn(ms, ms.columnName(casacore::MSMainEnums::DATA_DESC_ID));
-
-	std::unique_ptr<casacore::ROArrayColumn<casacore::Complex>> modelColumn;
-	if(initialModelRequired)
+	std::unique_ptr<MSRowProvider> rowProvider;
+	if(settings.baselineDependentAveragingInWavelengths == 0.0)
 	{
-		modelColumn.reset(new casacore::ROArrayColumn<casacore::Complex>(ms, ms.columnName(casacore::MSMainEnums::MODEL_DATA)));
+		if(settings.simulateNoise)
+			rowProvider.reset(new NoiseMSRowProvider(settings.simulatedNoiseStdDev, msPath, selection, selectedDataDescIds, dataColumnName, initialModelRequired));
+		else
+			rowProvider.reset(new DirectMSRowProvider(msPath, selection, selectedDataDescIds, dataColumnName, initialModelRequired));
 	}
+	else
+		rowProvider.reset(new AveragingMSRowProvider(settings.baselineDependentAveragingInWavelengths, msPath, selection, selectedDataDescIds, dataColumnName, initialModelRequired));
 	
-	const casacore::IPosition shape(dataColumn.shape(0));
+	std::vector<PolarizationEnum> msPolarizations = GetMSPolarizations(rowProvider->MS());
+	
+	const casacore::IPosition shape(rowProvider->DataShape());
 	const size_t polarizationCount = shape[0];
 	size_t channelCount = shape[1];
 	
-	casacore::Array<float> weightScalarArray;
-	bool msHasWeights = openWeightSpectrumColumn(ms, weightSpectrumColumn, shape);
-	if(!msHasWeights)
-	{
-		casacore::IPosition scalarShape(1, shape[0]);
-		weightScalarArray = casacore::Array<float>(scalarShape);
-		weightScalarColumn.reset(new casacore::ROArrayColumn<float>(ms, casacore::MS::columnName(casacore::MSMainEnums::WEIGHT)));
-	}
-	
-	size_t startRow, endRow;
-	getRowRange(ms, selection, startRow, endRow);
-	
-	// Count selected rows
-	std::vector<uint64_t> selectedRowCountPerDataDescId(selectedDataDescIds.size(), 0);
-	size_t totalSelectedRows = 0;
-	size_t timestep = selection.HasInterval() ? selection.IntervalStart() : 0;
-	double time = timeColumn(startRow);
-	for(size_t row=startRow; row!=endRow; ++row)
-	{
-		const int
-			a1 = antenna1Column(row), a2 = antenna2Column(row),
-			fieldId = fieldIdColumn(row), dataDescId = dataDescIdColumn(row);
-		casacore::Vector<double> uvw = uvwColumn(row);
-		if(time != timeColumn(row))
-		{
-			++timestep;
-			time = timeColumn(row);
-		}
-		std::map<size_t,size_t>::const_iterator dataDescIdIter =
-			selectedDataDescIds.find(dataDescId);
-		if(dataDescIdIter != selectedDataDescIds.end())
-		{
-			if(selection.IsSelected(fieldId, timestep, a1, a2, uvw))
-				++selectedRowCountPerDataDescId[dataDescIdIter->second];
-			++totalSelectedRows;
-		}
-	}
-	Logger::Info << "Reordering " << msPath << " (" << totalSelectedRows << " selected rows) into " << channelParts << " x " << polsOut.size() << " parts.\n";
+	Logger::Info << "Reordering " << msPath << " into " << channelParts << " x " << polsOut.size() << " parts.\n";
 
 	// Write header of meta file, one meta file for each data desc id
+	// TODO rather than writing we can just skip and write later
 	std::vector<std::unique_ptr<std::ofstream>> metaFiles(selectedDataDescIds.size());
 	for(std::map<size_t,size_t>::const_iterator i=selectedDataDescIds.begin();
 			i!=selectedDataDescIds.end(); ++i)
@@ -395,17 +376,14 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 		metaFiles[spwIndex].reset(new std::ofstream(metaFilename));
 		MetaHeader metaHeader;
 		memset(&metaHeader, 0, sizeof(MetaHeader));
-		metaHeader.selectedRowCount = selectedRowCountPerDataDescId[i->second];
+		metaHeader.selectedRowCount = 0; // not yet known
 		metaHeader.filenameLength = msPath.size();
-		metaHeader.startTime = timeEpochColumn(startRow).getValue().get();
+		metaHeader.startTime = rowProvider->StartTime();
 		metaFiles[spwIndex]->write(reinterpret_cast<char*>(&metaHeader), sizeof(metaHeader));
 		metaFiles[spwIndex]->write(msPath.c_str(), msPath.size());
 	}
 	
 	// Write actual data
-	timestep = selection.HasInterval() ? selection.IntervalStart() : 0;
-	time = timeColumn(startRow);
-	
 	std::vector<std::complex<float>> dataBuffer(polarizationCount * channelCount);
 	std::vector<float> weightBuffer(polarizationCount * channelCount);
 	
@@ -413,92 +391,94 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 	casacore::Array<float> weightSpectrumArray(shape);
 	casacore::Array<bool> flagArray(shape);
 	ProgressBar progress1("Reordering");
-	for(size_t row=startRow; row!=endRow; ++row)
+	
+	size_t selectedRowsTotal = 0;
+	ao::uvector<size_t> selectedRowCountPerSpwIndex(selectedDataDescIds.size(), 0);
+	while(!rowProvider->AtEnd())
 	{
-		progress1.SetProgress(row-startRow, endRow-startRow);
-		const int
-			a1 = antenna1Column(row), a2 = antenna2Column(row),
-			fieldId = fieldIdColumn(row), dataDescId = dataDescIdColumn(row);
+		progress1.SetProgress(rowProvider->CurrentProgress(), rowProvider->TotalProgress());
+		
+		MetaRecord meta;
+		memset(&meta, 0, sizeof(MetaRecord));
+
+		uint32_t dataDescId, antenna1, antenna2;
+		rowProvider->ReadData(dataArray, flagArray, weightSpectrumArray, meta.u, meta.v, meta.w, dataDescId, antenna1, antenna2);
+		meta.dataDescId = dataDescId;
+		meta.antenna1 = antenna1;
+		meta.antenna2 = antenna2;
+		size_t spwIndex = selectedDataDescIds[meta.dataDescId];
+		++selectedRowCountPerSpwIndex[spwIndex];
+		++selectedRowsTotal;
+		std::ofstream& metaFile = *metaFiles[spwIndex];
+		metaFile.write(reinterpret_cast<char*>(&meta), sizeof(MetaRecord));
+		if(!metaFile.good())
+			throw std::runtime_error("Error writing to temporary file");
+		
+		if(initialModelRequired)
+			rowProvider->ReadModel(modelArray);
 			
-		if(time != timeColumn(row))
+		fileIndex = 0;
+		for(size_t part=0; part!=channelParts; ++part)
 		{
-			++timestep;
-			time = timeColumn(row);
-		}
-		casacore::Vector<double> uvwArray = uvwColumn(row);
-		std::map<size_t,size_t>::const_iterator dataDescIdIter = selectedDataDescIds.find(dataDescId);
-		bool isDataDescIdSelected = dataDescIdIter!=selectedDataDescIds.end();
-		if(selection.IsSelected(fieldId, timestep, a1, a2, uvwArray) && isDataDescIdSelected)
-		{
-			MetaRecord meta;
-			memset(&meta, 0, sizeof(MetaRecord));
-			meta.u = uvwArray(0);
-			meta.v = uvwArray(1);
-			meta.w = uvwArray(2);
-			meta.dataDescId = dataDescId;
-			std::ofstream& metaFile = *metaFiles[dataDescIdIter->second];
-			metaFile.write(reinterpret_cast<char*>(&meta), sizeof(MetaRecord));
-			if(!metaFile.good())
-				throw std::runtime_error("Error writing to temporary file");
-				
-			dataColumn.get(row, dataArray);
-			if(initialModelRequired)
-				modelColumn->get(row, modelArray);
-			if(msHasWeights)
-				weightSpectrumColumn->get(row, weightSpectrumArray);
-			else {
-				weightScalarColumn->get(row, weightScalarArray);
-				expandScalarWeights(weightScalarArray, weightSpectrumArray);
-			}
-			flagColumn.get(row, flagArray);
-			
-			fileIndex = 0;
-			for(size_t part=0; part!=channelParts; ++part)
+			if(channels[part].dataDescId == int(meta.dataDescId))
 			{
-				if(channels[part].dataDescId == dataDescId)
+				size_t
+					partStartCh = channels[part].start,
+					partEndCh = channels[part].end;
+				
+				for(std::set<PolarizationEnum>::const_iterator p=polsOut.begin(); p!=polsOut.end(); ++p)
 				{
-					size_t
-						partStartCh = channels[part].start,
-						partEndCh = channels[part].end;
+					PartitionFiles& f = files[fileIndex];
+					copyWeightedData(dataBuffer.data(), partStartCh, partEndCh, msPolarizations, dataArray, weightSpectrumArray, flagArray, *p);
+					f.data->write(reinterpret_cast<char*>(dataBuffer.data()), (partEndCh - partStartCh) * sizeof(std::complex<float>));
+					if(!f.data->good())
+						throw std::runtime_error("Error writing to temporary data file");
 					
-					for(std::set<PolarizationEnum>::const_iterator p=polsOut.begin(); p!=polsOut.end(); ++p)
+					if(initialModelRequired)
 					{
-						PartitionFiles& f = files[fileIndex];
-						copyWeightedData(dataBuffer.data(), partStartCh, partEndCh, msPolarizations, dataArray, weightSpectrumArray, flagArray, *p);
-						f.data->write(reinterpret_cast<char*>(dataBuffer.data()), (partEndCh - partStartCh) * sizeof(std::complex<float>));
-						if(!f.data->good())
+						copyWeightedData(dataBuffer.data(), partStartCh, partEndCh, msPolarizations, modelArray, weightSpectrumArray, flagArray, *p);
+						f.model->write(reinterpret_cast<char*>(dataBuffer.data()), (partEndCh - partStartCh) * sizeof(std::complex<float>));
+						if(!f.model->good())
 							throw std::runtime_error("Error writing to temporary data file");
-						
-						if(initialModelRequired)
-						{
-							copyWeightedData(dataBuffer.data(), partStartCh, partEndCh, msPolarizations, modelArray, weightSpectrumArray, flagArray, *p);
-							f.model->write(reinterpret_cast<char*>(dataBuffer.data()), (partEndCh - partStartCh) * sizeof(std::complex<float>));
-							if(!f.model->good())
-								throw std::runtime_error("Error writing to temporary data file");
-						}
-						
-						if(includeWeights)
-						{
-							copyWeights(weightBuffer.data(), partStartCh, partEndCh, msPolarizations, dataArray, weightSpectrumArray, flagArray, *p);
-							f.weight->write(reinterpret_cast<char*>(weightBuffer.data()), (partEndCh - partStartCh) * sizeof(float));
-							if(!f.weight->good())
-								throw std::runtime_error("Error writing to temporary weights file");
-						}
-						++fileIndex;
 					}
-				} else {
-					fileIndex += polsOut.size();
+					
+					copyWeights(weightBuffer.data(), partStartCh, partEndCh, msPolarizations, dataArray, weightSpectrumArray, flagArray, *p);
+					f.weight->write(reinterpret_cast<char*>(weightBuffer.data()), (partEndCh - partStartCh) * sizeof(float));
+					if(!f.weight->good())
+						throw std::runtime_error("Error writing to temporary weights file");
+					++fileIndex;
 				}
+			} else {
+				fileIndex += polsOut.size();
 			}
 		}
+		
+		rowProvider->NextRow();
 	}
-	progress1.SetProgress(ms.nrow(), ms.nrow());
+	progress1.SetProgress(rowProvider->TotalProgress(), rowProvider->TotalProgress());
+	Logger::Debug << "Total selected rows: " << selectedRowsTotal << '\n';
+	rowProvider->OutputStatistics();
+	
+	// Rewrite meta headers to include selected row count
+	for(std::map<size_t,size_t>::const_iterator i=selectedDataDescIds.begin();
+			i!=selectedDataDescIds.end(); ++i)
+	{
+		size_t spwIndex = i->second;
+		MetaHeader metaHeader;
+		memset(&metaHeader, 0, sizeof(MetaHeader));
+		metaHeader.selectedRowCount = selectedRowCountPerSpwIndex[spwIndex];
+		metaHeader.filenameLength = msPath.size();
+		metaHeader.startTime = rowProvider->StartTime();
+		metaFiles[spwIndex]->seekp(0);
+		metaFiles[spwIndex]->write(reinterpret_cast<char*>(&metaHeader), sizeof(metaHeader));
+		metaFiles[spwIndex]->write(msPath.c_str(), msPath.size());
+	}
 	
 	// Write header to parts and write empty model files (if requested)
 	PartHeader header;
 	memset(&header, 0, sizeof(PartHeader));
 	header.hasModel = includeModel;
-	header.hasWeights = includeWeights;
+	header.hasWeights = true;
 	fileIndex = 0;
 	dataBuffer.assign(channelCount, 0.0);
 	std::unique_ptr<ProgressBar> progress2;
@@ -518,8 +498,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 				throw std::runtime_error("Error writing to temporary data file");
 			
 			delete f.data;
-			if(includeWeights)
-				delete f.weight;
+			delete f.weight;
 			if(initialModelRequired)
 				delete f.model;
 			++fileIndex;
@@ -529,8 +508,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 			{
 				std::string partPrefix = getPartPrefix(msPath, part, *p, header.dataDescId, temporaryDirectory);
 				std::ofstream modelFile(partPrefix + "-m.tmp");
-				const size_t selectedRowCount =
-					selectedRowCountPerDataDescId[selectedDataDescIds[channels[part].dataDescId]];
+				const size_t selectedRowCount = selectedRowCountPerSpwIndex[selectedDataDescIds[channels[part].dataDescId]];
 				for(size_t i=0; i!=selectedRowCount; ++i)
 				{
 					modelFile.write(reinterpret_cast<char*>(dataBuffer.data()), header.channelCount * sizeof(std::complex<float>));
@@ -614,6 +592,7 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle& handle)
 		getRowRange(ms, handle._data->_selection, startRow, endRow);
 		size_t timestep = handle._data->_selection.HasInterval() ? handle._data->_selection.IntervalStart() : 0;
 		double time = timeColumn(startRow);
+		size_t selectedRowCountForDebug = 0;
 		for(size_t row=startRow; row!=endRow; ++row)
 		{
 			progress.SetProgress(row - startRow, startRow - endRow);
@@ -665,10 +644,13 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle& handle)
 						}
 					}
 					modelColumn.put(row, modelDataArray);
+					selectedRowCountForDebug++;
 				}
 			}
 		}
 		progress.SetProgress(ms.nrow(),ms.nrow());
+		
+		Logger::Debug << "Row count during unpartitioning: " << selectedRowCountForDebug << '\n';
 		
 		fileIndex = 0;
 		for(size_t part=0; part!=channelParts; ++part)
@@ -722,49 +704,17 @@ void PartitionedMS::openMS()
 		_ms.reset(new casacore::MeasurementSet(_msPath.data()));
 }
 
-/*
-void PartitionedMS::MakeMSRowToRowIdMapping(std::vector<size_t>& msToId)
-{
-	openMS();
-	const size_t nRow = _ms->nrow();
-	casacore::ROArrayColumn<double> uvwColumn(*_ms, casacore::MS::columnName(casacore::MSMainEnums::UVW));
-	casacore::ROScalarColumn<int> antenna1Column(*_ms, casacore::MS::columnName(casacore::MSMainEnums::ANTENNA1));
-	casacore::ROScalarColumn<int> antenna2Column(*_ms, casacore::MS::columnName(casacore::MSMainEnums::ANTENNA2));
-	casacore::ROScalarColumn<int> fieldIdColumn(*_ms, casacore::MS::columnName(casacore::MSMainEnums::FIELD_ID));
-	casacore::ROScalarColumn<double> timeColumn(*_ms, casacore::MS::columnName(casacore::MSMainEnums::TIME));
-	size_t startRow, endRow;
-	const MSSelection& selection = _handle._data->_selection;
-	getRowRange(*_ms, selection, startRow, endRow);
-	
-	msToId.assign(startRow, 0);
-	size_t currentRowId = 0;
-	size_t timestep = selection.HasInterval() ? selection.IntervalStart() : 0;
-	double time = timeColumn(startRow);
-	for(size_t row=startRow; row!=endRow; ++row)
-	{
-		msToId.push_back(currentRowId);
-		const int
-			a1 = antenna1Column(row), a2 = antenna2Column(row),
-			fieldId = fieldIdColumn(row);
-		casacore::Vector<double> uvw = uvwColumn(row);
-		if(time != timeColumn(row))
-		{
-			++timestep;
-			time = timeColumn(row);
-		}
-		if(selection.IsSelected(fieldId, timestep, a1, a2, uvw))
-			++currentRowId;
-	}
-	for(size_t i=0; i!=nRow-endRow; ++i)
-		msToId.push_back(0);
-}*/
-
 void PartitionedMS::MakeIdToMSRowMapping(vector<size_t>& idToMSRow)
 {
 	openMS();
 	const MSSelection& selection = _handle._data->_selection;
+	std::map<size_t, size_t> dataDescIds;
+	getDataDescIdMap(dataDescIds, _handle._data->_channels);
+	std::set<size_t> dataDescIdSet;
+	for(std::map<size_t, size_t>::const_iterator i=dataDescIds.begin(); i!=dataDescIds.end(); ++i)
+		dataDescIdSet.insert(i->first);
 	size_t startRow, endRow;
-	getRowRangeAndIDMap(*_ms, selection, startRow, endRow, idToMSRow);
+	getRowRangeAndIDMap(*_ms, selection, startRow, endRow, dataDescIdSet, idToMSRow);
 }
 
 void PartitionedMS::getDataDescIdMap(std::map<size_t, size_t>& dataDescIds, const vector<PartitionedMS::ChannelRange>& channels)

@@ -59,14 +59,15 @@ private:
 	void storeAndCombineXYandYX(CachedImageSet& dest, PolarizationEnum polarization, size_t joinedChannelIndex, bool isImaginary, const double* image);
 	bool selectChannels(MSSelection& selection, size_t msIndex, size_t bandIndex, const ImagingTableEntry& entry);
 	MSSelection selectInterval(MSSelection& fullSelection);
+	void readEarlierModelImages(const ImagingTableEntry& entry);
 	
 	void makeImagingTable();
-	void makeImagingTableEntry(const std::vector<double>& channels, size_t outChannelIndex, ImagingTableEntry& entry);
+	void makeImagingTableEntry(const std::vector<OrderedChannel>& channels, size_t outChannelIndex, ImagingTableEntry& entry);
 	void addPolarizationsToImagingTable(size_t& joinedGroupIndex, size_t& squaredGroupIndex, size_t outChannelIndex, const ImagingTableEntry& templateEntry);
 	class ImageWeightCache* createWeightCache();
 	
 	void multiplyImage(double factor, double* image);
-	void imagePSF(size_t currentChannelIndex);
+	void imagePSF(const ImagingTableEntry& entry);
 	void imageGridding();
 	void imageMainFirst(PolarizationEnum polarization, size_t channelIndex);
 	void imageMainNonFirst(PolarizationEnum polarization, size_t channelIndex);
@@ -74,9 +75,10 @@ private:
 	void dftPredict(const ImagingTable& squaredGroup);
 	
 	void makeMFSImage(const string& suffix, PolarizationEnum pol, bool isImaginary, bool isPSF = false);
-	void renderMFSImage(PolarizationEnum pol, bool isImaginary);
-	void writeFits(const string& suffix, const double* image, PolarizationEnum pol, size_t channelIndex, bool isImaginary);
-	void saveUVImage(const double* image, PolarizationEnum pol, size_t channelIndex, bool isImaginary, const std::string& prefix);
+	void renderMFSImage(PolarizationEnum pol, bool isImaginary, bool isPBCorrected);
+	void writeFits(const string& suffix, const double* image, PolarizationEnum pol, const ImagingTableEntry& entry, bool isImaginary);
+	void initFitsWriterForChannel(FitsWriter& writer, const ImagingTableEntry& entry);
+	void saveUVImage(const double* image, PolarizationEnum pol, const ImagingTableEntry& entry, bool isImaginary, const std::string& prefix);
 	void writeFirstResidualImages(const ImagingTable& groupTable);
 	void writeModelImages(const ImagingTable& groupTable);
 	
@@ -91,23 +93,23 @@ private:
 			(_settings.channelsOut != 1) ||
 			(_settings.polarizations.size()>=4) ||
 			(_settings.deconvolutionMGain != 1.0) ||
+			(_settings.baselineDependentAveragingInWavelengths != 0.0) ||
+			_settings.simulateNoise ||
 			_settings.forceReorder
 		) && !_settings.forceNoReorder;
 	}
 	
 	MSSelection _globalSelection;
 	std::string _commandLine;
-	std::vector<double> _inputChannelFrequencies;
+	std::vector<OrderedChannel> _inputChannelFrequencies;
 	
 	struct ChannelInfo {
 		ChannelInfo() :
 			weight(0.0),
-			bandStart(0.0), bandEnd(0.0),
 			beamMaj(0.0), beamMin(0.0), beamPA(0.0),
 			psfNormalizationFactor(1.0)
 		{ }
 		double weight;
-		double bandStart, bandEnd;
 		double beamMaj, beamMin, beamPA;
 		double theoreticBeamSize, psfNormalizationFactor;
 	};

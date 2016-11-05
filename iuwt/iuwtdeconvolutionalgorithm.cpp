@@ -9,20 +9,21 @@
 #include "../threadpool.h"
 
 #include "../deconvolution/dynamicset.h"
-#include "../imageoperations.h"
+#include "../image.h"
 
 #include <algorithm>
 #include <iostream>
 
 #include <boost/numeric/conversion/bounds.hpp>
 
-IUWTDeconvolutionAlgorithm::IUWTDeconvolutionAlgorithm(size_t width, size_t height, double gain, double mGain, double cleanBorder, bool allowNegativeComponents, const bool* mask, double absoluteThreshold, double thresholdSigmaLevel, double tolerance) :
+IUWTDeconvolutionAlgorithm::IUWTDeconvolutionAlgorithm(size_t width, size_t height, double gain, double mGain, double cleanBorder, bool allowNegativeComponents, const bool* mask, double absoluteThreshold, double thresholdSigmaLevel, double tolerance, bool useSNRTest) :
 	_width(width), _height(height),
 	_gain(gain), _mGain(mGain), _cleanBorder(cleanBorder),
 	_mask(mask),
 	_absoluteThreshold(absoluteThreshold),
 	_thresholdSigmaLevel(thresholdSigmaLevel),
-	_tolerance(tolerance), _allowNegativeComponents(allowNegativeComponents)
+	_tolerance(tolerance), _allowNegativeComponents(allowNegativeComponents),
+	_useSNRTest(useSNRTest)
 { }
 
 void IUWTDeconvolutionAlgorithm::measureRMSPerScale(const double* image, const double* convolvedImage, double* scratch, size_t endScale, std::vector<ScaleResponse>& psfResponse)
@@ -698,7 +699,7 @@ bool IUWTDeconvolutionAlgorithm::fillAndDeconvolveStructure(IUWTDecomposition& i
 		{
 			trimmedPriorMask.resize(newWidth * newHeight);
 			trimmedPriorMaskPtr = trimmedPriorMask.data();
-			ImageOperations::TrimBox(trimmedPriorMaskPtr, x1, y1, newWidth, newHeight, priorMask, width, height);
+			Image::TrimBox(trimmedPriorMaskPtr, x1, y1, newWidth, newHeight, priorMask, width, height);
 		}
 
 		ImageAnalysis::Component newMaxComp(maxComp.x-x1, maxComp.y-y1, maxComp.scale);

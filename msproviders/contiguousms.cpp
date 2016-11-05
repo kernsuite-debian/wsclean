@@ -40,7 +40,7 @@ ContiguousMS::ContiguousMS(const string& msPath, const std::string& dataColumnNa
 		_weightScalarColumn.reset(new casacore::ROArrayColumn<float>(_ms, casacore::MS::columnName(casacore::MSMainEnums::WEIGHT)));
 	}
 	
-	getRowRangeAndIDMap(_ms, selection, _startRow, _endRow, _idToMSRow);
+	getRowRangeAndIDMap(_ms, selection, _startRow, _endRow, std::set<size_t>{dataDescId}, _idToMSRow);
 	Reset();
 }
 
@@ -134,6 +134,19 @@ void ContiguousMS::ReadMeta(double& u, double& v, double& w, size_t& dataDescId)
 	v = uvwArray(1);
 	w = uvwArray(2);
 	dataDescId = _dataDescId;
+}
+
+void ContiguousMS::ReadMeta(double& u, double& v, double& w, size_t& dataDescId, size_t& antenna1, size_t& antenna2)
+{
+	readMeta();
+	
+	casacore::Vector<double> uvwArray = _uvwColumn(_row);
+	u = uvwArray(0);
+	v = uvwArray(1);
+	w = uvwArray(2);
+	dataDescId = _dataDescId;
+	antenna1 = _antenna1Column(_row);
+	antenna2 = _antenna2Column(_row);
 }
 
 void ContiguousMS::ReadData(std::complex<float>* buffer)
