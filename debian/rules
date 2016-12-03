@@ -3,6 +3,10 @@
 
 #export DH_VERBOSE=1
 
+ifeq ($(DEB_HOST_ARCH_CPU),i386)
+    export DEB_CXXFLAGS_MAINT_APPEND = -msse -msse2 -mfpmath=sse
+endif
+
 CMAKE_FLAGS += -DDEB_BUILD_MULTIARCH=`dpkg-architecture -qDEB_BUILD_MULTIARCH` -DPORTABLE=yes
 
 %:
