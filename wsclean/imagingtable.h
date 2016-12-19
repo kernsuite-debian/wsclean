@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "../uvector.h"
-#include "../polarizationenum.h"
+#include "../polarization.h"
 
 #include "../msproviders/partitionedms.h"
 
@@ -37,7 +37,7 @@ public:
 	
 	size_t outputChannelIndex;
 	
-	size_t outputTimestepIndex;
+	size_t outputIntervalIndex;
 	
 	std::vector<MSInfo> msData;
 	

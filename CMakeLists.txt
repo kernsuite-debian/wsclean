@@ -6,12 +6,12 @@ project(wsclean)
 #  set(CMAKE_BUILD_TYPE "Release")
 #endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x -O3 -Wall -DNDEBUG -ggdb")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x -O3 -Wall -DNDEBUG")
 
 if(PORTABLE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -msse4.1") 
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native") 
 endif(PORTABLE)
 
 # Casacore has a separate CMake file in this directory
@@ -111,8 +111,9 @@ add_library(wsclean-object OBJECT
   lofar/lbeamimagemaker.cpp
   model/model.cpp
   msproviders/averagingmsrowprovider.cpp msproviders/contiguousms.cpp msproviders/directmsrowprovider.cpp msproviders/msprovider.cpp msproviders/msrowprovider.cpp msproviders/partitionedms.cpp
-  multiscale/multiscalealgorithm.cpp multiscale/multiscaletransforms.cpp multiscale/threadeddeconvolutiontools.cpp
-  wsclean/imagingtable.cpp wsclean/logger.cpp wsclean/msgridderbase.cpp wsclean/wsclean.cpp wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/wstackinggridder.cpp
+  multiscale/clarkloop.cpp multiscale/multiscalealgorithm.cpp multiscale/multiscaletransforms.cpp multiscale/threadeddeconvolutiontools.cpp
+  wsclean/commandline.cpp wsclean/imagingtable.cpp wsclean/logger.cpp wsclean/msgridderbase.cpp wsclean/wscfitswriter.cpp wsclean/wsclean.cpp
+  wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/wstackinggridder.cpp
 	${LBEAM_FILES})
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
