@@ -7,10 +7,10 @@ Subject: Build and use shared lib for libwsclean
  1 file changed, 7 insertions(+), 4 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 0e9cc89..41508b0 100644
+index 88cc35e..c125b5c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -123,13 +123,15 @@ add_library(wsclean-lib STATIC ${WSCLEANFILES})
+@@ -124,13 +124,15 @@ add_library(wsclean-lib STATIC ${WSCLEANFILES})
  set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
  
  add_library(wsclean-shared SHARED ${WSCLEANFILES})
@@ -29,7 +29,7 @@ index 0e9cc89..41508b0 100644
  
  set_target_properties(wsclean-object PROPERTIES COMPILE_FLAGS "-std=c++0x")
  set_target_properties(wsclean PROPERTIES COMPILE_FLAGS "-std=c++0x")
-@@ -137,7 +139,8 @@ set_target_properties(wsclean-lib PROPERTIES COMPILE_FLAGS "-std=c++0x")
+@@ -138,7 +140,8 @@ set_target_properties(wsclean-lib PROPERTIES COMPILE_FLAGS "-std=c++0x")
  set_target_properties(wsclean-shared PROPERTIES COMPILE_FLAGS "-std=c++0x")
  
  install(TARGETS wsclean DESTINATION bin)
