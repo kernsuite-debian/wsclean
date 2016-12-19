@@ -1,3 +1,11 @@
+wsclean (2.1-1) unstable; urgency=low
+
+  * New upstream version 2.1
+  * Rediff patches
+  * Use default compilation on all architectures
+
+ -- Ole Streicher <olebole@debian.org>  Mon, 19 Dec 2016 21:17:00 +0100
+
 wsclean (2.0-2) unstable; urgency=medium
 
   * Enable SSE on i386
