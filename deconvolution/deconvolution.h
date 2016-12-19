@@ -3,7 +3,7 @@
 
 #include "../uvector.h"
 #include "../wsclean/imagebufferallocator.h"
-#include "../polarizationenum.h"
+#include "../polarization.h"
 
 #include <cstring>
 
@@ -26,10 +26,8 @@ public:
 	
 	void FreeDeconvolutionAlgorithms();
 	
-	class DeconvolutionAlgorithm& GetAlgorithm()
-	{
-		return *_cleanAlgorithm;
-	}
+	class DeconvolutionAlgorithm& GetAlgorithm() { return *_cleanAlgorithm; }
+	const DeconvolutionAlgorithm& GetAlgorithm() const { return *_cleanAlgorithm; }
 	
 	bool IsInitialized() const { return _cleanAlgorithm != 0; }
 private:
@@ -54,6 +52,7 @@ private:
 	
 	ao::uvector<bool> _cleanMask;
 	
+	bool _autoMaskIsFinished;
 	size_t _summedCount, _squaredCount;
 	std::set<PolarizationEnum> _polarizations;
 	PolarizationEnum _psfPolarization;

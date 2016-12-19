@@ -22,8 +22,8 @@ WStackingGridder::WStackingGridder(size_t width, size_t height, double pixelSize
 	_gridMode(KaiserBesselKernel),
 	_overSamplingFactor(overSamplingFactor),
 	_kernelSize(kernelSize),
-	_imageData(fftThreadCount),
-	_imageDataImaginary(fftThreadCount),
+	_imageData(fftThreadCount, 0),
+	_imageDataImaginary(fftThreadCount, 0),
 	_nFFTThreads(fftThreadCount),
 	_imageBufferAllocator(allocator)
 {
@@ -32,13 +32,15 @@ WStackingGridder::WStackingGridder(size_t width, size_t height, double pixelSize
 
 WStackingGridder::~WStackingGridder()
 {
-	for(size_t i=0; i!=_nFFTThreads; ++i)
-	{
-		_imageBufferAllocator->Free(_imageData[i]);
-		_imageBufferAllocator->Free(_imageDataImaginary[i]);
-	}
-	freeLayeredUVData();
-	fftw_cleanup();
+	try {
+		for(size_t i=0; i!=_nFFTThreads; ++i)
+		{
+			_imageBufferAllocator->Free(_imageData[i]);
+			_imageBufferAllocator->Free(_imageDataImaginary[i]);
+		}
+		freeLayeredUVData();
+		fftw_cleanup();
+	} catch(std::exception& e) { }
 }
 
 void WStackingGridder::PrepareWLayers(size_t nWLayers, double maxMem, double minW, double maxW)
@@ -46,6 +48,14 @@ void WStackingGridder::PrepareWLayers(size_t nWLayers, double maxMem, double min
 	_minW = minW;
 	_maxW = maxW;
 	_nWLayers = nWLayers;
+	
+	if(_minW == _maxW)
+	{
+		// All values have the same w-value. Some computations divide by _maxW-_minW, so prevent
+		// division by zero. By changing only maxW, one makes sure that layer 0 is still at the
+		// exact w value of all visibilies.
+		_maxW += 1.0;
+	}
 	
 	size_t nrCopies = _nFFTThreads;
 	if(nrCopies > _nWLayers) nrCopies = _nWLayers;
