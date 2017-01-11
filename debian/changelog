@@ -1,10 +1,10 @@
-wsclean (2.1-1) unstable; urgency=low
+wsclean (2.1-1) xenial; urgency=low
 
   * New upstream version 2.1
   * Rediff patches
   * Use default compilation on all architectures
 
- -- Ole Streicher <olebole@debian.org>  Mon, 19 Dec 2016 21:17:00 +0100
+ -- Gijs Molenaar (launchpad ppa build key) <gijs@pythonic.nl>  Wed, 11 Jan 2017 14:46:28 +0200
 
 wsclean (2.0-2) unstable; urgency=medium
 
