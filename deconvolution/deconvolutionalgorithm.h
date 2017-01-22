@@ -18,6 +18,8 @@ class DeconvolutionAlgorithm
 public:
 	virtual ~DeconvolutionAlgorithm() { }
 	
+	virtual void ExecuteMajorIteration(class ImageSet& dataImage, class ImageSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold) = 0;
+	
 	void SetMaxNIter(size_t nIter) { _maxIter = nIter; }
 	
 	void SetThreshold(double threshold) { _threshold = threshold; }
@@ -73,18 +75,6 @@ public:
 		_spectralFitter = source._spectralFitter;
 	}
 	
-	void SetMultiscaleThresholdBias(double bias)
-	{
-		_multiscaleThresholdBias = bias;
-	}
-	void SetMultiscaleScaleBias(double bias)
-	{
-		_multiscaleScaleBias = bias;
-	}
-	void SetMultiscaleNormalizeResponse(bool normResponse)
-	{
-		_multiscaleNormalizeResponse = normResponse;
-	}
 	void SetSpectralFittingMode(SpectralFittingMode mode, size_t nTerms)
 	{
 		_spectralFitter.SetMode(mode, nTerms);
@@ -102,35 +92,11 @@ protected:
 	void PerformSpectralFit(double* values);
 	
 	double _threshold, _gain, _mGain, _cleanBorderRatio;
-	double _multiscaleThresholdBias, _multiscaleScaleBias;
 	size_t _maxIter, _iterationNumber, _threadCount;
-	bool _allowNegativeComponents, _stopOnNegativeComponent, _multiscaleNormalizeResponse;
+	bool _allowNegativeComponents, _stopOnNegativeComponent;
 	const bool* _cleanMask;
 	
 	SpectralFitter _spectralFitter;
-};
-
-template<typename ImageSetType>
-class TypedDeconvolutionAlgorithm : public DeconvolutionAlgorithm
-{
-public:
-	typedef ImageSetType ImageSet;
-	
-	virtual ~TypedDeconvolutionAlgorithm() { }
-	
-	virtual void ExecuteMajorIteration(ImageSetType& dataImage, ImageSetType& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedStopGain) = 0;
-	
-private:
-};
-
-class UntypedDeconvolutionAlgorithm : public DeconvolutionAlgorithm
-{
-public:
-	virtual ~UntypedDeconvolutionAlgorithm() { }
-	
-	virtual void ExecuteMajorIteration(class DynamicSet& dataImage, class DynamicSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold) = 0;
-	
-private:
 };
 
 #endif
