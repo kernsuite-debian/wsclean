@@ -223,11 +223,6 @@ void CommandLine::printHelp()
 		"   Clean on different scales. This is a new algorithm. Default: off.\n"
 		"   This parameter invokes the v1.9 multiscale algorithm, which is slower but more accurate\n"
 		"   compared to the older algorithm, and therefore the recommended one to use.\n"
-		"   The older algorithm is now invoked with -fast-multiscale.\n"
-		"-fast-multiscale\n"
-		"   Clean on different scales. This is a new fast experimental algorithm. Default: off.\n"
-		"   This method used to be invoked with -multiscale before v1.9, but the newer multiscale\n"
-		"   algorithm is somewhat more accurate and therefore recommended.\n"
 		"-multiscale-threshold-bias\n"
 		"   Parameter to lower the threshold for larger scales. The used threshold for a scale\n"
 		"   is threshold(scale)=pointsource_threshold x tbias^scale. A lower bias will clean\n"
@@ -330,7 +325,14 @@ void CommandLine::printHeader()
 
 size_t CommandLine::parse_size_t(const char* param, const char* name)
 {
-	long v = atol(param);
+	char* endptr;
+	errno=0;
+	long v = strtol(param, &endptr, 0);
+	if(*endptr!=0 || endptr == param || errno!=0) {
+		std::ostringstream msg;
+		msg << "Could not parse value '" << param << "' for parameter -" << name << " to an integer";
+		throw std::runtime_error(msg.str());
+	}
 	if(v < 0) {
 		std::ostringstream msg;
 		msg << "Invalid value (" << v << ") for parameter -" << name;
@@ -658,14 +660,10 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			settings.useMultiscale = true;
 		}
-		else if(param == "fast-multiscale")
-		{
-			settings.useFastMultiscale = true;
-		}
-		else if(param == "multiscale-threshold-bias")
+		else if(param == "multiscale-gain")
 		{
 			++argi;
-			settings.multiscaleDeconvolutionThresholdBias = atof(argv[argi]);
+			settings.multiscaleGain = atof(argv[argi]);
 		}
 		else if(param == "multiscale-scale-bias")
 		{
@@ -716,10 +714,6 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			noMFSWeighting = true;
 		}
-		else if(param == "joinchannels")
-		{
-			settings.joinedFrequencyCleaning = true;
-		}
 		else if(param == "fit-spectral-pol")
 		{
 			++argi;
@@ -762,9 +756,9 @@ int CommandLine::Run(int argc, char* argv[])
 			++argi;
 			std::string weightArg = argv[argi];
 			if(weightArg == "natural")
-				settings.weightMode = WeightMode::NaturalWeighted;
+				settings.weightMode = WeightMode(WeightMode::NaturalWeighted);
 			else if(weightArg == "uniform")
-				settings.weightMode = WeightMode::UniformWeighted;
+				settings.weightMode = WeightMode(WeightMode::UniformWeighted);
 			else if(weightArg == "briggs")
 			{
 				++argi;
