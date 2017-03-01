@@ -1,3 +1,10 @@
+wsclean (2.3-1) UNRELEASED; urgency=low
+
+  * New upstream version 2.3
+  * Rediff patches
+
+ -- Ole Streicher <olebole@debian.org>  Wed, 01 Mar 2017 15:20:42 +0100
+
 wsclean (2.2.1-1) unstable; urgency=medium
 
   * New upstream version 2.2.1
