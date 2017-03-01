@@ -1,5 +1,5 @@
-#ifndef WSCLEAN_SETTNGS_H
-#define WSCLEAN_SETTNGS_H
+#ifndef WSCLEAN_SETTINGS_H
+#define WSCLEAN_SETTINGS_H
 
 #include "wstackinggridder.h"
 #include "inversionalgorithm.h"
@@ -8,6 +8,7 @@
 #include "../system.h"
 
 #include "../deconvolution/deconvolutionalgorithm.h"
+#include "../multiscale/multiscaletransforms.h"
 
 /**
  * This class describes all settings for a single WSClean run.
@@ -48,7 +49,8 @@ public:
 	std::set<size_t> spectralWindows;
 	WeightMode weightMode;
 	std::string prefixName;
-	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved, dftPrediction, dftWithBeam;
+	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved;
+	bool dftPrediction, dftWithBeam;
 	std::string temporaryDirectory;
 	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfsWeighting;
 	bool normalizeForWeighting;
@@ -65,6 +67,10 @@ public:
 	double deconvolutionThreshold, deconvolutionGain, deconvolutionMGain;
 	bool autoDeconvolutionThreshold, autoMask;
 	double autoDeconvolutionThresholdSigma, autoMaskSigma;
+	bool rmsBackground;
+	double rmsBackgroundWindow;
+	enum RMSBackgroundMethod { RMSWindow, RMSAndMinimumWindow } rmsBackgroundMethod;
+	bool saveComponentList;
 	size_t deconvolutionIterationCount;
 	bool allowNegativeComponents, stopOnNegativeComponents;
 	bool useMultiscale, useClarkOptimization, squaredJoins, forceDynamicJoin;
@@ -72,8 +78,11 @@ public:
 	double multiscaleGain, multiscaleDeconvolutionScaleBias;
 	bool multiscaleNormalizeResponse;
 	ao::uvector<double> multiscaleScaleList;
+	MultiScaleTransforms::Shape multiscaleShapeFunction;
+	
 	double deconvolutionBorderRatio;
 	std::string fitsDeconvolutionMask, casaDeconvolutionMask;
+	std::string rmsBackgroundImage;
 	bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
 	std::string moreSaneLocation, moreSaneArgs;
 	ao::uvector<double> moreSaneSigmaLevels;
@@ -164,6 +173,10 @@ inline WSCleanSettings::WSCleanSettings() :
 	autoMask(false),
 	autoDeconvolutionThresholdSigma(0.0),
 	autoMaskSigma(0.0),
+	rmsBackground(false),
+	rmsBackgroundWindow(25.0),
+	rmsBackgroundMethod(RMSWindow),
+	saveComponentList(false),
 	deconvolutionIterationCount(0),
 	allowNegativeComponents(true), 
 	stopOnNegativeComponents(false),
@@ -176,6 +189,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	multiscaleDeconvolutionScaleBias(0.6),
 	multiscaleNormalizeResponse(false),
 	multiscaleScaleList(),
+	multiscaleShapeFunction(MultiScaleTransforms::TaperedQuadraticShape),
 	deconvolutionBorderRatio(0.05),
 	fitsDeconvolutionMask(),
 	casaDeconvolutionMask(),

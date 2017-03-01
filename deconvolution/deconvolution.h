@@ -30,8 +30,10 @@ public:
 	const DeconvolutionAlgorithm& GetAlgorithm() const { return *_cleanAlgorithm; }
 	
 	bool IsInitialized() const { return _cleanAlgorithm != 0; }
+	
+	void SaveComponentList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const;
 private:
-	void calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies);
+	void calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights);
 	
 	const class WSCleanSettings& _settings;
 	
@@ -47,6 +49,7 @@ private:
 	ImageBufferAllocator* _imageAllocator;
 	CachedImageSet *_psfImages, *_modelImages, *_residualImages;
 	ao::uvector<bool> _autoMask;
+	double _beamSize, _pixelScaleX, _pixelScaleY;
 };
 
 #endif
