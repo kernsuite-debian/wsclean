@@ -6,6 +6,7 @@
 
 #include "spectralfitter.h"
 
+#include "../image.h"
 #include "../polarization.h"
 #include "../uvector.h"
 
@@ -80,12 +81,15 @@ public:
 		_spectralFitter.SetMode(mode, nTerms);
 	}
 	
-	void InitializeFrequencies(const ao::uvector<double>& frequencies)
+	void InitializeFrequencies(const ao::uvector<double>& frequencies, const ao::uvector<double>& weights)
 	{
-		_spectralFitter.SetFrequencies(frequencies.data(), frequencies.size());
+		_spectralFitter.SetFrequencies(frequencies.data(), weights.data(), frequencies.size());
 	}
 	
 	const SpectralFitter& Fitter() const { return _spectralFitter; }
+	
+	void SetRMSFactorImage(Image&& image) { _rmsFactorImage = std::move(image); }
+	const Image& RMSFactorImage() const { return _rmsFactorImage; }
 protected:
 	DeconvolutionAlgorithm();
 	
@@ -95,6 +99,7 @@ protected:
 	size_t _maxIter, _iterationNumber, _threadCount;
 	bool _allowNegativeComponents, _stopOnNegativeComponent;
 	const bool* _cleanMask;
+	Image _rmsFactorImage;
 	
 	SpectralFitter _spectralFitter;
 };
