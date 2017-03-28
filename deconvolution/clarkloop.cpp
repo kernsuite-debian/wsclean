@@ -1,6 +1,7 @@
 #include "clarkloop.h"
 
 #include "../deconvolution/spectralfitter.h"
+#include "../deconvolution/componentlist.h"
 
 #include "../fftconvolver.h"
 #include "../image.h"
@@ -11,6 +12,11 @@ template<bool AllowNegatives>
 size_t ClarkModel::GetMaxComponent(double* scratch, double& maxValue) const
 {
 	_residual->GetLinearIntegrated(scratch);
+	if(!_rmsFactorImage.empty())
+	{
+		for(size_t i=0; i!=size(); ++i)
+			scratch[i] *= _rmsFactorImage[i];
+	}
 	size_t maxComponent = 0;
 	maxValue = scratch[0];
 	for(size_t i=0; i!=size(); ++i)
@@ -36,6 +42,8 @@ double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const doubl
 	findPeakPositions(convolvedResidual);
 	
 	_clarkModel.MakeSets(convolvedResidual);
+	if(!_rmsFactorImage.empty())
+		_clarkModel.MakeRMSFactorImage(_rmsFactorImage);
 	Logger::Debug << "Number of components selected > " << _threshold << ": " << _clarkModel.size() << '\n';
 	
 	ao::uvector<double> scratch(_clarkModel.size());
@@ -68,7 +76,7 @@ double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const doubl
 				int psfX = _clarkModel.X(px) - x + _width/2;
 				int psfY = _clarkModel.Y(px) - y + _height/2;
 				if(psfX >= 0 && psfX < int(_width) && psfY >= 0 && psfY < int(_height))
-					image[px] -= psf[psfX + psfY*_height] * psfFactor;
+					image[px] -= psf[psfX + psfY*_width] * psfFactor;
 			}
 		}
 		
@@ -96,11 +104,25 @@ void ClarkModel::MakeSets(const ImageSet& residualSet)
 	}
 }
 
+void ClarkModel::MakeRMSFactorImage(Image& rmsFactorImage)
+{
+	_rmsFactorImage = Image(size(), 1, _residual->Allocator());
+	for(size_t pxIndex=0; pxIndex!=size(); ++pxIndex)
+	{
+		size_t srcIndex = _positions[pxIndex].second*_width + _positions[pxIndex].first;
+		_rmsFactorImage[pxIndex] = rmsFactorImage[srcIndex];
+	}
+}
+
 void ClarkLoop::findPeakPositions(ImageSet& convolvedResidual)
 {
-	ImageBufferAllocator::Ptr integratedScratch;
-	convolvedResidual.Allocator().Allocate(_width * _height, integratedScratch);
+	Image integratedScratch(_width, _height, convolvedResidual.Allocator());
 	convolvedResidual.GetLinearIntegrated(integratedScratch.data());
+	
+	if(!_rmsFactorImage.empty())
+	{
+		integratedScratch *= _rmsFactorImage;
+	}
 	
 	const size_t
 		xiStart = _horizontalBorder, xiEnd = std::max<long>(xiStart, _width - _horizontalBorder),
@@ -174,9 +196,34 @@ void ClarkLoop::CorrectResidualDirty(double* scratchA, double* scratchB, double*
 
 void ClarkLoop::UpdateAutoMask(bool* mask) const
 {
+	for(size_t imageIndex=0; imageIndex!=_clarkModel.Model().size(); ++imageIndex)
+	{
+		const double* image = _clarkModel.Model()[imageIndex];
+		for(size_t px=0; px!=_clarkModel.size(); ++px)
+		{
+			if(image[px] != 0.0)
+				mask[_clarkModel.FullIndex(px)] = true;
+		}
+	}
+}
+
+void ClarkLoop::UpdateComponentList(class ComponentList& list, size_t scaleIndex) const
+{
+	ao::uvector<double> values(_clarkModel.Model().size());
 	for(size_t px=0; px!=_clarkModel.size(); ++px)
 	{
-		if(_clarkModel.Model()[0][px] != 0.0)
-			mask[_clarkModel.FullIndex(px)] = true;
+		bool isNonZero = false;
+		for(size_t imageIndex=0; imageIndex!=_clarkModel.Model().size(); ++imageIndex)
+		{
+			values[imageIndex] = _clarkModel.Model()[imageIndex][px];
+			if(values[imageIndex] != 0.0)
+				isNonZero = true;
+		}
+		if(isNonZero)
+		{
+			size_t posIndex = _clarkModel.FullIndex(px);
+			size_t x = posIndex % _width, y = posIndex / _width;
+			list.Add(x, y, scaleIndex, values.data());
+		}
 	}
 }
