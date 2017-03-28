@@ -6,6 +6,13 @@ wsclean (2.4-1) unstable; urgency=low
 
  -- Ole Streicher <olebole@debian.org>  Sat, 24 Jun 2017 13:46:06 +0200
 
+wsclean (2.3-1) xenial; urgency=medium
+
+  *  new upstream release
+  * rediff patches
+
+ -- Gijs Molenaar (launchpad ppa build key) <gijs@pythonic.nl>  Tue, 28 Mar 2017 11:32:17 +0200
+
 wsclean (2.2.1-1kern1) xenial; urgency=medium
 
   * include lofar beam model
