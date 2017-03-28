@@ -56,6 +56,8 @@ void CommandLine::printHelp()
 		"-saveuv\n"
 		"   Save the gridded uv plane, i.e., the FFT of the residual image. The UV plane is complex, hence\n"
 		"   two images will be output: <prefix>-uv-real.fits and <prefix>-uv-imag.fits.\n"
+		"-save-uv-bins <psf limit>\n"
+		"   Saves a csv file with the gridded visibilities, including their weights.\n"
 		"-apply-primary-beam\n"
 		"   Calculate and apply the primary beam and save images for the Jones components, with weighting identical to the\n"
 		"   weighting as used by the imager. Only available for LOFAR.\n"
@@ -207,6 +209,13 @@ void CommandLine::printHelp()
 		"-auto-mask <sigma>\n"
 		"   Construct a mask from found components and when a threshold of sigma is reached, continue\n"
 		"   cleaning with the mask down to the normal threshold. \n"
+		"-rms-background\n"
+		"   Instead of using a single RMS for auto thresholding/masking, use a spatially varying\n"
+		"   RMS image.\n"
+		"-rms-background-window\n"
+		"   Size of window for creating the RMS background map, in number of PSFs. Default: 25 psfs.\n"
+		"-rms-background-method\n"
+		"   Either 'rms' (default, uses sliding window RMS) or 'rms-with-min' (use max(window rms,1.5/5window min)).\n"
 		"-gain <gain>\n"
 		"   Cleaning gain: Ratio of peak that will be subtracted in each iteration. Default: 0.1\n"
 		"-mgain <gain>\n"
@@ -234,6 +243,11 @@ void CommandLine::printHelp()
 		"   Sets a list of scales to use in multi-scale cleaning. If unset, WSClean will select the delta\n"
 		"   (zero) scale, scales starting at four times the synthesized PSF, and increase by a factor of\n"
 		"   two until the maximum scale is reached. Example: -multiscale-scales 0,5,12.5\n"
+		"-multiscale-shape <shape>\n"
+		"   Sets the shape function used during multi-scale clean. Either 'tapered-quadratic' (default) or 'gaussian'.\n"
+		"-multiscale-gain <gain>\n"
+		"   Size of step made in the subminor loop of multi-scale. Default currently 0.2, but shows sign of instability.\n"
+		"   A value of 0.1 might be more stable.\n"
 		"-no-multiscale-fast-subminor\n"
 		"   Disable the 'fast subminor loop' optimization, that will only search a part of the\n"
 		"   image during the multi-scale subminor loop. The optimization is on by default.\n"
@@ -250,6 +264,9 @@ void CommandLine::printHelp()
 		"-moresane-sl <sl1,sl2,...>\n"
 		"   MoreSane --sigmalevel setting for each major loop iteration. Useful to start at high\n"
 		"   levels and go down with subsequent loops, e.g. 20,10,5\n"
+		"-save-component-list\n"
+		"   Saves the found clean components as a sky model. To do so, Gaussian shapes will be used\n"
+		"   during multi-scale cleaning.\n"
 		"-cleanborder <percentage>\n"
 		"   Set the border size in which no cleaning is performed, in percentage of the width/height of the image.\n"
 		"   With an image size of 1000 and clean border of 1%, each border is 10 pixels. \n"
@@ -326,7 +343,7 @@ void CommandLine::printHeader()
 size_t CommandLine::parse_size_t(const char* param, const char* name)
 {
 	char* endptr;
-	errno=0;
+	errno = 0;
 	long v = strtol(param, &endptr, 0);
 	if(*endptr!=0 || endptr == param || errno!=0) {
 		std::ostringstream msg;
@@ -482,6 +499,34 @@ int CommandLine::Run(int argc, char* argv[])
 			++argi;
 			settings.autoMask = true;
 			settings.autoMaskSigma = atof(argv[argi]);
+		}
+		else if(param == "rms-background")
+		{
+			settings.rmsBackground = true;
+		}
+		else if(param == "rms-background-window")
+		{
+			++argi;
+			settings.rmsBackground = true;
+			settings.rmsBackgroundWindow = atof(argv[argi]);
+		}
+		else if(param == "rms-background-image")
+		{
+			++argi;
+			settings.rmsBackground = true;
+			settings.rmsBackgroundImage = argv[argi];
+		}
+		else if(param == "rms-background-method")
+		{
+			++argi;
+			std::string method = argv[argi];
+			settings.rmsBackground = true;
+			if(method == "rms")
+				settings.rmsBackgroundMethod = WSCleanSettings::RMSWindow;
+			else if(method == "rms-with-min")
+				settings.rmsBackgroundMethod = WSCleanSettings::RMSAndMinimumWindow;
+			else
+				throw std::runtime_error("Unknown RMS background method specified");
 		}
 		else if(param == "datacolumn")
 		{
@@ -680,6 +725,16 @@ int CommandLine::Run(int argc, char* argv[])
 			++argi;
 			NumberList::ParseDoubleList(argv[argi], settings.multiscaleScaleList);
 		}
+		else if(param == "multiscale-shape")
+		{
+			++argi;
+			std::string shape = argv[argi];
+			if(shape == "tapered-quadratic")
+				settings.multiscaleShapeFunction = MultiScaleTransforms::TaperedQuadraticShape;
+			else if(shape == "gaussian")
+				settings.multiscaleShapeFunction = MultiScaleTransforms::GaussianShape;
+			else throw std::runtime_error("Unknown multiscale shape function given");
+		}
 		else if(param == "no-multiscale-fast-subminor")
 		{
 			settings.multiscaleFastSubMinorLoop = false;
@@ -693,6 +748,11 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			++argi;
 			settings.rankFilterSize = parse_size_t(argv[argi], "weighting-rank-filter-size");
+		}
+		else if(param == "save-component-list")
+		{
+			settings.saveComponentList = true;
+			settings.multiscaleShapeFunction = MultiScaleTransforms::GaussianShape;
 		}
 		else if(param == "cleanborder")
 		{
@@ -919,6 +979,8 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "use-idg")
 		{
 			settings.useIDG = true;
+			//settings.polarizations.clear();
+			//settings.polarizations.insert(Polarization::Instrumental);
 		}
 		else if(param == "no-dirty")
 		{

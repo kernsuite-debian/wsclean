@@ -1,5 +1,6 @@
 #include "genericclean.h"
-#include "../multiscale/clarkloop.h"
+
+#include "clarkloop.h"
 
 #include "../lane.h"
 
@@ -16,8 +17,6 @@ GenericClean::GenericClean(ImageBufferAllocator& allocator, bool clarkOptimizati
 
 void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const ao::uvector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold)
 {
-	Logger::Debug << "Running dynamically-joined clean algorithm.\n";
-	
 	const size_t iterationCounterAtStart = _iterationNumber;
 	if(_stopOnNegativeComponent)
 		_allowNegativeComponents = true;
@@ -36,7 +35,7 @@ void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet,
 	_allocator.Allocate(_convolutionWidth*_convolutionHeight, scratchB);
 	dirtySet.GetSquareIntegrated(integrated.data(), scratchA.data());
 	size_t componentX=0, componentY=0;
-	double maxValue = findPeak(integrated.data(), componentX, componentY);
+	double maxValue = findPeak(integrated.data(), scratchA.data(), componentX, componentY);
 	Logger::Info << "Initial peak: " << peakDescription(integrated.data(), componentX, componentY) << '\n';
 	double firstThreshold = this->_threshold;
 	double stopGainThreshold = std::fabs(maxValue)*(1.0-this->_mGain);
@@ -48,16 +47,18 @@ void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet,
 	else if(this->_mGain != 1.0) {
 		Logger::Info << "Major iteration threshold reached global threshold of " << this->_threshold << ": final major iteration.\n";
 	}
-		
+	
 	if(_useClarkOptimization)
 	{
 		size_t startIteration = _iterationNumber;
 		ClarkLoop clarkLoop(_width, _height, _convolutionWidth, _convolutionHeight);
 		clarkLoop.SetIterationInfo(_iterationNumber, MaxNIter());
-		clarkLoop.SetThreshold(firstThreshold);
+		clarkLoop.SetThreshold(firstThreshold, firstThreshold*0.99);
 		clarkLoop.SetGain(Gain());
 		clarkLoop.SetAllowNegativeComponents(AllowNegativeComponents());
 		clarkLoop.SetSpectralFitter(&Fitter());
+		if(!_rmsFactorImage.empty())
+			clarkLoop.SetRMSFactorImage(_rmsFactorImage);
 		if(_cleanMask)
 			clarkLoop.SetMask(_cleanMask);
 		const size_t
@@ -113,7 +114,7 @@ void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet,
 			}
 			
 			dirtySet.GetSquareIntegrated(integrated.data(), scratchA.data());
-			maxValue = findPeak(integrated.data(), componentX, componentY);
+			maxValue = findPeak(integrated.data(), scratchA.data(), componentX, componentY);
 			
 			peakIndex = componentX + componentY*_width;
 			
@@ -133,10 +134,25 @@ std::string GenericClean::peakDescription(const double* image, size_t& x, size_t
 	return str.str();
 }
 
-double GenericClean::findPeak(const double* image, size_t& x, size_t& y)
+double GenericClean::findPeak(const double* image, double* scratch, size_t& x, size_t& y)
 {
-	if(_cleanMask == 0)
-		return SimpleClean::FindPeak(image, _width, _height, x, y, _allowNegativeComponents, 0, _height, _cleanBorderRatio);
-	else
-		return SimpleClean::FindPeakWithMask(image, _width, _height, x, y, _allowNegativeComponents, 0, _height, _cleanMask, _cleanBorderRatio);
+	if(_rmsFactorImage.empty())
+	{
+		if(_cleanMask == 0)
+			return SimpleClean::FindPeak(image, _width, _height, x, y, _allowNegativeComponents, 0, _height, _cleanBorderRatio);
+		else
+			return SimpleClean::FindPeakWithMask(image, _width, _height, x, y, _allowNegativeComponents, 0, _height, _cleanMask, _cleanBorderRatio);
+	}
+	else {
+		for(size_t i=0; i!=_width*_height; ++i)
+		{
+			scratch[i] = image[i] * _rmsFactorImage[i];
+		}
+		double maxValue;
+		if(_cleanMask == 0)
+			maxValue = SimpleClean::FindPeak(scratch, _width, _height, x, y, _allowNegativeComponents, 0, _height, _cleanBorderRatio);
+		else
+			maxValue = SimpleClean::FindPeakWithMask(scratch, _width, _height, x, y, _allowNegativeComponents, 0, _height, _cleanMask, _cleanBorderRatio);
+		return maxValue;
+	}
 }

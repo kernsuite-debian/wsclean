@@ -10,11 +10,16 @@
 #include "../casamaskreader.h"
 #include "../fitsreader.h"
 #include "../image.h"
+#include "../ndppp.h"
+#include "../rmsimage.h"
 
+#include "../wsclean/imagefilename.h"
 #include "../wsclean/imagingtable.h"
 #include "../wsclean/wscleansettings.h"
 
-Deconvolution::Deconvolution(const class WSCleanSettings& settings) : _settings(settings), _autoMaskIsFinished(false)
+Deconvolution::Deconvolution(const class WSCleanSettings& settings) :
+	_settings(settings), _autoMaskIsFinished(false),
+	_beamSize(0.0), _pixelScaleX(0.0), _pixelScaleY(0.0)
 {
 }
 
@@ -36,15 +41,56 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	residualSet.LoadAndAverage(*_residualImages);
 	modelSet.LoadAndAverage(*_modelImages);
 	
-	ImageBufferAllocator::Ptr integrated;
-	_imageAllocator->Allocate(_imgWidth * _imgHeight, integrated);
+	Image integrated(_imgWidth, _imgHeight, *_imageAllocator);
 	residualSet.GetLinearIntegrated(integrated.data());
-	double stddev = Image::StdDevFromMAD(integrated.data(), _imgWidth * _imgHeight);
+	double stddev = integrated.StdDevFromMAD();
 	Logger::Info << "Estimated standard deviation of background noise: " << stddev << " Jy\n";
-	if(_settings.autoDeconvolutionThreshold && (!_settings.autoMask || _autoMaskIsFinished))
-		_cleanAlgorithm->SetThreshold(std::max(stddev * _settings.autoDeconvolutionThresholdSigma, _settings.deconvolutionThreshold));
-	else if(_settings.autoMask && !_autoMaskIsFinished)
+	if(_settings.autoMask && _autoMaskIsFinished)
+	{
+		// When we are in the second phase of automasking, don't use
+		// the RMS background anymore
+		_cleanAlgorithm->SetRMSFactorImage(Image());
+	}
+	else {
+		if(!_settings.rmsBackgroundImage.empty())
+		{
+			Image rmsImage(_imgWidth, _imgHeight, *_imageAllocator);
+			FitsReader reader(_settings.rmsBackgroundImage);
+			reader.Read(rmsImage.data());
+			// Normalize the RMS image
+			stddev = rmsImage.Min();
+			Logger::Info << "Lowest RMS in image: " << stddev << '\n';
+			if(stddev <= 0.0)
+				throw std::runtime_error("RMS image can only contain values > 0, but contains values <= 0.0");
+			for(double& value : rmsImage)
+				value = stddev / value;
+			_cleanAlgorithm->SetRMSFactorImage(std::move(rmsImage));
+		}
+		else if(_settings.rmsBackground)
+		{
+			Image rmsImage;
+			// TODO this should use full beam parameters
+			switch(_settings.rmsBackgroundMethod)
+			{
+				case WSCleanSettings::RMSWindow:
+					RMSImage::Make(rmsImage, integrated, _settings.rmsBackgroundWindow, _beamSize, _beamSize, 0.0, _pixelScaleX, _pixelScaleY);
+					break;
+				case WSCleanSettings::RMSAndMinimumWindow:
+					RMSImage::MakeWithNegativityLimit(rmsImage, integrated, _settings.rmsBackgroundWindow, _beamSize, _beamSize, 0.0, _pixelScaleX, _pixelScaleY);
+					break;
+			}
+			// Normalize the RMS image relative to the threshold so that Jy remains Jy.
+			stddev = rmsImage.Min();
+			Logger::Info << "Lowest RMS in image: " << stddev << '\n';
+			for(double& value : rmsImage)
+				value = stddev / value;
+			_cleanAlgorithm->SetRMSFactorImage(std::move(rmsImage));
+		}
+	}
+	if(_settings.autoMask && !_autoMaskIsFinished)
 		_cleanAlgorithm->SetThreshold(std::max(stddev * _settings.autoMaskSigma, _settings.deconvolutionThreshold));
+	else if(_settings.autoDeconvolutionThreshold)
+		_cleanAlgorithm->SetThreshold(std::max(stddev * _settings.autoDeconvolutionThresholdSigma, _settings.deconvolutionThreshold));
 	integrated.reset();
 	
 	std::vector<ao::uvector<double>> psfVecs(groupTable.SquaredGroupCount());
@@ -95,8 +141,6 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	}
 	
 	residualSet.AssignAndStore(*_residualImages);
-	
-	SpectralFitter fitter(_settings.spectralFittingMode, _settings.spectralFittingTerms);
 	modelSet.InterpolateAndStore(*_modelImages, _cleanAlgorithm->Fitter());
 }
 
@@ -111,6 +155,10 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	_imgWidth = imgWidth;
 	_imgHeight = imgHeight;
 	_psfPolarization = psfPolarization;
+	_beamSize = beamSize;
+	_pixelScaleX = pixelScaleX;
+	_pixelScaleY = pixelScaleY;
+	_autoMaskIsFinished = false;
 	FreeDeconvolutionAlgorithms();
 	
 	_summedCount = groupTable.SquaredGroupCount();
@@ -146,6 +194,8 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 		algorithm->SetMultiscaleScaleBias(_settings.multiscaleDeconvolutionScaleBias);
 		algorithm->SetMultiscaleNormalizeResponse(_settings.multiscaleNormalizeResponse);
 		algorithm->SetMultiscaleGain(_settings.multiscaleGain);
+		algorithm->SetShape(_settings.multiscaleShapeFunction);
+		algorithm->SetTrackComponents(_settings.saveComponentList);
 	}
 	else
 	{
@@ -162,9 +212,9 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	_cleanAlgorithm->SetThreadCount(threadCount);
 	_cleanAlgorithm->SetSpectralFittingMode(_settings.spectralFittingMode, _settings.spectralFittingTerms);
 	
-	ao::uvector<double> frequencies;
-	calculateDeconvolutionFrequencies(groupTable, frequencies);
-	_cleanAlgorithm->InitializeFrequencies(frequencies);
+	ao::uvector<double> frequencies, weights;
+	calculateDeconvolutionFrequencies(groupTable, frequencies, weights);
+	_cleanAlgorithm->InitializeFrequencies(frequencies, weights);
 	
 	if(!_settings.fitsDeconvolutionMask.empty())
 	{
@@ -181,8 +231,7 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 				_cleanMask[i] = maskData[i]!=0.0;
 		}
 		_cleanAlgorithm->SetCleanMask(_cleanMask.data());
-	}
-	else if(!_settings.casaDeconvolutionMask.empty())
+	} else if(!_settings.casaDeconvolutionMask.empty())
 	{
 		if(_cleanMask.empty())
 		{
@@ -197,19 +246,33 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	}
 }
 
-void Deconvolution::calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies)
+void Deconvolution::calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights)
 {
 	size_t deconvolutionChannels = _settings.deconvolutionChannelCount;
 	if(deconvolutionChannels == 0) deconvolutionChannels = _summedCount;
 	frequencies.assign(deconvolutionChannels, 0.0);
-	ao::uvector<size_t> weights(deconvolutionChannels, 0);
+	weights.assign(deconvolutionChannels, 0.0);
+	ao::uvector<size_t> counts(deconvolutionChannels, 0);
 	for(size_t i=0; i!=_summedCount; ++i)
 	{
-		double freq = groupTable.GetSquaredGroup(i)[0].CentralFrequency();
+		const ImagingTableEntry& entry = groupTable.GetSquaredGroup(i)[0];
+		double freq = entry.CentralFrequency();
 		size_t deconvolutionChannel = i * deconvolutionChannels / _summedCount;
 		frequencies[deconvolutionChannel] += freq;
-		weights[deconvolutionChannel]++;
+		Logger::Debug << "Weight: " << entry.imageWeight << '\n';
+		weights[deconvolutionChannel] += entry.imageWeight;
+		counts[deconvolutionChannel]++;
 	}
 	for(size_t i=0; i!=deconvolutionChannels; ++i)
-		frequencies[i] /= weights[i];
+		frequencies[i] /= counts[i];
+}
+
+void Deconvolution::SaveComponentList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const
+{
+	if(_settings.useMultiscale)
+	{
+		MultiScaleAlgorithm& algorithm = static_cast<MultiScaleAlgorithm&>(*_cleanAlgorithm.get());
+		algorithm.GetComponentList().Write(algorithm, _settings, _pixelScaleX, _pixelScaleY, phaseCentreRA, phaseCentreDec);
+	}
+	else throw std::runtime_error("Saving a component list is currently only implemented for multi-scale clean");
 }
