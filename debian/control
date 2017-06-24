@@ -14,7 +14,7 @@ Build-Depends: casacore-dev,
                libcfitsio-dev | libcfitsio3-dev,
                libfftw3-dev,
                libgsl0-dev
-Standards-Version: 3.9.8
+Standards-Version: 4.0.0
 Vcs-Git: https://anonscm.debian.org/git/debian-astro/packages/wsclean.git
 Vcs-Browser: https://anonscm.debian.org/cgit/debian-astro/packages/wsclean.git
 Homepage: http://sourceforge.net/projects/wsclean/
