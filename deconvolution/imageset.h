@@ -99,6 +99,8 @@ public:
 	
 	void LoadAndAveragePSFs(class CachedImageSet& psfSet, std::vector<ao::uvector<double>>& psfImages, PolarizationEnum psfPolarization);
 	
+	void LoadAveragePrimaryBeam(class PrimaryBeamImageSet& beamImages, const class WSCleanSettings& settings, size_t imageIndex);
+	
 	void InterpolateAndStore(class CachedImageSet& imageSet, const class SpectralFitter& fitter);
 	
 	void AssignAndStore(class CachedImageSet& imageSet);
@@ -238,6 +240,12 @@ private:
 	void assign(double* lhs, const ImageBufferAllocator::Ptr& rhs) const
 	{
 		memcpy(lhs, rhs.data(), sizeof(double) * _imageSize);
+	}
+	
+	void assignMultiply(double* lhs, const double* rhs, double factor) const
+	{
+		for(size_t i=0; i!=_imageSize; ++i)
+			lhs[i] = rhs[i] * factor;
 	}
 	
 	void assign(double* image, double value) const

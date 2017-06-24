@@ -5,7 +5,8 @@
 #include "../msproviders/msprovider.h"
 
 #include "../imageweights.h"
-#include "../angle.h"
+
+#include "../units/angle.h"
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 #include <casacore/measures/Measures/MDirection.h>
@@ -24,7 +25,7 @@ MSGridderBase::MSData::~MSData()
 
 MSGridderBase::MSGridderBase() :
 	MeasurementSetGridder(),
-	_beamSize(0.0),
+	_theoreticalBeamSize(0.0),
 	_actualInversionWidth(0), _actualInversionHeight(0),
 	_actualPixelSizeX(0), _actualPixelSizeY(0),
 	_hasFrequencies(false),
@@ -183,6 +184,21 @@ void MSGridderBase::initializeMSDataVector(std::vector<MSGridderBase::MSData>& m
 	calculateOverallMetaData(msDataVector.data());
 }
 
+void MSGridderBase::initializeMetaData(casacore::MeasurementSet& ms, size_t fieldId)
+{
+	casacore::MSObservation oTable = ms.observation();
+	size_t obsCount = oTable.nrow();
+	if(obsCount == 0) throw std::runtime_error("No observations in set");
+	casacore::ROScalarColumn<casacore::String> telescopeNameColumn(oTable, oTable.columnName(casacore::MSObservation::TELESCOPE_NAME));
+	casacore::ROScalarColumn<casacore::String> observerColumn(oTable, oTable.columnName(casacore::MSObservation::OBSERVER));
+	_telescopeName = telescopeNameColumn(0);
+	_observer = observerColumn(0);
+	
+	casacore::MSField fTable = ms.field();
+	casacore::ROScalarColumn<casacore::String> fieldNameColumn(fTable, fTable.columnName(casacore::MSField::NAME));
+	_fieldName = fieldNameColumn(fieldId);
+}
+
 void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData)
 {
 	MSProvider& msProvider = MeasurementSet(msData.msIndex);
@@ -196,7 +212,12 @@ void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData)
 	
 	initializePhaseCentre(ms, Selection(msData.msIndex).FieldId());
 	
-	calculateWLimits<1>(msData);
+	initializeMetaData(ms, Selection(msData.msIndex).FieldId());
+	
+	if (msProvider.Polarization() == Polarization::Instrumental)
+		calculateWLimits<4>(msData);
+	else
+		calculateWLimits<1>(msData);
 }
 
 void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
@@ -221,8 +242,8 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
 			"***\n";
 	}
 	
-	_beamSize = 1.0 / maxBaseline;
-	Logger::Info << "Theoretic beam = " << Angle::ToNiceString(_beamSize) << "\n";
+	_theoreticalBeamSize = 1.0 / maxBaseline;
+	Logger::Info << "Theoretic beam = " << Angle::ToNiceString(_theoreticalBeamSize) << "\n";
 	if(HasWLimit()) {
 		_maxW *= (1.0 - WLimit());
 		if(_maxW < _minW) _maxW = _minW;
@@ -239,8 +260,8 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
 	if(SmallInversion())
 	{
 		size_t optWidth, optHeight, minWidth, minHeight;
-		SmallInversionOptimization::DetermineOptimalSize(_actualInversionWidth, _actualPixelSizeX, _beamSize, minWidth, optWidth);
-		SmallInversionOptimization::DetermineOptimalSize(_actualInversionHeight, _actualPixelSizeY, _beamSize, minHeight, optHeight);
+		SmallInversionOptimization::DetermineOptimalSize(_actualInversionWidth, _actualPixelSizeX, _theoreticalBeamSize, minWidth, optWidth);
+		SmallInversionOptimization::DetermineOptimalSize(_actualInversionHeight, _actualPixelSizeY, _theoreticalBeamSize, minHeight, optHeight);
 		if(optWidth < _actualInversionWidth || optHeight < _actualInversionHeight)
 		{
 			size_t newWidth = std::max(std::min(optWidth, _actualInversionWidth), size_t(32));

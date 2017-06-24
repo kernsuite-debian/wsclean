@@ -9,7 +9,8 @@
 #include "primarybeam.h"
 #include "imagefilename.h"
 
-#include "../angle.h"
+#include "../units/angle.h"
+
 #include "../application.h"
 #include "../areaset.h"
 #include "../dftpredictionalgorithm.h"
@@ -322,7 +323,8 @@ void WSClean::initializeMFSImageWeights()
 					bool hasSelection = selectChannels(partSelection, msIndex, dataDescId, subTable.Front());
 					if(hasSelection)
 					{
-						PartitionedMS msProvider(_partitionedMSHandles[msIndex], ms.bands[dataDescId].partIndex, entry.polarization, dataDescId);
+						PolarizationEnum pol = _settings.useIDG ? Polarization::Instrumental : entry.polarization;
+						PartitionedMS msProvider(_partitionedMSHandles[msIndex], ms.bands[dataDescId].partIndex, pol, dataDescId);
 						_imageWeightCache->Weights().Grid(msProvider, partSelection);
 					}
 				}
@@ -334,7 +336,8 @@ void WSClean::initializeMFSImageWeights()
 		{
 			for(size_t d=0; d!=_msBands[i].DataDescCount(); ++d)
 			{
-				ContiguousMS msProvider(_settings.filenames[i], _settings.dataColumnName, _globalSelection, *_settings.polarizations.begin(), d, _settings.deconvolutionMGain != 1.0);
+				PolarizationEnum pol = _settings.useIDG ? Polarization::Instrumental : *_settings.polarizations.begin();
+				ContiguousMS msProvider(_settings.filenames[i], _settings.dataColumnName, _globalSelection, pol, d, _settings.deconvolutionMGain != 1.0);
 				_imageWeightCache->Weights().Grid(msProvider,  _globalSelection);
 				Logger::Info << '.';
 				Logger::Info.Flush();
@@ -471,7 +474,11 @@ void WSClean::RunClean()
 				bool psfWasMade = (_settings.deconvolutionIterationCount > 0 || _settings.makePSF || _settings.makePSFOnly) && pol == _settings.polarizations.begin();
 				
 				if(psfWasMade)
+				{
 					makeMFSImage("psf.fits", intervalIndex, *pol, false, true);
+					if(_settings.savePsfPb)
+						makeMFSImage("psf-pb.fits", intervalIndex, *pol, false, true);
+				}
 				
 				if(!(*pol == Polarization::YX && _settings.polarizations.count(Polarization::XY)!=0) && !_settings.makePSFOnly)
 				{
@@ -569,10 +576,18 @@ void WSClean::RunPredict()
 		
 		if(_doReorder) performReordering(true);
 		
+		if(_settings.useIDG)
+			_gridder.reset(new IdgMsGridder());
+		else
+			_gridder.reset(new WSMSGridder(&_imageAllocator, _settings.threadCount, _settings.memFraction, _settings.absMemLimit));
+	
 		for(size_t groupIndex=0; groupIndex!=_imagingTable.SquaredGroupCount(); ++groupIndex)
 		{
 			predictGroup(_imagingTable.GetSquaredGroup(groupIndex));
 		}
+	
+		// Needs to be destructed before image allocator, or image allocator will report error caused by leaked memory
+		_gridder.reset();
 	}
 }
 
@@ -620,6 +635,19 @@ bool WSClean::selectChannels(MSSelection& selection, size_t msIndex, size_t data
 	}
 }
 
+double WSClean::minTheoreticalBeamSize(const ImagingTable& table) const
+{
+	double beam = 0.0;
+	for(size_t i=0; i!=table.EntryCount(); ++i)
+	{
+		const ImagingTableEntry& e = table[i];
+		const OutputChannelInfo& info = _infoPerChannel[e.outputChannelIndex];
+		if(std::isfinite(info.theoreticBeamSize) && (info.theoreticBeamSize < beam || beam == 0.0))
+			beam = info.theoreticBeamSize;
+	}
+	return beam;
+}
+
 void WSClean::runIndependentGroup(ImagingTable& groupTable)
 {
 	WSCFitsWriter writer(createWSCFitsWriter(groupTable.Front(), false));
@@ -636,7 +664,7 @@ void WSClean::runIndependentGroup(ImagingTable& groupTable)
 		runFirstInversion(entry);
 	}
 	
-	_deconvolution.InitializeDeconvolutionAlgorithm(groupTable, *_settings.polarizations.begin(), &_imageAllocator, _settings.trimmedImageWidth, _settings.trimmedImageHeight, _settings.pixelScaleX, _settings.pixelScaleY, _settings.channelsOut, _gridder->BeamSize(), _settings.threadCount);
+	_deconvolution.InitializeDeconvolutionAlgorithm(groupTable, *_settings.polarizations.begin(), &_imageAllocator, _settings.trimmedImageWidth, _settings.trimmedImageHeight, _settings.pixelScaleX, _settings.pixelScaleY, minTheoreticalBeamSize(groupTable), _settings.threadCount);
 
 	if(!_settings.makePSFOnly)
 	{
@@ -703,10 +731,14 @@ void WSClean::runIndependentGroup(ImagingTable& groupTable)
 		
 		for(size_t joinedIndex=0; joinedIndex!=groupTable.EntryCount(); ++joinedIndex)
 			saveRestoredImagesForGroup(groupTable[joinedIndex]);
-		if(_settings.saveComponentList)
-		{
-			_deconvolution.SaveComponentList(groupTable, _gridder->PhaseCentreRA(), _gridder->PhaseCentreDec());
-		}
+		if(_settings.saveSourceList)
+    {
+			_deconvolution.SaveSourceList(groupTable, _gridder->PhaseCentreRA(), _gridder->PhaseCentreDec());
+			if(_settings.applyPrimaryBeam)
+			{
+				_deconvolution.SavePBSourceList(groupTable, _gridder->PhaseCentreRA(), _gridder->PhaseCentreDec());
+			}
+    }
 	}
 	
 	_imageAllocator.ReportStatistics();
@@ -768,6 +800,8 @@ void WSClean::saveRestoredImagesForGroup(const ImagingTableEntry& tableEntry) co
 		{
 			ImageFilename imageName = ImageFilename(currentChannelIndex, tableEntry.outputIntervalIndex);
 			_primaryBeam->CorrectImages(writer.Writer(), imageName, "image", _imageAllocator);
+			if(_settings.savePsfPb)
+				_primaryBeam->CorrectImages(writer.Writer(), imageName, "psf", _imageAllocator);
 			if(_settings.deconvolutionIterationCount != 0)
 			{
 				_primaryBeam->CorrectImages(writer.Writer(), imageName, "residual", _imageAllocator);
@@ -889,11 +923,6 @@ void WSClean::readEarlierModelImages(const ImagingTableEntry& entry)
 
 void WSClean::predictGroup(const ImagingTable& imagingGroup)
 {
-	if(_settings.useIDG)
-		_gridder.reset(new IdgMsGridder());
-	else
-		_gridder.reset(new WSMSGridder(&_imageAllocator, _settings.threadCount, _settings.memFraction, _settings.absMemLimit));
-	
 	_modelImages.Initialize(
 		createWSCFitsWriter(imagingGroup.Front(), false).Writer(),
 		_settings.polarizations.size(), 1, _settings.prefixName + "-model", _imageAllocator
@@ -920,17 +949,15 @@ void WSClean::predictGroup(const ImagingTable& imagingGroup)
 	Logger::Info << "Inversion: " << _inversionWatch.ToString() << ", prediction: " << _predictingWatch.ToString() << ", cleaning: " << _deconvolutionWatch.ToString() << '\n';
 	
 	_settings.prefixName = rootPrefix;
-	
-	// Needs to be destructed before image allocator, or image allocator will report error caused by leaked memory
-	_gridder.reset();
 }
 
 MSProvider* WSClean::initializeMSProvider(const ImagingTableEntry& entry, const MSSelection& selection, size_t filenameIndex, size_t dataDescId)
 {
+	PolarizationEnum pol = _settings.useIDG ? Polarization::Instrumental : entry.polarization;
 	if(_doReorder)
-		return new PartitionedMS(_partitionedMSHandles[filenameIndex], entry.msData[filenameIndex].bands[dataDescId].partIndex, entry.polarization, dataDescId);
+		return new PartitionedMS(_partitionedMSHandles[filenameIndex], entry.msData[filenameIndex].bands[dataDescId].partIndex, pol, dataDescId);
 	else
-		return new ContiguousMS(_settings.filenames[filenameIndex], _settings.dataColumnName, selection, entry.polarization, dataDescId, _settings.deconvolutionMGain != 1.0);
+		return new ContiguousMS(_settings.filenames[filenameIndex], _settings.dataColumnName, selection, pol, dataDescId, _settings.deconvolutionMGain != 1.0);
 }
 
 void WSClean::initializeCurMSProviders(const ImagingTableEntry& entry)
@@ -1168,7 +1195,6 @@ void WSClean::renderMFSImage(size_t intervalIndex, PolarizationEnum pol, bool is
 	residualReader.Read(image.data());
 	modelReader.Read(modelImage.data());
 	
-	//ModelRenderer renderer(_fitsWriter.RA(), _fitsWriter.Dec(), _settings.pixelScaleX, _settings.pixelScaleY, _fitsWriter.PhaseCentreDL(), _fitsWriter.PhaseCentreDM());
 	double beamMaj = _infoForMFS.beamMaj;
 	double beamMin, beamPA;
 	std::string beamStr;
@@ -1401,11 +1427,23 @@ void WSClean::fitBeamSize(double& bMaj, double& bMin, double& bPA, const double*
 	GaussianFitter beamFitter;
 	Logger::Info << "Fitting beam... ";
 	Logger::Info.Flush();
-	beamFitter.Fit2DGaussianCentred(
-		image,
-		_settings.trimmedImageWidth, _settings.trimmedImageHeight,
-		beamEstimate,
-		bMaj, bMin, bPA);
+	if(_settings.circularBeam)
+	{
+		bMaj = beamEstimate;
+		beamFitter.Fit2DCircularGaussianCentred(
+			image,
+			_settings.trimmedImageWidth, _settings.trimmedImageHeight,
+			bMaj);
+		bMin = bMaj;
+		bPA = 0.0;
+	}
+	else {
+		beamFitter.Fit2DGaussianCentred(
+			image,
+			_settings.trimmedImageWidth, _settings.trimmedImageHeight,
+			beamEstimate,
+			bMaj, bMin, bPA);
+	}
 	if(bMaj < 1.0) bMaj = 1.0;
 	if(bMin < 1.0) bMin = 1.0;
 	bMaj = bMaj*0.5*(_settings.pixelScaleX+_settings.pixelScaleY);
@@ -1425,12 +1463,6 @@ void WSClean::determineBeamSize(double& bMaj, double& bMin, double& bPA, const d
 		Logger::Info << "major=" << Angle::ToNiceString(bMaj) << ", minor=" <<
 		Angle::ToNiceString(bMin) << ", PA=" << Angle::ToNiceString(bPA) << ", theoretical=" <<
 		Angle::ToNiceString(theoreticBeam)<< ".\n";
-		
-		if(_settings.circularBeam)
-		{
-			bMin = bMaj;
-			bPA = 0.0;
-		}
 	}
 	else if(_settings.theoreticBeam) {
 		bMaj = theoreticBeam;
