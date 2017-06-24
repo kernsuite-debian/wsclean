@@ -15,7 +15,7 @@ public:
 	
 	void Perform(const class ImagingTable& groupTable, bool& reachedMajorThreshold, size_t majorIterationNr);
 	
-	void InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, PolarizationEnum psfPolarization, ImageBufferAllocator* imageAllocator, size_t imgWidth, size_t imgHeight, double pixelScaleX, double pixelScaleY, size_t outputChannels, double beamSize, size_t threadCount);
+	void InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, PolarizationEnum psfPolarization, ImageBufferAllocator* imageAllocator, size_t imgWidth, size_t imgHeight, double pixelScaleX, double pixelScaleY, double beamSize, size_t threadCount);
 	
 	void InitializeImages(class CachedImageSet& residuals, CachedImageSet& models, CachedImageSet& psfs)
 	{
@@ -31,7 +31,10 @@ public:
 	
 	bool IsInitialized() const { return _cleanAlgorithm != 0; }
 	
-	void SaveComponentList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const;
+	void SaveSourceList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const;
+	
+	void SavePBSourceList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const;
+
 private:
 	void calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights);
 	

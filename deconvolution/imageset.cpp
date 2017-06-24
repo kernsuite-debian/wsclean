@@ -3,6 +3,8 @@
 
 #include "../wsclean/cachedimageset.h"
 #include "../wsclean/logger.h"
+#include "../wsclean/primarybeam.h"
+#include "../wsclean/primarybeamimageset.h"
 
 void ImageSet::LoadAndAverage(CachedImageSet& imageSet)
 {
@@ -12,10 +14,14 @@ void ImageSet::LoadAndAverage(CachedImageSet& imageSet)
 	ImageBufferAllocator::Ptr scratch;
 	_allocator.Allocate(_imageSize, scratch);
 	
+	/// TODO : use real weights of images
 	ao::uvector<size_t> weights(_images.size(), 0.0);
 	size_t imgIndex = 0;
 	for(size_t sqIndex=0; sqIndex!=_imagingTable.SquaredGroupCount(); ++sqIndex)
 	{
+		// The next loop iterates over the polarizations. The logic in the next loop
+		// makes sure that images of the same polarizations and that belong to the
+		// same deconvolution channel are averaged together.
 		size_t imgIndexForChannel = imgIndex;
 		ImagingTable subTable = _imagingTable.GetSquaredGroup(sqIndex);
 		for(size_t eIndex=0; eIndex!=subTable.EntryCount(); ++eIndex)
@@ -31,6 +37,8 @@ void ImageSet::LoadAndAverage(CachedImageSet& imageSet)
 		}
 		size_t thisChannelIndex = (sqIndex*_channelsInDeconvolution)/_imagingTable.SquaredGroupCount();
 		size_t nextChannelIndex = ((sqIndex+1)*_channelsInDeconvolution)/_imagingTable.SquaredGroupCount();
+		// If the next loaded image belongs to the same deconvolution channel as the previously
+		// loaded, they need to be averaged together.
 		if(thisChannelIndex == nextChannelIndex)
 			imgIndex = imgIndexForChannel;
 	}
@@ -47,6 +55,7 @@ void ImageSet::LoadAndAveragePSFs(CachedImageSet& psfSet, vector<ao::uvector<dou
 	ImageBufferAllocator::Ptr scratch;
 	_allocator.Allocate(_imageSize, scratch);
 	
+	/// TODO : use real weights of images
 	ao::uvector<size_t> weights(_channelsInDeconvolution, 0.0);
 	for(size_t sqIndex=0; sqIndex!=_imagingTable.SquaredGroupCount(); ++sqIndex)
 	{
@@ -60,6 +69,35 @@ void ImageSet::LoadAndAveragePSFs(CachedImageSet& psfSet, vector<ao::uvector<dou
 	
 	for(size_t chIndex=0; chIndex!=ChannelsInDeconvolution(); ++chIndex)
 		multiply(psfImages[chIndex].data(), 1.0/double(weights[chIndex]));
+}
+
+void ImageSet::LoadAveragePrimaryBeam(PrimaryBeamImageSet& beamImages, const WSCleanSettings& settings, size_t imageIndex)
+{
+	beamImages.SetToZero();
+	
+	ImageBufferAllocator::Ptr scratch;
+	_allocator.Allocate(_imageSize, scratch);
+	
+	/// TODO : use real weights of images
+	size_t count = 0;
+	PrimaryBeam pb(settings);
+	for(size_t sqIndex=0; sqIndex!=_imagingTable.SquaredGroupCount(); ++sqIndex)
+	{
+		size_t curImageIndex = (sqIndex*_channelsInDeconvolution)/_imagingTable.SquaredGroupCount();
+		if(curImageIndex == imageIndex)
+		{
+			ImagingTable subTable = _imagingTable.GetSquaredGroup(sqIndex);
+			const ImagingTableEntry& e = subTable.Front();
+			ImageFilename filename(e.outputChannelIndex, e.outputIntervalIndex);
+			
+			PrimaryBeamImageSet scratch(settings.trimmedImageWidth, settings.trimmedImageHeight, _allocator);
+			pb.Load(scratch, filename);
+			beamImages += scratch;
+			
+			count++;
+		}
+	}
+	beamImages *= (1.0 / double(count));
 }
 
 void ImageSet::InterpolateAndStore(CachedImageSet& imageSet, const SpectralFitter& fitter)
@@ -203,9 +241,12 @@ void ImageSet::getSquareIntegratedWithNormalChannels(double* dest, double* scrat
 		}
 	}
 	else {
-		for(size_t sqIndex = 0; sqIndex!=_channelsInDeconvolution; ++sqIndex)
+		double weightSum = 0.0;
+		for(size_t chIndex = 0; chIndex!=_channelsInDeconvolution; ++chIndex)
 		{
-			ImagingTable subTable = _imagingTable.GetSquaredGroup(sqIndex);
+			ImagingTable subTable = _imagingTable.GetSquaredGroup(chIndex);
+			const double groupWeight = subTable.Front().imageWeight;
+			weightSum += groupWeight;
 			if(subTable.EntryCount() == 1)
 			{
 				const ImagingTableEntry& entry = subTable[0];
@@ -229,13 +270,13 @@ void ImageSet::getSquareIntegratedWithNormalChannels(double* dest, double* scrat
 				squareRoot(scratch);
 			}
 			
-			if(sqIndex == 0)
-				assign(dest, scratch);
+			if(chIndex == 0)
+				assignMultiply(dest, scratch, groupWeight);
 			else
-				add(dest, scratch);
+				addFactor(dest, scratch, groupWeight);
 		}
 		if(_channelsInDeconvolution > 0)
-			multiply(dest, 1.0/_channelsInDeconvolution);
+			multiply(dest, 1.0/weightSum);
 		else
 			assign(dest, 0.0);
 	}
@@ -269,25 +310,34 @@ void ImageSet::getSquareIntegratedWithSquaredChannels(double* dest) const
 
 void ImageSet::getLinearIntegratedWithNormalChannels(double* dest) const
 {
-	size_t addIndex = 0;
-	for(size_t sqIndex = 0; sqIndex!=_channelsInDeconvolution; ++sqIndex)
+	if(_channelsInDeconvolution == 1 && _imagingTable.GetSquaredGroup(0).EntryCount() == 1)
 	{
-		ImagingTable subTable = _imagingTable.GetSquaredGroup(sqIndex);
-		for(size_t eIndex = 0; eIndex!=subTable.EntryCount(); ++eIndex)
+		ImagingTable subTable = _imagingTable.GetSquaredGroup(0);
+		const ImagingTableEntry& entry = subTable[0];
+		size_t imageIndex = _tableIndexToImageIndex.find(entry.index)->second;
+		assign(dest, _images[imageIndex]);
+  }
+	else {
+		size_t addIndex = 0;
+		double weightSum = 0.0;
+		for(size_t sqIndex = 0; sqIndex!=_channelsInDeconvolution; ++sqIndex)
 		{
-			const ImagingTableEntry& entry = subTable[eIndex];
-			size_t imageIndex = _tableIndexToImageIndex.find(entry.index)->second;
-			if(addIndex == 0)
-				assign(dest, _images[imageIndex]);
-			else
-				add(dest, _images[imageIndex]);
-			++addIndex;
+			ImagingTable subTable = _imagingTable.GetSquaredGroup(sqIndex);
+			const double groupWeight = subTable.Front().imageWeight;
+			weightSum += groupWeight;
+			for(size_t eIndex = 0; eIndex!=subTable.EntryCount(); ++eIndex)
+			{
+				const ImagingTableEntry& entry = subTable[eIndex];
+				size_t imageIndex = _tableIndexToImageIndex.find(entry.index)->second;
+				if(addIndex == 0)
+					assignMultiply(dest, _images[imageIndex], groupWeight);
+				else
+					addFactor(dest, _images[imageIndex], groupWeight);
+				++addIndex;
+			}
 		}
-	}
-	if(_channelsInDeconvolution != 1)
-	{
-		if(_channelsInDeconvolution > 0)
-			multiply(dest, 1.0/double(_channelsInDeconvolution));
+		if(weightSum > 0.0)
+			multiply(dest, 1.0/weightSum);
 		else
 			assign(dest, 0.0);
 	}

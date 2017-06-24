@@ -4,7 +4,7 @@
 
 #include "msproviders/msprovider.h"
 #include "fitswriter.h"
-#include "angle.h"
+#include "units/angle.h"
 #include "wsclean/logger.h"
 
 #include <cmath>
@@ -48,7 +48,7 @@ void ImageWeights::Grid(casacore::MeasurementSet& ms, const MSSelection& selecti
 		casacore::IPosition modelShape = weightColumn.shape(0);
 		hasWeights = (modelShape == shape);
 	}
-		
+	
 	const size_t polarizationCount = shape[0];
 	
 	casacore::Array<casacore::Complex> dataArr(shape);
@@ -134,6 +134,7 @@ void ImageWeights::Grid(MSProvider& msProvider, const MSSelection& selection)
 {
 	if(_isGriddingFinished)
 		throw std::runtime_error("Grid() called after a call to FinishGridding()");
+	size_t polarizationCount = (msProvider.Polarization() == Polarization::Instrumental) ? 4 : 1;
 	if(_weightMode.RequiresGridding())
 	{
 		const MultiBandData bandData(msProvider.MS().spectralWindow(), msProvider.MS().dataDescription());
@@ -142,7 +143,7 @@ void ImageWeights::Grid(MSProvider& msProvider, const MSSelection& selection)
 			selectedBand = MultiBandData(bandData, selection.ChannelRangeStart(), selection.ChannelRangeEnd());
 		else
 			selectedBand = bandData;
-		std::vector<float> weightBuffer(selectedBand.MaxChannels());
+		std::vector<float> weightBuffer(selectedBand.MaxChannels()*polarizationCount);
 		
 		msProvider.Reset();
 		while(msProvider.CurrentRowAvailable())
@@ -164,8 +165,11 @@ void ImageWeights::Grid(MSProvider& msProvider, const MSSelection& selection)
 				double
 					u = uInM / curBand.ChannelWavelength(ch),
 					v = vInM / curBand.ChannelWavelength(ch);
-				Grid(u, v, *weightIter);
-				++weightIter;
+				for(size_t p=0; p!=polarizationCount; ++p)
+				{
+					Grid(u, v, *weightIter);
+					++weightIter;
+				}
 			}
 			
 			msProvider.NextRow();

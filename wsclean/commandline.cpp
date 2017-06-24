@@ -1,6 +1,8 @@
 #include "commandline.h"
 
-#include "../angle.h"
+#include "../units/angle.h"
+#include "../units/fluxdensity.h"
+
 #include "../numberlist.h"
 #include "../wscversion.h"
 
@@ -62,9 +64,11 @@ void CommandLine::printHelp()
 		"   Calculate and apply the primary beam and save images for the Jones components, with weighting identical to the\n"
 		"   weighting as used by the imager. Only available for LOFAR.\n"
 		"-reuse-primary-beam\n"
-		"   If a primary beam image exists on disk, reuse those images (not implemented yet).\n"
+		"   If a primary beam image exists on disk, reuse those images.\n"
 		"-use-differential-lofar-beam\n"
 		"   Assume the visibilities have already been beam-corrected for the reference direction.\n"
+		"-save-psf-pb\n"
+		"   When applying beam correction, also save the primary-beam corrected PSF image.\n"
 		"\n"
 		"  ** WEIGHTING OPTIONS **\n"
 		"-weight <weightmode>\n"
@@ -201,7 +205,10 @@ void CommandLine::printHelp()
 		"\n"
 		"  ** DECONVOLUTION OPTIONS **\n"
 		"-niter <niter>\n"
-		"   Maximum number of clean iterations to perform. Default: 0\n"
+		"   Maximum number of clean iterations to perform. Default: 0 (=no cleaning)\n"
+		"-nmiter <nmiter>\n"
+		"   Maximum number of major clean (inversion/prediction) iterations. Default: 20."
+		"   A value of 0 means no limit.\n"
 		"-threshold <threshold>\n"
 		"   Stopping clean thresholding in Jy. Default: 0.0\n"
 		"-auto-threshold <sigma>\n"
@@ -209,13 +216,13 @@ void CommandLine::printHelp()
 		"-auto-mask <sigma>\n"
 		"   Construct a mask from found components and when a threshold of sigma is reached, continue\n"
 		"   cleaning with the mask down to the normal threshold. \n"
-		"-rms-background\n"
+		"-local-rms / -rms-background\n"
 		"   Instead of using a single RMS for auto thresholding/masking, use a spatially varying\n"
 		"   RMS image.\n"
-		"-rms-background-window\n"
+		"-local-rms-window / -rms-background-window\n"
 		"   Size of window for creating the RMS background map, in number of PSFs. Default: 25 psfs.\n"
-		"-rms-background-method\n"
-		"   Either 'rms' (default, uses sliding window RMS) or 'rms-with-min' (use max(window rms,1.5/5window min)).\n"
+		"-local-rms-method / -rms-background-method\n"
+		"   Either 'rms' (default, uses sliding window RMS) or 'rms-with-min' (use max(window rms, 0.3 x window min)).\n"
 		"-gain <gain>\n"
 		"   Cleaning gain: Ratio of peak that will be subtracted in each iteration. Default: 0.1\n"
 		"-mgain <gain>\n"
@@ -248,6 +255,8 @@ void CommandLine::printHelp()
 		"-multiscale-gain <gain>\n"
 		"   Size of step made in the subminor loop of multi-scale. Default currently 0.2, but shows sign of instability.\n"
 		"   A value of 0.1 might be more stable.\n"
+		"-multiscale-convolution-padding <padding>\n"
+		"   Size of zero-padding for convolutions during the multi-scale cleaning.\n"
 		"-no-multiscale-fast-subminor\n"
 		"   Disable the 'fast subminor loop' optimization, that will only search a part of the\n"
 		"   image during the multi-scale subminor loop. The optimization is on by default.\n"
@@ -264,9 +273,9 @@ void CommandLine::printHelp()
 		"-moresane-sl <sl1,sl2,...>\n"
 		"   MoreSane --sigmalevel setting for each major loop iteration. Useful to start at high\n"
 		"   levels and go down with subsequent loops, e.g. 20,10,5\n"
-		"-save-component-list\n"
-		"   Saves the found clean components as a sky model. To do so, Gaussian shapes will be used\n"
-		"   during multi-scale cleaning.\n"
+		"-save-source-list\n"
+		"   Saves the found clean components as a BBS/NDPPP text sky model. This parameter \n"
+		"   enables Gaussian shapes during multi-scale cleaning (-multiscale-shape gaussian).\n"
 		"-cleanborder <percentage>\n"
 		"   Set the border size in which no cleaning is performed, in percentage of the width/height of the image.\n"
 		"   With an image size of 1000 and clean border of 1%, each border is 10 pixels. \n"
@@ -381,6 +390,9 @@ int CommandLine::Run(int argc, char* argv[])
 #ifdef HAVE_LOFAR_BEAM
 			Logger::Info << "LOFAR beam is available.\n";
 #endif
+#ifdef HAVE_IDG
+			Logger::Info << "IDG is available.\n";
+#endif
 			return 0;
 		}
 		else if(param == "help")
@@ -483,10 +495,15 @@ int CommandLine::Run(int argc, char* argv[])
 			++argi;
 			settings.deconvolutionIterationCount = parse_size_t(argv[argi], "niter");
 		}
+		else if(param == "nmiter")
+		{
+			++argi;
+			settings.majorIterationCount = parse_size_t(argv[argi], "nmiter");
+		}
 		else if(param == "threshold")
 		{
 			++argi;
-			settings.deconvolutionThreshold = atof(argv[argi]);
+			settings.deconvolutionThreshold = FluxDensity::Parse(argv[argi], "threshold parameter", FluxDensity::Jansky);
 		}
 		else if(param == "auto-threshold")
 		{
@@ -500,23 +517,29 @@ int CommandLine::Run(int argc, char* argv[])
 			settings.autoMask = true;
 			settings.autoMaskSigma = atof(argv[argi]);
 		}
-		else if(param == "rms-background")
+		else if(param == "local-rms" || param == "rms-background")
 		{
 			settings.rmsBackground = true;
+			if(param == "rms-background")
+				deprecated(param, "local-rms");
 		}
-		else if(param == "rms-background-window")
+		else if(param == "local-rms-window" || param == "rms-background-window")
 		{
 			++argi;
 			settings.rmsBackground = true;
 			settings.rmsBackgroundWindow = atof(argv[argi]);
+			if(param == "rms-background-window")
+				deprecated(param, "local-rms-window");
 		}
-		else if(param == "rms-background-image")
+		else if(param == "local-rms-image" || param == "rms-background-image")
 		{
 			++argi;
 			settings.rmsBackground = true;
 			settings.rmsBackgroundImage = argv[argi];
+			if(param == "rms-background-image")
+				deprecated(param, "local-rms-image");
 		}
-		else if(param == "rms-background-method")
+		else if(param == "local-rms-method" || param == "rms-background-method")
 		{
 			++argi;
 			std::string method = argv[argi];
@@ -527,6 +550,8 @@ int CommandLine::Run(int argc, char* argv[])
 				settings.rmsBackgroundMethod = WSCleanSettings::RMSAndMinimumWindow;
 			else
 				throw std::runtime_error("Unknown RMS background method specified");
+			if(param == "rms-background-method")
+				deprecated(param, "local-rms-method");
 		}
 		else if(param == "datacolumn")
 		{
@@ -549,6 +574,10 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "use-differential-lofar-beam")
 		{
 			settings.useDifferentialLofarBeam = true;
+		}
+		else if(param == "save-psf-pb")
+		{
+			settings.savePsfPb = true;
 		}
 		else if(param == "negative")
 		{
@@ -735,6 +764,11 @@ int CommandLine::Run(int argc, char* argv[])
 				settings.multiscaleShapeFunction = MultiScaleTransforms::GaussianShape;
 			else throw std::runtime_error("Unknown multiscale shape function given");
 		}
+		else if(param == "multiscale-convolution-padding")
+		{
+			++argi;
+			settings.multiscaleConvolutionPadding = atof(argv[argi]);
+		}
 		else if(param == "no-multiscale-fast-subminor")
 		{
 			settings.multiscaleFastSubMinorLoop = false;
@@ -749,9 +783,9 @@ int CommandLine::Run(int argc, char* argv[])
 			++argi;
 			settings.rankFilterSize = parse_size_t(argv[argi], "weighting-rank-filter-size");
 		}
-		else if(param == "save-component-list")
+		else if(param == "save-source-list")
 		{
-			settings.saveComponentList = true;
+			settings.saveSourceList = true;
 			settings.multiscaleShapeFunction = MultiScaleTransforms::GaussianShape;
 		}
 		else if(param == "cleanborder")
@@ -1028,4 +1062,11 @@ int CommandLine::Run(int argc, char* argv[])
 			break;
 	}
 	return 0;
+}
+
+void CommandLine::deprecated(const std::string& param, const std::string& replacement)
+{
+	Logger::Warn
+	  << "!!! WARNING: Parameter \'-" << param << "\' is deprecated and will be removed in a future version of WSClean.\n"
+		<< "!!!          Use parameter \'-" << replacement << "\' instead.\n";
 }
