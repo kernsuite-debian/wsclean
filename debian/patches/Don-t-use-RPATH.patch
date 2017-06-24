@@ -10,10 +10,10 @@ place.
  1 file changed, 8 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b6caaa5..7689e41 100644
+index 9dc1f10..74fe108 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -102,19 +102,19 @@ add_definitions(-DHAVE_GSL)
+@@ -99,19 +99,19 @@ add_definitions(-DHAVE_GSL)
  # LD_LIBRARY_PATH doesn't have to be set.
  
  # use, i.e. don't skip the full RPATH for the build tree
@@ -40,4 +40,4 @@ index b6caaa5..7689e41 100644
 +#ENDIF("${isSystemDir}" STREQUAL "-1")
  
  add_library(wsclean-object OBJECT
-   casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
+   casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialchannelfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
