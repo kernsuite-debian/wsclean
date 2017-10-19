@@ -1,0 +1,10 @@
+debhelper-build-stamp
+files
+*.substvars
+*.debhelper.log
+*.substvars
+tmp/
+.debhelper/
+libwsclean0/
+wsclean-dev/
+wsclean/
