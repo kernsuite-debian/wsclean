@@ -1,3 +1,9 @@
+wsclean (2.4-1kern1) xenial; urgency=medium
+
+  * rebuild for KERN
+
+ -- KERN packaging <packaging@kernsuite.info>  Thu, 19 Oct 2017 13:52:00 +0200
+
 wsclean (2.4-1) unstable; urgency=low
 
   * New upstream version 2.4
