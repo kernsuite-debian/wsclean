@@ -1,3 +1,9 @@
+wsclean (2.4-1kern3) xenial; urgency=medium
+
+  * force build with casacore 2.4.0
+
+ -- KERN packaging <packaging@kernsuite.info>  Mon, 06 Nov 2017 19:42:14 +0200
+
 wsclean (2.4-1kern2) xenial; urgency=medium
 
   * force casacore > 2.3.0
