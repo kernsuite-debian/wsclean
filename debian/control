@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Debian Astro Team <debian-astro-maintainers@lists.alioth.debian.org>
 Uploaders: Gijs Molenaar <gijs@pythonic.nl>,
            Ole Streicher <olebole@debian.org>
-Build-Depends: casacore-dev (>= 2.3.0),
+Build-Depends: casacore-dev (>= 2.4.0),
                cmake,
                debhelper (>= 9),
                libboost-dev,
