@@ -1,3 +1,11 @@
+wsclean (2.5-1) unstable; urgency=medium
+
+  * New upstream version 2.5
+  * Rediff patches
+  * Push Standards-Version to 4.1.2. Change URLs to https
+
+ -- Ole Streicher <olebole@debian.org>  Sun, 03 Dec 2017 14:03:48 +0100
+
 wsclean (2.4-1) unstable; urgency=low
 
   * New upstream version 2.4
