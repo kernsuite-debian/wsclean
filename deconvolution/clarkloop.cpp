@@ -36,7 +36,7 @@ size_t ClarkModel::GetMaxComponent(double* scratch, double& maxValue) const
 	return maxComponent;
 }
 
-double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const double*>& doubleConvolvedPsfs)
+boost::optional<double> ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const double*>& doubleConvolvedPsfs)
 {
 	_clarkModel = ClarkModel(_width, _height);
 	
@@ -46,6 +46,9 @@ double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const doubl
 	if(!_rmsFactorImage.empty())
 		_clarkModel.MakeRMSFactorImage(_rmsFactorImage);
 	Logger::Debug << "Number of components selected > " << _threshold << ": " << _clarkModel.size() << '\n';
+	
+	if(_clarkModel.size() == 0)
+		return boost::optional<double>();
 	
 	ao::uvector<double> scratch(_clarkModel.size());
 	double maxValue;

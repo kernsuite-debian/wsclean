@@ -9,7 +9,7 @@
 
 #include "../msproviders/partitionedms.h"
 
-struct ImagingTableEntry
+class ImagingTableEntry
 {
 public:
 	struct MSBandInfo
@@ -140,6 +140,40 @@ public:
 	
 	ImagingTableEntry& Front() { return *_entries.front(); }
 	const ImagingTableEntry& Front() const { return *_entries.front(); }
+	
+	const ImagingTableEntry* FirstWithHigherFrequency(double frequency) const
+	{
+		double currentDistance = std::numeric_limits<double>::max();
+		ImagingTableEntry* entry = nullptr;
+		
+		for(auto& e : _entries)
+		{
+			if(e->CentralFrequency() > frequency &&
+				e->CentralFrequency() - frequency < currentDistance)
+			{
+				currentDistance = e->CentralFrequency() - frequency;
+				entry = &*e;
+			}
+		}
+		return entry;
+	}
+	
+	const ImagingTableEntry* FirstWithLowerFrequency(double frequency) const
+	{
+		double currentDistance = std::numeric_limits<double>::max();
+		ImagingTableEntry* entry = nullptr;
+		
+		for(auto& e : _entries)
+		{
+			if(e->CentralFrequency() < frequency &&
+				frequency - e->CentralFrequency() < currentDistance)
+			{
+				currentDistance = frequency - e->CentralFrequency();
+				entry = &*e;
+			}
+		}
+		return entry;
+	}
 	
 private:
 	void printIndependentGroup(bool isFinal);

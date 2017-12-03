@@ -12,7 +12,7 @@ public:
 	
 	void AddDataPoint(double x, double y, double w)
 	{
-		_dataPoints.emplace_back(std::array<double,3>({x, y, w}));
+		_dataPoints.emplace_back(std::array<double,3>{{x, y, w}});
 	}
 	
 	void Fit(ao::uvector<double>& terms, size_t nTerms);
@@ -28,6 +28,8 @@ public:
 		}
 		return val;
 	}
+	
+	size_t size() const { return _dataPoints.size(); }
 	
 private:
 	ao::uvector<std::array<double,3>> _dataPoints;
