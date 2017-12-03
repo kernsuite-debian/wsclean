@@ -27,6 +27,13 @@ class MSProvider
 public:
 	friend class MSRowProvider;
 	friend class DirectMSRowProvider;
+	
+	struct MetaData
+	{
+		double uInM, vInM, wInM;
+		size_t dataDescId, antenna1, antenna2;
+		double time;
+	};
 
 	virtual ~MSProvider() { }
 	
@@ -42,13 +49,15 @@ public:
 	
 	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId) = 0;
 	
-	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId, size_t& antenna1, size_t& antenna2) = 0;
+	virtual void ReadMeta(MetaData& metaData) = 0;
 	
 	virtual void ReadData(std::complex<float>* buffer) = 0;
 	
 	virtual void ReadModel(std::complex<float>* buffer) = 0;
 	
 	virtual void WriteModel(size_t rowId, std::complex<float>* buffer) = 0;
+	
+	virtual void WriteImagingWeights(size_t rowId, const float* buffer) = 0;
 	
 	virtual void ReadWeights(float* buffer) = 0;
 	
@@ -71,6 +80,8 @@ protected:
 	
 	static void reverseCopyData(casacore::Array<std::complex<float>>& dest, size_t startChannel, size_t endChannel, const std::vector<PolarizationEnum>& polsDest, const std::complex<float>* source, PolarizationEnum polSource);
 	
+	static void reverseCopyWeights(casacore::Array<float>& dest, size_t startChannel, size_t endChannel, const std::vector<PolarizationEnum> &polsDest, const float* source, PolarizationEnum polSource);
+	
 	static void getRowRange(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow);
 	
 	static void getRowRangeAndIDMap(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow, const std::set<size_t>& dataDescIdMap, vector<size_t>& idToMSRow);
@@ -88,6 +99,8 @@ protected:
 	
 	static void initializeModelColumn(casacore::MeasurementSet& ms);
 	
+	static casacore::ArrayColumn<float> initializeImagingWeightColumn(casacore::MeasurementSet& ms);
+	
 	/**
 	 * Make an arraycolumn object for the weight spectrum column if it exists and is valid.
 	 * The weight spectrum column is an optional column, the weight column should be used if it doesn't exist.
@@ -96,7 +109,7 @@ protected:
 	 */
 	static bool openWeightSpectrumColumn(casacore::MeasurementSet& ms, std::unique_ptr<casacore::ROArrayColumn<float>>& weightColumn, const casacore::IPosition& dataColumnShape);
 	
-	static void expandScalarWeights(const casa::Array<float>& weightScalarArray, casa::Array<float>& weightSpectrumArray)
+	static void expandScalarWeights(const casacore::Array<float>& weightScalarArray, casacore::Array<float>& weightSpectrumArray)
 	{
 		casacore::Array<float>::const_contiter src = weightScalarArray.cbegin();
 		for(casacore::Array<float>::contiter i=weightSpectrumArray.cbegin(); i!=weightSpectrumArray.cend(); ++i)

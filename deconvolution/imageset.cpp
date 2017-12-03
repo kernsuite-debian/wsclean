@@ -71,35 +71,6 @@ void ImageSet::LoadAndAveragePSFs(CachedImageSet& psfSet, vector<ao::uvector<dou
 		multiply(psfImages[chIndex].data(), 1.0/double(weights[chIndex]));
 }
 
-void ImageSet::LoadAveragePrimaryBeam(PrimaryBeamImageSet& beamImages, const WSCleanSettings& settings, size_t imageIndex)
-{
-	beamImages.SetToZero();
-	
-	ImageBufferAllocator::Ptr scratch;
-	_allocator.Allocate(_imageSize, scratch);
-	
-	/// TODO : use real weights of images
-	size_t count = 0;
-	PrimaryBeam pb(settings);
-	for(size_t sqIndex=0; sqIndex!=_imagingTable.SquaredGroupCount(); ++sqIndex)
-	{
-		size_t curImageIndex = (sqIndex*_channelsInDeconvolution)/_imagingTable.SquaredGroupCount();
-		if(curImageIndex == imageIndex)
-		{
-			ImagingTable subTable = _imagingTable.GetSquaredGroup(sqIndex);
-			const ImagingTableEntry& e = subTable.Front();
-			ImageFilename filename(e.outputChannelIndex, e.outputIntervalIndex);
-			
-			PrimaryBeamImageSet scratch(settings.trimmedImageWidth, settings.trimmedImageHeight, _allocator);
-			pb.Load(scratch, filename);
-			beamImages += scratch;
-			
-			count++;
-		}
-	}
-	beamImages *= (1.0 / double(count));
-}
-
 void ImageSet::InterpolateAndStore(CachedImageSet& imageSet, const SpectralFitter& fitter)
 {
 	if(_channelsInDeconvolution == _imagingTable.SquaredGroupCount())
@@ -237,7 +208,7 @@ void ImageSet::getSquareIntegratedWithNormalChannels(double* dest, double* scrat
 					addSquared(dest, _images[imageIndex]);
 				}
 			}
-			squareRoot(dest);
+			squareRootMultiply(dest, sqrt(_polarizationNormalizationFactor));
 		}
 	}
 	else {
@@ -260,7 +231,7 @@ void ImageSet::getSquareIntegratedWithNormalChannels(double* dest, double* scrat
 					size_t imageIndex = _tableIndexToImageIndex.find(entry.index)->second;
 					if(eIndex == 0)
 					{
-						assign(scratch, _images[0]);
+						assign(scratch, _images[imageIndex]);
 						square(scratch);
 					}
 					else {
@@ -276,7 +247,7 @@ void ImageSet::getSquareIntegratedWithNormalChannels(double* dest, double* scrat
 				addFactor(dest, scratch, groupWeight);
 		}
 		if(_channelsInDeconvolution > 0)
-			multiply(dest, 1.0/weightSum);
+			multiply(dest, sqrt(_polarizationNormalizationFactor)/weightSum);
 		else
 			assign(dest, 0.0);
 	}
@@ -301,11 +272,10 @@ void ImageSet::getSquareIntegratedWithSquaredChannels(double* dest) const
 			++addIndex;
 		}
 	}
-	if(_channelsInDeconvolution > 0)
-		multiply(dest, 1.0/double(_channelsInDeconvolution));
-	else
-		assign(dest, 0.0);
-	squareRoot(dest);
+	double factor = _channelsInDeconvolution > 0 ?
+		sqrt(_polarizationNormalizationFactor)/double(_channelsInDeconvolution)
+		: 0.0;
+	squareRootMultiply(dest, factor);
 }
 
 void ImageSet::getLinearIntegratedWithNormalChannels(double* dest) const
@@ -337,7 +307,7 @@ void ImageSet::getLinearIntegratedWithNormalChannels(double* dest) const
 			}
 		}
 		if(weightSum > 0.0)
-			multiply(dest, 1.0/weightSum);
+			multiply(dest, _polarizationNormalizationFactor/weightSum);
 		else
 			assign(dest, 0.0);
 	}

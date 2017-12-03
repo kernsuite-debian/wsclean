@@ -288,10 +288,10 @@ void WSMSGridder::predictMeasurementSet(MSData &msData)
 		newItem.v = vs[i];
 		newItem.w = ws[i];
 		newItem.dataDescId = dataIds[i];
-		newItem.data = new std::complex<float>[selectedBandData[dataIds[i]].ChannelCount()];
+		newItem.data.reset(new std::complex<float>[selectedBandData[dataIds[i]].ChannelCount()]);
 		newItem.rowId = rowIds[i];
 				
-		bufferedCalcLane.write(newItem);
+		bufferedCalcLane.write(std::move(newItem));
 	}
 	if(Verbose())
 		Logger::Info << "Rows that were required: " << rowsProcessed << '/' << msData.matchingRows << '\n';
@@ -310,9 +310,9 @@ void WSMSGridder::predictCalcThread(ao::lane<PredictionWorkItem>* inputLane, ao:
 	PredictionWorkItem item;
 	while(inputLane->read(item))
 	{
-		_gridder->SampleData(item.data, item.dataDescId, item.u, item.v, item.w);
+		_gridder->SampleData(item.data.get(), item.dataDescId, item.u, item.v, item.w);
 		
-		writeBuffer.write(item);
+		writeBuffer.write(std::move(item));
 	}
 }
 
@@ -322,15 +322,14 @@ void WSMSGridder::predictWriteThread(ao::lane<PredictionWorkItem>* predictionWor
 	PredictionWorkItem workItem;
 	while(buffer.read(workItem))
 	{
-		msData->msProvider->WriteModel(workItem.rowId, workItem.data);
-		delete[] workItem.data;
+		msData->msProvider->WriteModel(workItem.rowId, workItem.data.get());
 	}
 }
 
 void WSMSGridder::Invert()
 {
 	std::vector<MSData> msDataVector;
-	initializeMSDataVector(msDataVector, 1);
+	initializeMSDataVector(msDataVector);
 	
 	_gridder = std::unique_ptr<WStackingGridder>(new WStackingGridder(_actualInversionWidth, _actualInversionHeight, _actualPixelSizeX, _actualPixelSizeY, _cpuCount, _imageBufferAllocator, AntialiasingKernelSize(), OverSamplingFactor()));
 	_gridder->SetGridMode(GridMode());
@@ -353,15 +352,10 @@ void WSMSGridder::Invert()
 		if(Verbose()) Logger::Info << '\n';
 		else Logger::Info.Flush();
 		
-		//_inversionWorkLane.reset(new ao::lane<InversionWorkItem>(2048));
-		//set_lane_debug_name(*_inversionWorkLane, "Inversion work lane containing full row data");
-		
 		_gridder->StartInversionPass(pass);
 		
 		for(size_t i=0; i!=MeasurementSetCount(); ++i)
 		{
-			//_inversionWorkLane->clear();
-			
 			MSData& msData = msDataVector[i];
 			
 			const MultiBandData selectedBand(msData.SelectedBand());
@@ -370,10 +364,8 @@ void WSMSGridder::Invert()
 		
 			gridMeasurementSet(msData);
 			
-			//_inversionWorkLane->write_end();
 			finishInversionWorkThreads();
 		}
-		//_inversionWorkLane.reset();
 		
 		Logger::Info << "Fourier transforms...\n";
 		_gridder->FinishInversionPass();
@@ -455,7 +447,7 @@ void WSMSGridder::Predict(double* real, double* imaginary)
 		throw std::runtime_error("Imaginary specified in non-complex prediction");
 	
 	std::vector<MSData> msDataVector;
-	initializeMSDataVector(msDataVector, 1);
+	initializeMSDataVector(msDataVector);
 	
 	_gridder = std::unique_ptr<WStackingGridder>(new WStackingGridder(_actualInversionWidth, _actualInversionHeight, _actualPixelSizeX, _actualPixelSizeY, _cpuCount, _imageBufferAllocator, AntialiasingKernelSize(), OverSamplingFactor()));
 	_gridder->SetGridMode(GridMode());

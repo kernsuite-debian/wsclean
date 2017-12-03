@@ -56,7 +56,7 @@ class WSMSGridder : public MSGridderBase
 		struct PredictionWorkItem
 		{
 			double u, v, w;
-			std::complex<float> *data;
+			std::unique_ptr<std::complex<float>[]> data;
 			size_t rowId, dataDescId;
 		};
 		
@@ -84,7 +84,6 @@ class WSMSGridder : public MSGridderBase
 		void predictWriteThread(ao::lane<PredictionWorkItem>* samplingWorkLane, const MSData* msData);
 
 		std::unique_ptr<WStackingGridder> _gridder;
-		std::unique_ptr<ao::lane<InversionRow>> _inversionWorkLane;
 		std::unique_ptr<ao::lane<InversionWorkSample>[]> _inversionCPULanes;
 		std::unique_ptr<boost::thread_group> _threadGroup;
 		size_t _cpuCount, _laneBufferSize;

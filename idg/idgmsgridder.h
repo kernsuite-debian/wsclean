@@ -16,9 +16,9 @@
 class IdgMsGridder : public MSGridderBase
 {
 public:
-	IdgMsGridder();
+	IdgMsGridder(const class WSCleanSettings& settings);
 	
-	virtual ~IdgMsGridder();
+	virtual ~IdgMsGridder() final override;
 	
 	virtual void Invert();
 	
@@ -33,20 +33,19 @@ public:
 	virtual void GetGriddingCorrectionImage(double* image) const;
 	
 	virtual bool HasGriddingCorrectionImage() const;
-	
+
 private:
 	virtual size_t getSuggestedWGridSize() const   {
 		return 1; // TODO
 	}
 		
-// 	void constructGridders(const MultiBandData& selectedBands, size_t nStations, bool constructDegridders);
-	
 	void gridMeasurementSet(MSGridderBase::MSData& msData);
 	void gridThreadFunction();
 	
 	void predictMeasurementSet(MSGridderBase::MSData& msData);
-	void predictCalcThreadFunction();
-	void predictWriteThreadFunction(boost::mutex* mutex);
+	void readConfiguration();
+	
+	void setIdgType();
 	
 	struct IDGInversionRow : public MSGridderBase::InversionRow {
 		size_t antenna1, antenna2, timeIndex;
@@ -55,21 +54,20 @@ private:
 		double uvw[3];
 		size_t dataDescId, antenna1, antenna2, timeIndex, rowId;
 	};
-	struct IDGRowForWriting {
-		std::complex<float>* data;
-		size_t rowId;
-	};
+	void predictRow(IDGPredictionRow& row);
+	void computePredictionBuffer(size_t dataDescId);
 	
-    std::unique_ptr<idg::api::BufferSet> _bufferset;
+	std::unique_ptr<idg::api::BufferSet> _bufferset;
 	size_t _subgridSize;
 	ao::uvector<double> _image;
 	ao::uvector<float> _taper_subgrid;
 	ao::uvector<float> _taper_grid;
-	ao::lane<IDGInversionRow> _inversionLane;
-	ao::lane<IDGPredictionRow> _predictionCalcLane;
-	ao::lane<IDGRowForWriting> _predictionWriteLane;
 	MSProvider* _outputProvider;
 	MultiBandData _selectedBands;
+	const WSCleanSettings& _settings;
+	idg::api::Type _proxyType;
+	int _buffersize;
+	idg::api::options_type _options;
 };
 
 void init_optimal_taper_1D(int subgridsize, int gridsize, float kernelsize, float padding, float* taper_subgrid, float* taper_grid);
