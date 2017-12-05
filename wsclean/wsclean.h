@@ -14,6 +14,7 @@
 #include "cachedimageset.h"
 #include "imagebufferallocator.h"
 #include "imagingtable.h"
+#include "msgridderbase.h"
 #include "outputchannelinfo.h"
 #include "wscfitswriter.h"
 #include "wscleansettings.h"
@@ -46,26 +47,25 @@ private:
 	
 	void initializeImageWeights(const ImagingTableEntry& entry);
 	void initializeMFSImageWeights();
-	MSProvider* initializeMSProvider(const ImagingTableEntry& entry, const MSSelection& selection, size_t filenameIndex, size_t dataDescId);
+	std::unique_ptr<MSProvider> initializeMSProvider(const ImagingTableEntry& entry, const MSSelection& selection, size_t filenameIndex, size_t dataDescId);
 	void initializeCurMSProviders(const ImagingTableEntry& entry);
 	void initializeMSProvidersForPB(const ImagingTableEntry& entry, class PrimaryBeam& pb);
-	void clearCurMSProviders();
 	void storeAndCombineXYandYX(CachedImageSet& dest, PolarizationEnum polarization, size_t joinedChannelIndex, bool isImaginary, const double* image);
 	bool selectChannels(MSSelection& selection, size_t msIndex, size_t bandIndex, const ImagingTableEntry& entry);
 	MSSelection selectInterval(MSSelection& fullSelection, size_t intervalIndex);
 	void readEarlierModelImages(const ImagingTableEntry& entry);
 	
 	void makeImagingTable(size_t outputIntervalIndex);
-	void makeImagingTableEntry(const std::vector<OrderedChannel>& channels, size_t outIntervalIndex, size_t outChannelIndex, ImagingTableEntry& entry);
+	void makeImagingTableEntry(const std::vector<ChannelInfo>& channels, size_t outIntervalIndex, size_t outChannelIndex, ImagingTableEntry& entry);
 	void addPolarizationsToImagingTable(size_t& joinedGroupIndex, size_t& squaredGroupIndex, size_t outChannelIndex, const ImagingTableEntry& templateEntry);
 	class ImageWeightCache* createWeightCache();
 	
 	void multiplyImage(double factor, double* image) const;
 	void imagePSF(ImagingTableEntry& entry);
 	void imageGridding();
-	void imageMainFirst(PolarizationEnum polarization, size_t channelIndex);
-	void imageMainNonFirst(PolarizationEnum polarization, size_t channelIndex);
-	void predict(PolarizationEnum polarization, size_t channelIndex);
+	void imageMainFirst(const ImagingTableEntry& entry);
+	void imageMainNonFirst(const ImagingTableEntry& entry);
+	void predict(const ImagingTableEntry& entry);
 	void dftPredict(const ImagingTable& squaredGroup);
 	
 	void makeMFSImage(const string& suffix, size_t intervalIndex, PolarizationEnum pol, bool isImaginary, bool isPSF = false);
@@ -96,25 +96,29 @@ private:
 		) && !_settings.forceNoReorder;
 	}
 	
+	// This must be the first field, because other members might take references
+	// of this object and use them in their destructors.
+	mutable ImageBufferAllocator _imageAllocator;
+	
 	MSSelection _globalSelection;
 	std::string _commandLine;
-	std::vector<OrderedChannel> _inputChannelFrequencies;
+	std::vector<ChannelInfo> _inputChannelFrequencies;
 	
 	WSCleanSettings _settings;
 	
 	std::vector<OutputChannelInfo> _infoPerChannel;
 	OutputChannelInfo _infoForMFS;
+	std::map<size_t, MSGridderBase::MetaDataCache> _msGridderMetaCache;
 	
 	std::unique_ptr<class MSGridderBase> _gridder;
 	std::unique_ptr<class ImageWeightCache> _imageWeightCache;
 	std::unique_ptr<class PrimaryBeam> _primaryBeam;
-	mutable ImageBufferAllocator _imageAllocator;
 	Stopwatch _inversionWatch, _predictingWatch, _deconvolutionWatch;
 	bool _isFirstInversion, _doReorder;
 	size_t _majorIterationNr;
 	CachedImageSet _psfImages, _modelImages, _residualImages;
 	std::vector<PartitionedMS::Handle> _partitionedMSHandles;
-	std::vector<MSProvider*> _currentPolMSes;
+	std::vector<std::unique_ptr<MSProvider>> _currentPolMSes;
 	std::vector<MultiBandData> _msBands;
 	Deconvolution _deconvolution;
 	ImagingTable _imagingTable;

@@ -1,6 +1,6 @@
-Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: wsclean
-Source: http://sourceforge.net/projects/wsclean/
+Source: https://sourceforge.net/projects/wsclean/
 
 Files: *
 Copyright: 2008-2015 A. R. Offringa

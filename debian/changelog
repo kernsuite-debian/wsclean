@@ -1,21 +1,10 @@
-wsclean (2.4-1kern3) xenial; urgency=medium
+wsclean (2.5-1) unstable; urgency=medium
 
-  * force build with casacore 2.4.0
+  * New upstream version 2.5
+  * Rediff patches
+  * Push Standards-Version to 4.1.2. Change URLs to https
 
- -- KERN packaging <packaging@kernsuite.info>  Mon, 06 Nov 2017 19:42:14 +0200
-
-wsclean (2.4-1kern2) xenial; urgency=medium
-
-  * force casacore > 2.3.0
-
- -- KERN packaging <packaging@kernsuite.info>  Thu, 19 Oct 2017 15:12:03 +0200
-
-wsclean (2.4-1kern1) xenial; urgency=medium
-
-  * rebuild for KERN
-  * disable tests for boost > 1.58
-
- -- KERN packaging <packaging@kernsuite.info>  Thu, 19 Oct 2017 13:52:00 +0200
+ -- Ole Streicher <olebole@debian.org>  Sun, 03 Dec 2017 14:03:48 +0100
 
 wsclean (2.4-1) unstable; urgency=low
 

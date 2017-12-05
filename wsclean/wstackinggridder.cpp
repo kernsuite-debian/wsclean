@@ -140,7 +140,7 @@ void WStackingGridder::StartPredictionPass(size_t passIndex)
 	
 	boost::mutex mutex;
 	boost::thread_group threadGroup;
-	for(size_t i=0; i!=_nFFTThreads; ++i)
+	for(size_t i=0; i!=std::min(_nFFTThreads, nLayersInPass); ++i)
 		threadGroup.add_thread(new boost::thread(&WStackingGridder::fftToUVThreadFunction, this, &mutex, &layers));
 	threadGroup.join_all();
 }
@@ -235,15 +235,15 @@ void WStackingGridder::fftToUVThreadFunction(boost::mutex *mutex, std::stack<siz
 void WStackingGridder::FinishInversionPass()
 {
 	size_t layerOffset = layerRangeStart(_curLayerRangeIndex);
-	size_t nPlanes = layerRangeStart(_curLayerRangeIndex+1) - layerOffset;
-	std::stack<size_t> planes;
-	for(size_t plane=0; plane!=nPlanes; ++plane)
-		planes.push(plane);
+	size_t nLayersInPass = layerRangeStart(_curLayerRangeIndex+1) - layerOffset;
+	std::stack<size_t> layers;
+	for(size_t layer=0; layer!=nLayersInPass; ++layer)
+		layers.push(layer);
 	
 	boost::mutex mutex;
 	boost::thread_group threadGroup;
-	for(size_t i=0; i!=_nFFTThreads; ++i)
-		threadGroup.add_thread(new boost::thread(&WStackingGridder::fftToImageThreadFunction, this, &mutex, &planes, i));
+	for(size_t i=0; i!=std::min(_nFFTThreads, nLayersInPass); ++i)
+		threadGroup.add_thread(new boost::thread(&WStackingGridder::fftToImageThreadFunction, this, &mutex, &layers, i));
 	threadGroup.join_all();
 }
 
@@ -706,9 +706,10 @@ void WStackingGridder::projectOnImageAndCorrect(const std::complex<double> *sour
 			size_t xSrc = x + _width / 2;
 			if(xSrc >= _width) xSrc -= _width;
 			
-			double rad = twoPiW * *sqrtLMIter;
-			double s, c;
-			sincos(rad, &s, &c);
+			double
+				rad = twoPiW * *sqrtLMIter,
+				s = sin(rad),
+				c = cos(rad);
 			/*std::complex<double> val = std::complex<double>(
 				source->real() * c - source->imag() * s,
 				source->real() * s + source->imag() * c
@@ -780,9 +781,10 @@ void WStackingGridder::copyImageToLayerAndInverseCorrect(std::complex<double> *d
 			//size_t xSrc = x + _width / 2;
 			//if(xSrc >= _width) xSrc -= _width;
 			
-			double rad = twoPiW * *sqrtLMIter;
-			double s, c;
-			sincos(rad, &s, &c);
+			double
+				rad = twoPiW * *sqrtLMIter,
+				s = sin(rad),
+				c = cos(rad);
 			double realVal = dataReal[xDest + yDest*_width];
 			if(IsComplexImpl)
 			{
