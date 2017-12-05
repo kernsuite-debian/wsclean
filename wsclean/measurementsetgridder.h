@@ -50,7 +50,8 @@ class MeasurementSetGridder
 			_overSamplingFactor(63),
 			_normalizeForWeighting(true),
 			_visibilityWeightingMode(NormalVisibilityWeighting),
-			_gridMode(KaiserBesselKernel)
+			_gridMode(KaiserBesselKernel),
+			_storeImagingWeights(false)
 		{
 		}
 		virtual ~MeasurementSetGridder()
@@ -90,6 +91,7 @@ class MeasurementSetGridder
 		double WLimit() const { return _wLimit; }
 		bool NormalizeForWeighting() const { return _normalizeForWeighting; }
 		enum VisibilityWeightingMode VisibilityWeightingMode() const { return _visibilityWeightingMode; }
+		bool StoreImagingWeights() const { return _storeImagingWeights; }
 		
 		void SetImageWidth(size_t imageWidth)
 		{
@@ -175,6 +177,10 @@ class MeasurementSetGridder
 		{
 			_visibilityWeightingMode = mode;
 		}
+		void SetStoreImagingWeights(bool storeImagingWeights)
+		{
+			_storeImagingWeights = storeImagingWeights;
+		}
 		
 		virtual void Invert() = 0;
 		
@@ -188,10 +194,6 @@ class MeasurementSetGridder
 		virtual bool HasDenormalPhaseCentre() const { return false; }
 		virtual double PhaseCentreDL() const = 0;
 		virtual double PhaseCentreDM() const = 0;
-//		virtual double HighestFrequencyChannel() const = 0;
-//		virtual double LowestFrequencyChannel() const = 0;
-//		virtual double BandStart() const = 0;
-//		virtual double BandEnd() const = 0;
 		virtual double BeamSize() const = 0;
 		virtual double StartTime() const = 0;
 		virtual double ImageWeight() const = 0;
@@ -200,7 +202,7 @@ class MeasurementSetGridder
 		/**
 		 * Deallocate any data that is no longer necessary, but all methods
 		 * will still return results from the imaging, with the exception of
-		 * except ImageReal/ImagResult() and GetGriddingCorrectionImage().
+		 * ImageReal/ImageResult() and GetGriddingCorrectionImage().
 		 */
 		virtual void FreeImagingData() {	}
 		
@@ -251,6 +253,7 @@ class MeasurementSetGridder
 		bool _normalizeForWeighting;
 		enum VisibilityWeightingMode _visibilityWeightingMode;
 		GridModeEnum _gridMode;
+		bool _storeImagingWeights;
 };
 
 #endif

@@ -8,7 +8,7 @@
 class UnavailableGridder : public MSGridderBase
 {
 public:
-	UnavailableGridder() { doThrow(); }
+	UnavailableGridder(const WSCleanSettings&) { doThrow(); }
 	
 	virtual ~UnavailableGridder() { doThrow(); }
 	
@@ -21,8 +21,6 @@ public:
 	virtual double* ImageRealResult() { doThrow(); return 0; }
 	
 	virtual double* ImageImaginaryResult() { doThrow(); return 0; }
-	
-	virtual double BeamSize() const { doThrow(); return 0.0; }
 	
 	virtual void GetGriddingCorrectionImage(double* image) const { doThrow(); }
 	

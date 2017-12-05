@@ -25,6 +25,7 @@ public:
 		_images.assign(nImages, static_cast<double*>(0));
 		_imageIndexToPSFIndex.resize(nImages);
 		
+		initializePolFactor();
 		initializeIndices();
 	}
 	
@@ -42,34 +43,27 @@ public:
 		_images.assign(nImages, static_cast<double*>(0));
 		_imageIndexToPSFIndex.resize(nImages);
 		
+		initializePolFactor();
 		initializeIndices();
-		AllocateImages();
+		allocateImages();
 	}
 	
 	~ImageSet()
 	{
-		for(ao::uvector<double*>::iterator img=_images.begin();
-				img!=_images.end(); ++img)
-			_allocator.Free(*img);
+		free();
 	}
 	
 	void AllocateImages()
 	{
-		for(ao::uvector<double*>::iterator img=_images.begin();
-				img!=_images.end(); ++img)
-		{
-			*img = _allocator.Allocate(_imageSize);
-		}
+		free();
+		allocateImages();
 	}
 	
 	void AllocateImages(size_t width, size_t height)
 	{
+		free();
 		_imageSize = width*height;
-		for(ao::uvector<double*>::iterator img=_images.begin();
-				img!=_images.end(); ++img)
-		{
-			*img = _allocator.Allocate(_imageSize);
-		}
+		allocateImages();
 	}
 	
 	double* Release(size_t imageIndex)
@@ -105,7 +99,7 @@ public:
 	
 	/**
 	 * This function will calculate the integration over all images, squaring
-	 * images that are in the same square-image group. For example, with
+	 * images that are in the same squared-image group. For example, with
 	 * a squared group of [I, Q, ..] and another group [I2, Q2, ...], this
 	 * will calculate:
 	 * 
@@ -230,6 +224,25 @@ public:
 		return _squareJoinedChannels; 
 	}
 private:
+	ImageSet(const ImageSet&) = delete;
+	ImageSet& operator=(const ImageSet&) = delete;
+		
+	void allocateImages()
+	{
+		for(ao::uvector<double*>::iterator img=_images.begin();
+				img!=_images.end(); ++img)
+		{
+			*img = _allocator.Allocate(_imageSize);
+		}
+	}
+	
+	void free()
+	{
+		for(ao::uvector<double*>::iterator img=_images.begin();
+				img!=_images.end(); ++img)
+			_allocator.Free(*img);
+	}
+		
 	void assign(double* lhs, const double* rhs) const
 	{
 		memcpy(lhs, rhs, sizeof(double) * _imageSize);
@@ -238,6 +251,12 @@ private:
 	void assign(double* lhs, const ImageBufferAllocator::Ptr& rhs) const
 	{
 		memcpy(lhs, rhs.data(), sizeof(double) * _imageSize);
+	}
+	
+	void assignMultiply(double* lhs, const double* rhs, double factor) const
+	{
+		for(size_t i=0; i!=_imageSize; ++i)
+			lhs[i] = rhs[i] * factor;
 	}
 	
 	void assign(double* image, double value) const
@@ -262,6 +281,12 @@ private:
 	{
 		for(size_t i=0; i!=_imageSize; ++i)
 			image[i] = sqrt(image[i]);
+	}
+	
+	void squareRootMultiply(double* image, double factor) const
+	{
+		for(size_t i=0; i!=_imageSize; ++i)
+			image[i] = sqrt(image[i]) * factor;
 	}
 	
 	void addSquared(double* lhs, const double* rhs) const
@@ -304,6 +329,22 @@ private:
 		}
 	}
 	
+	void initializePolFactor()
+	{
+		ImagingTable firstChannelGroup = _imagingTable.GetSquaredGroup(0);
+		std::set<PolarizationEnum> pols;
+		for(size_t i=0; i!=firstChannelGroup.EntryCount(); ++i)
+			pols.insert(firstChannelGroup[i].polarization);
+		bool isDual = pols.size()==2 && Polarization::HasDualPolarization(pols);
+		bool isFull = pols.size()==4 && (
+			Polarization::HasFullLinearPolarization(pols) ||
+			Polarization::HasFullCircularPolarization(pols));
+		if(isDual || isFull)
+			_polarizationNormalizationFactor = 0.5;
+		else
+			_polarizationNormalizationFactor = 1.0;
+	}
+	
 	void copySmallerPart(const double* input, double* output, size_t x1, size_t y1, size_t x2, size_t y2, size_t oldWidth) const
 	{
 		size_t newWidth = x2 - x1;
@@ -332,6 +373,7 @@ private:
 	const ImagingTable& _imagingTable;
 	std::map<size_t, size_t> _tableIndexToImageIndex;
 	ao::uvector<size_t> _imageIndexToPSFIndex;
+	double _polarizationNormalizationFactor;
 	ImageBufferAllocator& _allocator;
 };
 

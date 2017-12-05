@@ -6,7 +6,7 @@ project(wsclean)
 #  set(CMAKE_BUILD_TYPE "Release")
 #endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x -O3 -Wall -DNDEBUG")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -O3 -Wall -DNDEBUG")
 
 if(PORTABLE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
@@ -25,7 +25,7 @@ find_library(FFTW3_LIB fftw3 REQUIRED)
 find_library(FFTW3_THREADS_LIB fftw3_threads REQUIRED)
 #Prevent accidentally finding old BoostConfig.cmake file from casapy
 set(Boost_NO_BOOST_CMAKE ON)
-find_package(Boost COMPONENTS date_time filesystem thread system REQUIRED)
+find_package(Boost COMPONENTS date_time filesystem thread system program_options REQUIRED)
 find_library(PTHREAD_LIB pthread REQUIRED)
 find_library(DL_LIB dl REQUIRED)
 find_path(FFTW3_INCLUDE_DIR NAMES fftw3.h)
@@ -35,14 +35,12 @@ find_library(GSL_CBLAS_LIB NAMES gslcblas)
 
 set(CASA_LIBS ${CASA_MS_LIB} ${CASA_TABLES_LIB} ${CASA_MEASURES_LIB} ${CASA_CASA_LIB} ${CASA_FITS_LIB} ${DL_LIB})
 
-find_path(CASA_INCLUDE_DIR NAMES casacore/ms/MeasurementSets/MeasurementSet.h PATHS /usr/local/include/)
-
 find_path(LOFAR_STATION_RESPONSE_DIR NAMES StationResponse/Station.h)
 find_library(LOFAR_STATION_RESPONSE_LIB stationresponse)
 if(LOFAR_STATION_RESPONSE_DIR AND LOFAR_STATION_RESPONSE_LIB)
   include_directories(${LOFAR_STATION_RESPONSE_DIR})
   set(LBEAM_LIBS ${LOFAR_STATION_RESPONSE_LIB})
-  set(LBEAM_FILES lofar/lbeamevaluator.cpp lofar/lmspredicter.cpp)
+  set(LBEAM_FILES lofar/lbeamevaluator.cpp lofar/lmspredicter.cpp aterms/lofarbeamterm.cpp)
   # Some versions of the LOFAR code require "HAVE_BOOST" to be set explicitly
   # (This is supposed to be fixed in newer LOFAR repositories, AO 2015-11-27)
   add_definitions(-DHAVE_LOFAR_BEAM -DHAVE_BOOST)
@@ -53,19 +51,18 @@ else()
   message("LOFAR beam library not found: LOFAR beam will not be available in WSClean. This is not an error, it means that LOFAR beam correction and the 'lofar-dft' mode will be unavailable.")
 endif(LOFAR_STATION_RESPONSE_DIR AND LOFAR_STATION_RESPONSE_LIB)
 
-find_package(IDG  NO_MODULE QUIET)
+find_package(IDGAPI NO_MODULE QUIET)
 
-if(IDG_LIB AND IDG_INCLUDE_DIR)
-  set(IDG_OPT_LIBS ${IDG_LIB} idg-utility)
+if(IDGAPI_LIBRARIES AND IDGAPI_INCLUDE_DIRS)
   set(IDG_FILES idg/idgmsgridder.cpp)
-  include_directories(${IDG_INCLUDE_DIR})
+  include_directories(${IDGAPI_INCLUDE_DIRS})
   add_definitions(-DHAVE_IDG)
   message("Image domain gridder libraries found.")
-else(IDG_LIB AND IDG_INCLUDE_DIR)
-  set(IDG_OPT_LIBS)
+else(IDGAPI_LIBRARIES AND IDGAPI_INCLUDE_DIRS)
+  set(IDGAPI_LIBRARIES)
   set(IDG_FILES)
   message("Image domain gridder libraries NOT found. Experimental gridder will not be available.")
-endif(IDG_LIB AND IDG_INCLUDE_DIR)
+endif(IDGAPI_LIBRARIES AND IDGAPI_INCLUDE_DIRS)
 
 include_directories(${CASACORE_INCLUDE_DIRS})
 include_directories(${Boost_INCLUDE_DIR})
@@ -117,7 +114,7 @@ IF("${isSystemDir}" STREQUAL "-1")
 ENDIF("${isSystemDir}" STREQUAL "-1")
 
 add_library(wsclean-object OBJECT
-  casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
+  casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialchannelfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
   deconvolution/clarkloop.cpp deconvolution/componentlist.cpp deconvolution/deconvolution.cpp deconvolution/deconvolutionalgorithm.cpp deconvolution/genericclean.cpp deconvolution/imageset.cpp deconvolution/moresane.cpp deconvolution/simpleclean.cpp deconvolution/spectralfitter.cpp
   interface/wscleaninterface.cpp
   iuwt/imageanalysis.cpp iuwt/iuwtdecomposition.cpp iuwt/iuwtdeconvolutionalgorithm.cpp iuwt/iuwtmask.cpp
@@ -140,18 +137,13 @@ add_library(wsclean-shared SHARED ${WSCLEANFILES})
 target_link_libraries(wsclean-shared)
 
 add_executable(wsclean wscleanmain.cpp)
-target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDG_OPT_LIBS})
+target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
 
-add_executable(interfaceexample EXCLUDE_FROM_ALL interface/interfaceexample.c)
-target_link_libraries(interfaceexample wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDG_OPT_LIBS})
+#add_executable(interfaceexample EXCLUDE_FROM_ALL interface/interfaceexample.c)
+#target_link_libraries(interfaceexample wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
 
 add_executable(wsuvbinning EXCLUDE_FROM_ALL wsclean/examples/wsuvbinning.cpp ${WSCLEANFILES})
-target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDG_OPT_LIBS})
-
-set_target_properties(wsclean-object PROPERTIES COMPILE_FLAGS "-std=c++0x")
-set_target_properties(wsclean PROPERTIES COMPILE_FLAGS "-std=c++0x")
-set_target_properties(wsclean-lib PROPERTIES COMPILE_FLAGS "-std=c++0x")
-set_target_properties(wsclean-shared PROPERTIES COMPILE_FLAGS "-std=c++0x")
+target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
 
 install(TARGETS wsclean DESTINATION bin)
 install(TARGETS wsclean-lib DESTINATION lib)
@@ -168,18 +160,26 @@ if(DOXYGEN_FOUND)
     COMMENT "Generating API documentation with Doxygen" VERBATIM)
 endif(DOXYGEN_FOUND)
 
-find_package(Boost COMPONENTS date_time thread system filesystem unit_test_framework)
+find_package(Boost COMPONENTS date_time filesystem thread system program_options unit_test_framework)
 if(Boost_FOUND)
   add_executable(runtest EXCLUDE_FROM_ALL
-		tests/test.cpp tests/testclean.cpp tests/testradeccoord.cpp
-		tests/testpolynomialfitter.cpp tests/testfitsdateobstime.cpp
+		tests/test.cpp
 		tests/testbaselinedependentaveraging.cpp
-		tests/testimageset.cpp
+		tests/testclean.cpp 
+		tests/testcomponentlist.cpp
+		tests/testfitsdateobstime.cpp
+		tests/testfluxdensity.cpp
+		tests/testgaussianfitter.cpp
 		tests/testimage.cpp
+		tests/testimageset.cpp
+		tests/testmatrix2x2.cpp
+		tests/testpolynomialchannelfitter.cpp
+		tests/testpolynomialfitter.cpp
+		tests/testradeccoord.cpp
 		${WSCLEANFILES})
-  target_link_libraries(runtest ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDG_OPT_LIBS})
+  target_link_libraries(runtest ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
   add_test(runtest runtest)
-  add_custom_target(check COMMAND runtest -l unit_scope DEPENDS runtest)
+  add_custom_target(check COMMAND runtest DEPENDS runtest)
 else()
   message("Boost testing framework not found (not required for wsclean: only required for running make check).")
 endif()

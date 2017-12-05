@@ -5,7 +5,8 @@
 #include "../msproviders/msprovider.h"
 
 #include "../imageweights.h"
-#include "../angle.h"
+
+#include "../units/angle.h"
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 #include <casacore/measures/Measures/MDirection.h>
@@ -24,13 +25,14 @@ MSGridderBase::MSData::~MSData()
 
 MSGridderBase::MSGridderBase() :
 	MeasurementSetGridder(),
-	_beamSize(0.0),
+	_theoreticalBeamSize(0.0),
 	_actualInversionWidth(0), _actualInversionHeight(0),
 	_actualPixelSizeX(0), _actualPixelSizeY(0),
 	_hasFrequencies(false),
 	_freqHigh(0.0), _freqLow(0.0),
 	_bandStart(0.0), _bandEnd(0.0),
 	_startTime(0.0),
+	_metaDataCache(nullptr),
 	_phaseCentreRA(0.0), _phaseCentreDec(0.0),
 	_phaseCentreDL(0.0), _phaseCentreDM(0.0),
 	_denormalPhaseCentre(false),
@@ -38,10 +40,12 @@ MSGridderBase::MSGridderBase() :
 	_totalWeight(0.0),
 	_maxGriddedWeight(0.0),
 	_visibilityWeightSum(0.0)
-{
-}
+{ }
 
-void MSGridderBase::GetPhaseCentreInfo(casa::MeasurementSet& ms, size_t fieldId, double& ra, double& dec, double& dl, double& dm)
+MSGridderBase::~MSGridderBase()
+{ }
+
+void MSGridderBase::GetPhaseCentreInfo(casacore::MeasurementSet& ms, size_t fieldId, double& ra, double& dec, double& dl, double& dm)
 {
 	casacore::MSAntenna aTable = ms.antenna();
 	size_t antennaCount = aTable.nrow();
@@ -77,7 +81,7 @@ void MSGridderBase::initializePhaseCentre(casacore::MeasurementSet& ms, size_t f
 		Logger::Info << "Set has denormal phase centre: dl=" << _phaseCentreDL << ", dm=" << _phaseCentreDM << '\n';
 }
 
-void MSGridderBase::initializeBandData(casa::MeasurementSet& ms, MSGridderBase::MSData& msData)
+void MSGridderBase::initializeBandData(casacore::MeasurementSet& ms, MSGridderBase::MSData& msData)
 {
 	msData.bandData = MultiBandData(ms.spectralWindow(), ms.dataDescription());
 	if(Selection(msData.msIndex).HasChannelRange())
@@ -106,8 +110,10 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData)
 	Logger::Info << "Determining min and max w & theoretical beam size... ";
 	Logger::Info.Flush();
 	msData.maxW = 0.0;
+	msData.maxWWithFlags = 0.0;
 	msData.minW = 1e100;
 	msData.maxBaselineUVW = 0.0;
+	msData.maxBaselineInM = 0.0;
 	MultiBandData selectedBand = msData.SelectedBand();
 	std::vector<float> weightArray(selectedBand.MaxChannels() * NPolInMSProvider);
 	msData.msProvider->Reset();
@@ -127,12 +133,13 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData)
 			const float* weightPtr = weightArray.data();
 			for(size_t ch=0; ch!=curBand.ChannelCount(); ++ch)
 			{
+				const double wavelength = curBand.ChannelWavelength(ch);
+				double wInL = wInM/wavelength;
+				msData.maxWWithFlags = std::max(msData.maxWWithFlags, fabs(wInL));
 				if(*weightPtr != 0.0)
 				{
-					const double wavelength = curBand.ChannelWavelength(ch);
 					double
 						uInL = uInM/wavelength, vInL = vInM/wavelength,
-						wInL = wInM/wavelength,
 						x = uInL * PixelSizeX() * ImageWidth(),
 						y = vInL * PixelSizeY() * ImageHeight(),
 						imagingWeight = this->PrecalculatedWeightInfo()->GetWeight(uInL, vInL);
@@ -144,6 +151,7 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData)
 							msData.maxW = std::max(msData.maxW, fabs(wInL));
 							msData.minW = std::min(msData.minW, fabs(wInL));
 							msData.maxBaselineUVW = std::max(msData.maxBaselineUVW, baselineInM / wavelength);
+							msData.maxBaselineInM = std::max(msData.maxBaselineInM, baselineInM);
 						}
 					}
 				}
@@ -157,16 +165,21 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData)
 	if(msData.minW == 1e100)
 	{
 		msData.minW = 0.0;
+		msData.maxWWithFlags = 0.0;
 		msData.maxW = 0.0;
 	}
 	
 	Logger::Info << "DONE (w=[" << msData.minW << ":" << msData.maxW << "] lambdas, maxuvw=" << msData.maxBaselineUVW << " lambda)\n";
+	if(msData.maxWWithFlags != msData.maxW)
+	{
+		Logger::Debug << "Discarded data has higher w value of " << msData.maxWWithFlags << " lambda.\n";
+	}
 }
 
 template void MSGridderBase::calculateWLimits<1>(MSGridderBase::MSData& msData);
 template void MSGridderBase::calculateWLimits<4>(MSGridderBase::MSData& msData);
 
-void MSGridderBase::initializeMSDataVector(std::vector<MSGridderBase::MSData>& msDataVector, size_t nPolInMSProvider)
+void MSGridderBase::initializeMSDataVector(std::vector<MSGridderBase::MSData>& msDataVector)
 {
 	if(MeasurementSetCount() == 0)
 		throw std::runtime_error("Something is wrong during inversion: no measurement sets given to inversion algorithm");
@@ -174,16 +187,34 @@ void MSGridderBase::initializeMSDataVector(std::vector<MSGridderBase::MSData>& m
 	
 	resetMetaData();
 	
+	bool hasCache = !_metaDataCache->msDataVector.empty();
+	if(!hasCache)
+		_metaDataCache->msDataVector.resize(MeasurementSetCount());
 	for(size_t i=0; i!=MeasurementSetCount(); ++i)
 	{
 		msDataVector[i].msIndex = i;
-		initializeMeasurementSet(msDataVector[i]);
+		initializeMeasurementSet(msDataVector[i], _metaDataCache->msDataVector[i], hasCache);
 	}
 	
 	calculateOverallMetaData(msDataVector.data());
 }
 
-void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData)
+void MSGridderBase::initializeMetaData(casacore::MeasurementSet& ms, size_t fieldId)
+{
+	casacore::MSObservation oTable = ms.observation();
+	size_t obsCount = oTable.nrow();
+	if(obsCount == 0) throw std::runtime_error("No observations in set");
+	casacore::ROScalarColumn<casacore::String> telescopeNameColumn(oTable, oTable.columnName(casacore::MSObservation::TELESCOPE_NAME));
+	casacore::ROScalarColumn<casacore::String> observerColumn(oTable, oTable.columnName(casacore::MSObservation::OBSERVER));
+	_telescopeName = telescopeNameColumn(0);
+	_observer = observerColumn(0);
+	
+	casacore::MSField fTable = ms.field();
+	casacore::ROScalarColumn<casacore::String> fieldNameColumn(fTable, fTable.columnName(casacore::MSField::NAME));
+	_fieldName = fieldNameColumn(fieldId);
+}
+
+void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData, MetaDataCache::Entry& cacheEntry, bool isCacheInitialized)
 {
 	MSProvider& msProvider = MeasurementSet(msData.msIndex);
 	msData.msProvider = &msProvider;
@@ -196,7 +227,27 @@ void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData)
 	
 	initializePhaseCentre(ms, Selection(msData.msIndex).FieldId());
 	
-	calculateWLimits<1>(msData);
+	initializeMetaData(ms, Selection(msData.msIndex).FieldId());
+	
+	if(isCacheInitialized)
+	{
+		msData.maxW = cacheEntry.maxW;
+		msData.maxWWithFlags = cacheEntry.maxWWithFlags;
+		msData.minW = cacheEntry.minW;
+		msData.maxBaselineUVW = cacheEntry.maxBaselineUVW;
+		msData.maxBaselineInM = cacheEntry.maxBaselineInM;
+	}
+	else {
+		if (msProvider.Polarization() == Polarization::Instrumental)
+			calculateWLimits<4>(msData);
+		else
+			calculateWLimits<1>(msData);
+		cacheEntry.maxW = msData.maxW;
+		cacheEntry.maxWWithFlags = msData.maxWWithFlags;
+		cacheEntry.minW = msData.minW;
+		cacheEntry.maxBaselineUVW = msData.maxBaselineUVW;
+		cacheEntry.maxBaselineInM = msData.maxBaselineInM;
+	}
 }
 
 void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
@@ -221,8 +272,8 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
 			"***\n";
 	}
 	
-	_beamSize = 1.0 / maxBaseline;
-	Logger::Info << "Theoretic beam = " << Angle::ToNiceString(_beamSize) << "\n";
+	_theoreticalBeamSize = 1.0 / maxBaseline;
+	Logger::Info << "Theoretic beam = " << Angle::ToNiceString(_theoreticalBeamSize) << "\n";
 	if(HasWLimit()) {
 		_maxW *= (1.0 - WLimit());
 		if(_maxW < _minW) _maxW = _minW;
@@ -239,8 +290,8 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
 	if(SmallInversion())
 	{
 		size_t optWidth, optHeight, minWidth, minHeight;
-		SmallInversionOptimization::DetermineOptimalSize(_actualInversionWidth, _actualPixelSizeX, _beamSize, minWidth, optWidth);
-		SmallInversionOptimization::DetermineOptimalSize(_actualInversionHeight, _actualPixelSizeY, _beamSize, minHeight, optHeight);
+		SmallInversionOptimization::DetermineOptimalSize(_actualInversionWidth, _actualPixelSizeX, _theoreticalBeamSize, minWidth, optWidth);
+		SmallInversionOptimization::DetermineOptimalSize(_actualInversionHeight, _actualPixelSizeY, _theoreticalBeamSize, minHeight, optHeight);
 		if(optWidth < _actualInversionWidth || optHeight < _actualInversionHeight)
 		{
 			size_t newWidth = std::max(std::min(optWidth, _actualInversionWidth), size_t(32));
@@ -280,6 +331,7 @@ void MSGridderBase::readAndWeightVisibilities(MSProvider& msProvider, InversionR
 	else {
 		msProvider.ReadData(rowData.data);
 	}
+	rowData.rowId = msProvider.RowId();
 	
 	if(DoSubtractModel())
 	{
@@ -305,56 +357,54 @@ void MSGridderBase::readAndWeightVisibilities(MSProvider& msProvider, InversionR
 	
 	switch(VisibilityWeightingMode())
 	{
-		case NormalVisibilityWeighting:
-			// The MS provider has already preweighted the
-			// visibilities for their weight, so we do not
-			// have to do anything.
-			break;
-		case SquaredVisibilityWeighting:
-			for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
-				rowData.data[chp] *= weightBuffer[chp];
-			break;
-		case UnitVisibilityWeighting:
-			for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
-			{
-				if(weightBuffer[chp] == 0.0)
-					rowData.data[chp] = 0.0;
-				else
-					rowData.data[chp] /= weightBuffer[chp];
-			}
-			break;
-	}
-	switch(Weighting().Mode())
-	{
-		case WeightMode::UniformWeighted:
-		case WeightMode::BriggsWeighted:
-		case WeightMode::NaturalWeighted:
+	case NormalVisibilityWeighting:
+		// The MS provider has already preweighted the
+		// visibilities for their weight, so we do not
+		// have to do anything.
+		break;
+	case SquaredVisibilityWeighting:
+		for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
+			rowData.data[chp] *= weightBuffer[chp];
+		break;
+	case UnitVisibilityWeighting:
+		for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
 		{
-			std::complex<float>* dataIter = rowData.data;
-			float* weightIter = weightBuffer;
-			for(size_t ch=0; ch!=curBand.ChannelCount(); ++ch)
-			{
-				double
-					u = rowData.uvw[0] / curBand.ChannelWavelength(ch),
-					v = rowData.uvw[1] / curBand.ChannelWavelength(ch),
-					weight = PrecalculatedWeightInfo()->GetWeight(u, v);
-				double cumWeight = weight * *weightIter;
-				if(cumWeight != 0.0)
-				{
-					_visibilityWeightSum += *weightIter * 0.5;
-					++_griddedVisibilityCount;
-					_maxGriddedWeight = std::max(cumWeight, _maxGriddedWeight);
-					_totalWeight += cumWeight;
-				}
-				for(size_t p=0; p!=PolarizationCount; ++p)
-				{
-					*dataIter *= weight;
-					++dataIter;
-					++weightIter;
-				}
-			}
-		} break;
+			if(weightBuffer[chp] == 0.0)
+				rowData.data[chp] = 0.0;
+			else
+				rowData.data[chp] /= weightBuffer[chp];
+		}
+		break;
 	}
+	
+	// Calculate imaging weights
+	std::complex<float>* dataIter = rowData.data;
+	float* weightIter = weightBuffer;
+	_scratchWeights.resize(curBand.ChannelCount());
+	for(size_t ch=0; ch!=curBand.ChannelCount(); ++ch)
+	{
+		double
+			u = rowData.uvw[0] / curBand.ChannelWavelength(ch),
+			v = rowData.uvw[1] / curBand.ChannelWavelength(ch),
+			weight = PrecalculatedWeightInfo()->GetWeight(u, v);
+		_scratchWeights[ch] = weight;
+		double cumWeight = weight * *weightIter;
+		if(cumWeight != 0.0)
+		{
+			_visibilityWeightSum += *weightIter * 0.5;
+			++_griddedVisibilityCount;
+			_maxGriddedWeight = std::max(cumWeight, _maxGriddedWeight);
+			_totalWeight += cumWeight;
+		}
+		for(size_t p=0; p!=PolarizationCount; ++p)
+		{
+			*dataIter *= weight;
+			++dataIter;
+			++weightIter;
+		}
+	}
+	if(StoreImagingWeights())
+		msProvider.WriteImagingWeights(rowData.rowId, _scratchWeights.data());
 }
 
 template void MSGridderBase::readAndWeightVisibilities<1>(MSProvider& msProvider, InversionRow& newItem, const BandData& curBand, float* weightBuffer, std::complex<float>* modelBuffer, const bool* isSelected);
@@ -367,9 +417,9 @@ void MSGridderBase::rotateVisibilities(const BandData& bandData, double shiftFac
 	for(unsigned ch=0; ch!=bandData.ChannelCount(); ++ch)
 	{
 		const double wShiftRad = shiftFactor / bandData.ChannelWavelength(ch);
-		double rotSinD, rotCosD;
-		sincos(wShiftRad, &rotSinD, &rotCosD);
-		float rotSin = rotSinD, rotCos = rotCosD;
+		float
+			rotSin = sin(wShiftRad),
+			rotCos = cos(wShiftRad);
 		std::complex<float> v = *dataIter;
 		*dataIter = std::complex<float>(
 			v.real() * rotCos  -  v.imag() * rotSin,

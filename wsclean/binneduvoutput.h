@@ -57,9 +57,9 @@ public:
 		
 		// There are two factors of 2 involved: one coming from
 		// SingleFT(), and one from the fact that normF excludes a factor of two.
-		dirty *= 4.0 * normF * nVis / (2.0*sqrt(width * height) * vwSum);
-		psf *= 4.0 * normF * nVis / (2.0*sqrt(width * height) * vwSum);
-		uvCovPsf *= 4.0 * normFUVC * nVisUVC / (2.0*sqrt(width * height) * vwSumUVC);
+		dirty *= normF * nVis / (2.0*sqrt(width * height) * vwSum);
+		psf *= normF * nVis / (2.0*sqrt(width * height) * vwSum);
+		uvCovPsf *= normFUVC * nVisUVC / (2.0*sqrt(width * height) * vwSumUVC);
 		FFTResampler fft(width, height, width, height, 1, false);
 		fft.SingleFT(dirty.data(), realUV.data(), imagUV.data());
 		fft.SingleFT(psf.data(), realPsfUV.data(), imagPsfUV.data());
@@ -80,7 +80,7 @@ public:
 		file.precision(15);
 		size_t nBins = 0;
 		double effVisSum = 0.0;
-		for(size_t y=0; y!=height/2; ++y)
+		for(size_t y=0; y!=height; ++y)
 		{
 			const double
 				*realPsfPtr = &realPsfUV[y*width],
@@ -91,7 +91,7 @@ public:
 				*realPtr = &realUV[y*width],
 				*imagPtr = &imagUV[y*width],
 				*binnedPtr = &binned[y*width];
-			double vInLambda = double(int(height)/2-int(y)-1) / (pixelSizeY * height);
+			double vInLambda = double(int(height)/2-int(y)) / (pixelSizeY * height);
 			for(size_t x=0; x!=width; ++x)
 			{
 				double uvCovVal = std::abs(std::complex<double>(realPsfUVCovPtr[x], imagPsfUVCovPtr[x]));
@@ -100,9 +100,9 @@ public:
 					binnedPtr[x] = std::abs(std::complex<double>(realPtr[x], imagPtr[x]));
 					++nBins;
 					
-					double uInLambda = double(int(width)/2-int(x)-1) / (pixelSizeX * width);
+					double uInLambda = double(int(width)/2-int(x)) / (pixelSizeX * width);
 					double psfVal = std::abs(std::complex<double>(realPsfPtr[x], imagPsfPtr[x]));
-					file << uInLambda << "," << vInLambda << "," << realPtr[x] << "," << imagPtr[x] << "," << psfVal << "," << psfVal*vwSum/nVis << '\n';
+					file << uInLambda << " " << vInLambda << " " << realPtr[x] << " " << imagPtr[x] << " " << psfVal << " " << psfVal*vwSum/nVis << '\n';
 					effVisSum += psfVal;
 				}
 				else {

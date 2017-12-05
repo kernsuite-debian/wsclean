@@ -1,6 +1,8 @@
 #ifndef COMPONENT_LIST_H
 #define COMPONENT_LIST_H
 
+#include "imageset.h"
+
 #include "../image.h"
 #include "../uvector.h"
 
@@ -11,6 +13,23 @@
 class ComponentList
 {
 public:
+	/**
+	 * Constructor for single-scale clean
+	 */
+	ComponentList(size_t width, size_t height, ImageSet& imageSet) :
+		_width(width), _height(height),
+		_nScales(1), _nFrequencies(imageSet.size()),
+		_componentsAddedSinceLastMerge(0),
+		_maxComponentsBeforeMerge(100000),
+		_listPerScale(1),
+		_allocator(imageSet.Allocator())
+	{
+		loadFromImageSet(imageSet, 0);
+	}
+	
+	/**
+	 * Constructor for multi-scale clean
+	 */
 	ComponentList(size_t width, size_t height, size_t nScales, size_t nFrequencies, ImageBufferAllocator& allocator) :
 		_width(width), _height(height),
 		_nScales(nScales), _nFrequencies(nFrequencies),
@@ -30,8 +49,10 @@ public:
 			MergeDuplicates();
 	}
 	
-	void Write(const class MultiScaleAlgorithm& multiscale, const class WSCleanSettings& settings, long double pixelScaleX, long double pixelScaleY, long double phaseCentreRA, long double phaseCentreDec);
-	
+	void Write(const std::string& filename, const class MultiScaleAlgorithm& multiscale, long double pixelScaleX, long double pixelScaleY, long double phaseCentreRA, long double phaseCentreDec);
+
+	void WriteSingleScale(const std::string& filename, const class DeconvolutionAlgorithm& algorithm, long double pixelScaleX, long double pixelScaleY, long double phaseCentreRA, long double phaseCentreDec);
+
 	void MergeDuplicates()
 	{
 		for(size_t scaleIndex=0; scaleIndex!=_nScales; ++scaleIndex)
@@ -51,6 +72,9 @@ public:
 		for(size_t f=0; f!=_nFrequencies; ++f)
 			values[f] = _listPerScale[scaleIndex].values[index * _nFrequencies + f];
 	}
+	
+	void CorrectForBeam(class PrimaryBeamImageSet& beam, size_t channel);
+	
 private:
 	struct Position {
 		Position(size_t _x, size_t _y) :
@@ -69,6 +93,10 @@ private:
 		ao::uvector<Position> positions;
 	};
 	
+	void write(const std::string& filename, const class DeconvolutionAlgorithm& algorithm, const ao::uvector<double>& scaleSizes, long double pixelScaleX, long double pixelScaleY, long double phaseCentreRA, long double phaseCentreDec);
+	
+	void loadFromImageSet(ImageSet& imageSet, size_t scaleIndex);
+  
 	void mergeDuplicates(size_t scaleIndex)
 	{
 		ScaleList& list = _listPerScale[scaleIndex];

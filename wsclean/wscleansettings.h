@@ -2,7 +2,7 @@
 #define WSCLEAN_SETTINGS_H
 
 #include "wstackinggridder.h"
-#include "inversionalgorithm.h"
+#include "measurementsetgridder.h"
 
 #include "../msselection.h"
 #include "../system.h"
@@ -21,11 +21,13 @@ public:
 	
 	void Validate() const;
 	
-	void Propogate() { setDimensions(); }
+	void Propogate() { RecalculatePaddedDimensions(); }
+	
+	void RecalculatePaddedDimensions();
 	
 	std::vector<std::string> filenames;
 	enum Mode { ImagingMode, PredictMode, RestoreMode } mode;
-	size_t untrimmedImageWidth, untrimmedImageHeight;
+	size_t paddedImageWidth, paddedImageHeight;
 	size_t trimmedImageWidth, trimmedImageHeight;
 	double imagePadding;
 	size_t widthForNWCalculation, heightForNWCalculation;
@@ -50,11 +52,14 @@ public:
 	WeightMode weightMode;
 	std::string prefixName;
 	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved;
+	bool writeImagingWeightSpectrumColumn;
 	bool dftPrediction, dftWithBeam;
 	std::string temporaryDirectory;
 	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfsWeighting;
 	bool normalizeForWeighting;
-	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, useIDG;
+	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, savePsfPb;
+	bool useIDG, gridWithBeam;
+	enum IDGMode { IDG_DEFAULT, IDG_GPU, IDG_CPU, IDG_HYBRID } idgMode;
 	enum GridModeEnum gridMode;
 	enum MeasurementSetGridder::VisibilityWeightingMode visibilityWeightingMode;
 	double baselineDependentAveragingInWavelengths;
@@ -67,22 +72,23 @@ public:
 	double deconvolutionThreshold, deconvolutionGain, deconvolutionMGain;
 	bool autoDeconvolutionThreshold, autoMask;
 	double autoDeconvolutionThresholdSigma, autoMaskSigma;
-	bool rmsBackground;
-	double rmsBackgroundWindow;
-	enum RMSBackgroundMethod { RMSWindow, RMSAndMinimumWindow } rmsBackgroundMethod;
-	bool saveComponentList;
-	size_t deconvolutionIterationCount;
+	bool localRMS;
+	double localRMSWindow;
+	enum LocalRMSMethod { RMSWindow, RMSAndMinimumWindow } localRMSMethod;
+	bool saveSourceList;
+	size_t deconvolutionIterationCount, majorIterationCount;
 	bool allowNegativeComponents, stopOnNegativeComponents;
 	bool useMultiscale, useClarkOptimization, squaredJoins, forceDynamicJoin;
 	bool multiscaleFastSubMinorLoop;
 	double multiscaleGain, multiscaleDeconvolutionScaleBias;
 	bool multiscaleNormalizeResponse;
+	double multiscaleConvolutionPadding;
 	ao::uvector<double> multiscaleScaleList;
 	MultiScaleTransforms::Shape multiscaleShapeFunction;
 	
 	double deconvolutionBorderRatio;
 	std::string fitsDeconvolutionMask, casaDeconvolutionMask;
-	std::string rmsBackgroundImage;
+	std::string localRMSImage;
 	bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
 	std::string moreSaneLocation, moreSaneArgs;
 	ao::uvector<double> moreSaneSigmaLevels;
@@ -114,13 +120,12 @@ public:
 	
 private:
 	void checkPolarizations() const;
-	void setDimensions();
 };
 
 inline WSCleanSettings::WSCleanSettings() :
 	filenames(),
 	mode(ImagingMode),
-	untrimmedImageWidth(0), untrimmedImageHeight(0),
+	paddedImageWidth(0), paddedImageHeight(0),
 	trimmedImageWidth(0), trimmedImageHeight(0),
 	imagePadding(1.2),
 	widthForNWCalculation(0), heightForNWCalculation(0),
@@ -150,6 +155,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	prefixName("wsclean"),
 	smallInversion(true), makePSF(false), makePSFOnly(false), isWeightImageSaved(false),
 	isUVImageSaved(false), isDirtySaved(true), isGriddingImageSaved(false),
+	writeImagingWeightSpectrumColumn(false),
 	dftPrediction(false), dftWithBeam(false),
 	temporaryDirectory(),
 	forceReorder(false), forceNoReorder(false),
@@ -159,7 +165,10 @@ inline WSCleanSettings::WSCleanSettings() :
 	normalizeForWeighting(true),
 	applyPrimaryBeam(false), reusePrimaryBeam(false),
 	useDifferentialLofarBeam(false),
+	savePsfPb(false),
 	useIDG(false),
+	gridWithBeam(false),
+	idgMode(IDG_DEFAULT),
 	gridMode(KaiserBesselKernel),
 	visibilityWeightingMode(MeasurementSetGridder::NormalVisibilityWeighting),
 	baselineDependentAveragingInWavelengths(0.0),
@@ -173,11 +182,12 @@ inline WSCleanSettings::WSCleanSettings() :
 	autoMask(false),
 	autoDeconvolutionThresholdSigma(0.0),
 	autoMaskSigma(0.0),
-	rmsBackground(false),
-	rmsBackgroundWindow(25.0),
-	rmsBackgroundMethod(RMSWindow),
-	saveComponentList(false),
+	localRMS(false),
+	localRMSWindow(25.0),
+	localRMSMethod(RMSWindow),
+	saveSourceList(false),
 	deconvolutionIterationCount(0),
+	majorIterationCount(20),
 	allowNegativeComponents(true), 
 	stopOnNegativeComponents(false),
 	useMultiscale(false),
@@ -188,9 +198,10 @@ inline WSCleanSettings::WSCleanSettings() :
 	multiscaleGain(0.2),
 	multiscaleDeconvolutionScaleBias(0.6),
 	multiscaleNormalizeResponse(false),
+	multiscaleConvolutionPadding(1.1),
 	multiscaleScaleList(),
 	multiscaleShapeFunction(MultiScaleTransforms::TaperedQuadraticShape),
-	deconvolutionBorderRatio(0.05),
+	deconvolutionBorderRatio(0.0),
 	fitsDeconvolutionMask(),
 	casaDeconvolutionMask(),
 	useMoreSaneDeconvolution(false),

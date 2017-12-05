@@ -50,6 +50,10 @@ public:
 	{
 		_multiscaleNormalizeResponse = normResponse;
 	}
+	void SetConvolutionPadding(double padding)
+	{
+		_convolutionPadding = padding;
+	}
 	void SetShape(MultiScaleTransforms::Shape shape)
 	{
 		_scaleShape = shape;
@@ -99,7 +103,8 @@ private:
 		 * The difference between the normalized and unnormalized value is
 		 * that the unnormalized value is relative to the RMS factor.
 		 */
-		double maxNormalizedImageValue, maxUnnormalizedImageValue, rms;
+		double maxNormalizedImageValue, maxUnnormalizedImageValue;
+		double rms;
 		size_t maxImageValueX, maxImageValueY;
 		bool isActive;
 		size_t nComponentsCleaned;
@@ -115,7 +120,7 @@ private:
 	void initializeScaleInfo();
 	void convolvePSFs(std::unique_ptr<ImageBufferAllocator::Ptr[]>& convolvedPSFs, const double* psf, double* tmp, bool isIntegrated);
 	void findActiveScaleConvolvedMaxima(const ImageSet& imageSet, double* integratedScratch, double* scratch, bool reportRMS);
-	void sortScalesOnMaxima(size_t& scaleWithPeak);
+	bool selectMaximumScale(size_t& scaleWithPeak);
 	void activateScales(size_t scaleWithLastPeak);
 	void measureComponentValues(ao::uvector<double>& componentValues, size_t scaleIndex, ImageSet& imageSet);
 	void addComponentToModel(double* model, size_t scaleWithPeak, double componentValue);

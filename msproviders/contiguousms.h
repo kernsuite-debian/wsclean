@@ -7,6 +7,7 @@
 #include "../multibanddata.h"
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
+
 #include <casacore/tables/Tables/ArrayColumn.h>
 #include <casacore/tables/Tables/ScalarColumn.h>
 
@@ -15,44 +16,48 @@
 class ContiguousMS : public MSProvider
 {
 public:
-	ContiguousMS(const string& msPath, const std::string& dataColumnName, const MSSelection& selection, PolarizationEnum polOut, size_t dataDescIndex, bool includeModel);
+	ContiguousMS(const string& msPath, const std::string& dataColumnName, const MSSelection& selection, PolarizationEnum polOut, size_t dataDescIndex);
 	
 	ContiguousMS(const ContiguousMS&) = delete;
 	
 	ContiguousMS& operator=(const ContiguousMS&) = delete;
 	
-	virtual casacore::MeasurementSet &MS()   { return _ms; }
+	casacore::MeasurementSet &MS() final override { return _ms; }
 	
-	virtual size_t RowId() const   { return _rowId; }
+	size_t RowId() const final override { return _rowId; }
 	
-	virtual bool CurrentRowAvailable()  ;
+	bool CurrentRowAvailable() final override;
 	
-	virtual void NextRow()  ;
+	void NextRow() final override;
 	
-	virtual void Reset()  ;
+	void Reset() final override;
 	
-	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId)  ;
+	void ReadMeta(double& u, double& v, double& w, size_t& dataDescId) final override;
 	
-	virtual void ReadMeta(double& u, double& v, double& w, size_t& dataDescId, size_t& antenna1, size_t& antenna2);
+	void ReadMeta(MetaData& metaData) final override;
 	
-	virtual void ReadData(std::complex<float>* buffer)  ;
+	void ReadData(std::complex<float>* buffer) final override;
 	
-	virtual void ReadModel(std::complex<float>* buffer)  ;
+	void ReadModel(std::complex<float>* buffer) final override;
 	
-	virtual void WriteModel(size_t rowId, std::complex<float>* buffer)  ;
+	void WriteModel(size_t rowId, std::complex<float>* buffer) final override;
 	
-	virtual void ReadWeights(float* buffer)  ;
+	void ReadWeights(std::complex<float>* buffer) final override;
 	
-	virtual void ReadWeights(std::complex<float>* buffer)  ;
+	void ReadWeights(float* buffer) final override;
 	
-	virtual void ReopenRW()  
+	void WriteImagingWeights(size_t rowId, const float* buffer) final override;
+	
+	void ReopenRW() final override 
 	{
 		_ms.reopenRW();
 	}
 	
-	virtual double StartTime()  ;
+	double StartTime() final override;
 	
-	virtual void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow)  ;
+	void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow) final override;
+	
+	PolarizationEnum Polarization() final override { return _polOut; }
 private:
 	size_t _row, _rowId;
 	size_t _timestep;
@@ -70,18 +75,19 @@ private:
 	MultiBandData _bandData;
 	bool _msHasWeightSpectrum;
 
-	casacore::ROScalarColumn<int> _antenna1Column, _antenna2Column, _fieldIdColumn, _dataDescIdColumn;
-	casacore::ROScalarColumn<double> _timeColumn;
-	casacore::ROArrayColumn<double> _uvwColumn;
-	std::unique_ptr<casacore::ROArrayColumn<float>> _weightSpectrumColumn;
-	std::unique_ptr<casacore::ROArrayColumn<float>> _weightScalarColumn;
+	casacore::ScalarColumn<int> _antenna1Column, _antenna2Column, _fieldIdColumn, _dataDescIdColumn;
+	casacore::ScalarColumn<double> _timeColumn;
+	casacore::ArrayColumn<double> _uvwColumn;
+	std::unique_ptr<casacore::ArrayColumn<float>> _weightSpectrumColumn;
+	std::unique_ptr<casacore::ArrayColumn<float>> _weightScalarColumn;
 	std::string _dataColumnName;
 	casacore::ROArrayColumn<casacore::Complex> _dataColumn;
 	casacore::ROArrayColumn<bool> _flagColumn;
 	std::unique_ptr<casacore::ArrayColumn<casacore::Complex>> _modelColumn;
+	std::unique_ptr<casacore::ArrayColumn<float>> _imagingWeightsColumn;
 	
 	casacore::Array<std::complex<float>> _dataArray, _modelArray;
-	casacore::Array<float> _weightSpectrumArray, _weightScalarArray;
+	casacore::Array<float> _weightSpectrumArray, _weightScalarArray, _imagingWeightSpectrumArray;
 	casacore::Array<bool> _flagArray;
 	
 	void prepareModelColumn();

@@ -1,24 +1,28 @@
 #ifndef MS_GRIDDER_BASE_H
 #define MS_GRIDDER_BASE_H
 
-#include "inversionalgorithm.h"
+#include "measurementsetgridder.h"
+
 #include "../multibanddata.h"
+#include "../uvector.h"
 
 class MSGridderBase : public MeasurementSetGridder
 {
 public:
 	MSGridderBase();
+	~MSGridderBase();
 	
-	virtual double StartTime() const { return _startTime; }
-	virtual double PhaseCentreRA() const { return _phaseCentreRA; }
-	virtual double PhaseCentreDec() const { return _phaseCentreDec; }
-	virtual double PhaseCentreDL() const { return _phaseCentreDL; }
-	virtual double PhaseCentreDM() const { return _phaseCentreDM; }
-	virtual bool HasDenormalPhaseCentre() const { return _denormalPhaseCentre; }
-	virtual double ImageWeight() const { return _totalWeight*0.5; }
-	virtual double NormalizationFactor() const {
-		return NormalizeForWeighting() ? _totalWeight*0.5 : 1.0;
+	virtual double StartTime() const final override { return _startTime; }
+	virtual double PhaseCentreRA() const final override { return _phaseCentreRA; }
+	virtual double PhaseCentreDec() const final override { return _phaseCentreDec; }
+	virtual double PhaseCentreDL() const final override { return _phaseCentreDL; }
+	virtual double PhaseCentreDM() const final override { return _phaseCentreDM; }
+	virtual bool HasDenormalPhaseCentre() const final override { return _denormalPhaseCentre; }
+	virtual double ImageWeight() const final override { return _totalWeight*2.0; }
+	virtual double NormalizationFactor() const final override {
+		return NormalizeForWeighting() ? _totalWeight*2.0 : 1.0;
 	}
+	virtual double BeamSize() const final override { return _theoreticalBeamSize; }
 	
 	/**
 	 * This is the sum of the weights as given by the measurement set, before the
@@ -43,6 +47,23 @@ public:
 	double EffectiveGriddedVisibilityCount() const { return totalWeight()/MaxGriddedWeight(); }
 	
 	static void GetPhaseCentreInfo(casacore::MeasurementSet& ms, size_t fieldId, double& ra, double& dec, double& dl, double& dm);
+	
+	const std::string& TelescopeName() const { return _telescopeName; }
+	
+	const std::string& Observer() const { return _observer; }
+	
+	const std::string& FieldName() const { return _fieldName; }
+	
+	struct MetaDataCache
+	{
+		struct Entry {
+			double minW, maxW, maxWWithFlags, maxBaselineUVW, maxBaselineInM;
+		};
+		std::vector<Entry> msDataVector;
+	};
+	
+	void SetMetaDataCache(MetaDataCache* cache) { _metaDataCache = cache; }
+	
 protected:
 	struct MSData
 	{
@@ -54,7 +75,7 @@ protected:
 			MultiBandData bandData;
 			size_t startChannel, endChannel;
 			size_t matchingRows, totalRowsProcessed;
-			double minW, maxW, maxBaselineUVW;
+			double minW, maxW, maxWWithFlags, maxBaselineUVW, maxBaselineInM;
 			size_t rowStart, rowEnd;
 		
 			MultiBandData SelectedBand() const { return MultiBandData(bandData, startChannel, endChannel); }
@@ -63,11 +84,11 @@ protected:
 			
 			void operator=(const MSData &source);
 	};
-		
+
 	struct InversionRow
 	{
 		double uvw[3];
-		size_t dataDescId;
+		size_t dataDescId, rowId;
 		std::complex<float>* data;
 	};
 		
@@ -75,12 +96,6 @@ protected:
 	{
 		_hasFrequencies = false;
 	}
-	
-	void initializeMSDataVector(std::vector<MSData>& msDataVector, size_t nPolInMSProvider);
-	
-	void initializePhaseCentre(casacore::MeasurementSet& ms, size_t fieldId);
-	
-	void initializeBandData(casacore::MeasurementSet& ms, MSGridderBase::MSData& msData);
 	
 	void calculateMSLimits(const MultiBandData& selectedBand, double startTime)
 	{
@@ -104,7 +119,7 @@ protected:
 	template<size_t NPolInMSProvider>
 	void calculateWLimits(MSGridderBase::MSData& msData);
 	
-	void initializeMeasurementSet(MSGridderBase::MSData& msData);
+	void initializeMeasurementSet(MSGridderBase::MSData& msData, MetaDataCache::Entry& cacheEntry, bool isCacheInitialized);
 	
 	void calculateOverallMetaData(const MSData* msDataVector);
 	
@@ -112,7 +127,7 @@ protected:
 	void readAndWeightVisibilities(MSProvider& msProvider, InversionRow& rowData, const BandData& curBand, float* weightBuffer, std::complex<float>* modelBuffer, const bool* isSelected);
 
 	double _maxW, _minW;
-	double _beamSize;
+	double _theoreticalBeamSize;
 	size_t _actualInversionWidth, _actualInversionHeight;
 	double _actualPixelSizeX, _actualPixelSizeY;
 	
@@ -126,22 +141,34 @@ protected:
 	
 	double totalWeight() const { return _totalWeight; }
 	
+	void initializeMSDataVector(std::vector<MSData>& msDataVector);
+	
 private:
 	template<size_t PolarizationCount>
 	static void rotateVisibilities(const BandData &bandData, double shiftFactor, std::complex<float>* dataIter);
+	
+	void initializePhaseCentre(casacore::MeasurementSet& ms, size_t fieldId);
+	
+	void initializeBandData(casacore::MeasurementSet& ms, MSGridderBase::MSData& msData);
+	
+	void initializeMetaData(casacore::MeasurementSet& ms, size_t fieldId);
 		
 	bool _hasFrequencies;
 	double _freqHigh, _freqLow;
 	double _bandStart, _bandEnd;
 	double _startTime;
+	struct MetaDataCache* _metaDataCache;
 	
 	double _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
 	bool _denormalPhaseCentre;
+	std::string _telescopeName, _observer, _fieldName;
 	
 	size_t _griddedVisibilityCount;
 	double _totalWeight;
 	double _maxGriddedWeight;
 	double _visibilityWeightSum;
+	
+	ao::uvector<float> _scratchWeights;
 };
 
 #endif

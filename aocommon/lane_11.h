@@ -55,6 +55,7 @@ namespace ao
  * {
  *   while(moreTasks)
  *     taskLane->write(nextTask());
+ *   taskLane->write_end();
  * }
  * 
  * void consumer(lane<Task>* taskLane)
@@ -78,12 +79,13 @@ namespace ao
  * methods are not: assignment, swap(), clear() and resize() can not
  * be called from a different thread while another thread is also
  * accessing the lane. The same holds obviously for the constructors
- * and destructor. This is chosen because these methods would always never
- * be called in parallel with other methods.
+ * and destructor. This is chosen because these methods should almost never
+ * be called in parallel with other methods, and hence it is not worth
+ * to increase every call with extra locks to make this possible.
  * 
  * With one reader and one writer, the order is guaranteed to be consistent.
- * With multiple readers or writers in combination with the multi-element
- * write or read functions, a stream of symbols might be interrupted. For
+ * With multiple readers or writers in combination with multi-element
+ * write or read functions, a sequence of symbols might be interrupted. For
  * example, if a multi-element write() won't fit completely in the buffer,
  * the thread will wait for free space. Another thread might get now write
  * access first, causing the single call to the multi-element write to be
@@ -261,28 +263,12 @@ class lane
 		
 		void write(const value_type* elements, size_t n)
 		{
-			std::unique_lock<std::mutex> lock(_mutex);
-			LANE_REGISTER_DEBUG_INFO;
-			
-			if(_status == status_normal)
-			{
-				size_t write_size = _free_write_space > n ? n : _free_write_space;
-				immediate_write(elements, write_size);
-				n -= write_size;
-				
-				while(n != 0) {
-					elements += write_size;
-				
-					do {
-						LANE_REGISTER_DEBUG_WRITE_WAIT;
-						_writing_possible_condition.wait(lock);
-					} while(_free_write_space == 0 && _status == status_normal);
-					
-					write_size = _free_write_space > n ? n : _free_write_space;
-					immediate_write(elements, write_size);
-					n -= write_size;
-				} while(n != 0);
-			}
+			write_generic(elements, n);
+		}
+		
+		void move_write(value_type* elements, size_t n)
+		{
+			write_generic(elements, n);
 		}
 		
 		bool read(value_type& destination)
@@ -298,7 +284,7 @@ class lane
 				return false;
 			else
 			{
-				destination = _buffer[read_position()];
+				destination = std::move(_buffer[read_position()]);
 				++_free_write_space;
 				// Now that there is more free write space, writers can possibly continue.
 				_writing_possible_condition.notify_all();
@@ -412,7 +398,37 @@ class lane
 			return _capacity - _free_write_space;
 		}
 		
-		void immediate_write(const value_type *elements, size_t n) noexcept
+		// This is a template to allow const and non-const (to be able to move)
+		template<typename T>
+		void write_generic(T* elements, size_t n)
+		{
+			std::unique_lock<std::mutex> lock(_mutex);
+			LANE_REGISTER_DEBUG_INFO;
+			
+			if(_status == status_normal)
+			{
+				size_t write_size = _free_write_space > n ? n : _free_write_space;
+				immediate_write(elements, write_size);
+				n -= write_size;
+				
+				while(n != 0) {
+					elements += write_size;
+				
+					do {
+						LANE_REGISTER_DEBUG_WRITE_WAIT;
+						_writing_possible_condition.wait(lock);
+					} while(_free_write_space == 0 && _status == status_normal);
+					
+					write_size = _free_write_space > n ? n : _free_write_space;
+					immediate_write(elements, write_size);
+					n -= write_size;
+				} while(n != 0);
+			}
+		}
+		
+		// This is a template to allow const and non-const (to be able to move)
+		template<typename T>
+		void immediate_write(T *elements, size_t n) noexcept
 		{
 			// Split the writing in two ranges if needed. The first range fits in
 			// [_write_position, _capacity), the second range in [0, end). By doing
@@ -428,14 +444,14 @@ class lane
 				}
 				for(size_t i = 0; i < nPart ; ++i, ++_write_position)
 				{
-					_buffer[_write_position] = elements[i];
+					_buffer[_write_position] = std::move(elements[i]);
 				}
 				
 				_write_position = _write_position % _capacity;
 				
 				for(size_t i = nPart; i < n ; ++i, ++_write_position)
 				{
-					_buffer[_write_position] = elements[i];
+					_buffer[_write_position] = std::move(elements[i]);
 				}
 				
 				_free_write_space -= n;
@@ -462,14 +478,14 @@ class lane
 				}
 				for(size_t i = 0; i < nPart ; ++i, ++position)
 				{
-					elements[i] = _buffer[position];
+					elements[i] = std::move(_buffer[position]);
 				}
 				
 				position = position % _capacity;
 				
 				for(size_t i = nPart; i < n ; ++i, ++position)
 				{
-					elements[i] = _buffer[position];
+					elements[i] = std::move(_buffer[position]);
 				}
 				
 				_free_write_space += n;

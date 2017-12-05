@@ -32,10 +32,11 @@ size_t ClarkModel::GetMaxComponent(double* scratch, double& maxValue) const
 			maxValue = value;
 		}
 	}
+	maxValue = scratch[maxComponent]; // If it was negative, make sure a negative value is returned
 	return maxComponent;
 }
 
-double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const double*>& doubleConvolvedPsfs)
+boost::optional<double> ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const double*>& doubleConvolvedPsfs)
 {
 	_clarkModel = ClarkModel(_width, _height);
 	
@@ -46,11 +47,14 @@ double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const doubl
 		_clarkModel.MakeRMSFactorImage(_rmsFactorImage);
 	Logger::Debug << "Number of components selected > " << _threshold << ": " << _clarkModel.size() << '\n';
 	
+	if(_clarkModel.size() == 0)
+		return boost::optional<double>();
+	
 	ao::uvector<double> scratch(_clarkModel.size());
 	double maxValue;
 	size_t maxComponent = _clarkModel.GetMaxComponent(scratch.data(), maxValue, _allowNegativeComponents);
 		
-	while(std::fabs(maxValue) > _threshold && _currentIteration < _maxIterations)
+	while(std::fabs(maxValue) > _threshold && _currentIteration < _maxIterations && (!_stopOnNegativeComponent || maxValue>=0.0))
 	{
 		ao::uvector<double> componentValues(_clarkModel.Residual().size());
 		for(size_t imgIndex=0; imgIndex!=_clarkModel.Residual().size(); ++imgIndex)
@@ -66,6 +70,13 @@ double ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uvector<const doubl
 		size_t
 			x = _clarkModel.X(maxComponent),
 			y = _clarkModel.Y(maxComponent);
+		/*
+		  Commented out because even in verbose mode this is a bit too verbose, but useful in case divergence occurs:
+		Logger::Debug << x << ", " << y << " " << maxValue << " -> ";
+		for(size_t imgIndex=0; imgIndex!=_clarkModel.Model().size(); ++imgIndex)
+		  Logger::Debug << componentValues[imgIndex] << ' ';
+		Logger::Debug << '\n';
+		*/
 		for(size_t imgIndex=0; imgIndex!=_clarkModel.Residual().size(); ++imgIndex)
 		{
 			double* image = _clarkModel.Residual()[imgIndex];
