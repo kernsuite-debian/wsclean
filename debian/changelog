@@ -1,3 +1,9 @@
+wsclean (2.5-1kern2) xenial; urgency=medium
+
+  * fix libwsclean0 version dependency for wsclean
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 17 Jan 2018 15:57:24 +0200
+
 wsclean (2.5-1kern1) xenial; urgency=medium
 
   * build for kern
