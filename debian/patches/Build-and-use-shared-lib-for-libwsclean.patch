@@ -3,20 +3,20 @@ Date: Fri, 30 Sep 2016 14:06:27 +0200
 Subject: Build and use shared lib for libwsclean
 
 ---
- CMakeLists.txt | 15 +++++++++------
- 1 file changed, 9 insertions(+), 6 deletions(-)
+ CMakeLists.txt | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index c0bdde4..44c5115 100644
+index 789b432..3b6fa1b 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -134,19 +134,22 @@ add_library(wsclean-lib STATIC ${WSCLEANFILES})
- set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+@@ -120,20 +120,22 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+ set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
  
  add_library(wsclean-shared SHARED ${WSCLEANFILES})
 -target_link_libraries(wsclean-shared)
 +set_target_properties(wsclean-shared PROPERTIES OUTPUT_NAME wsclean)
-+SET_TARGET_PROPERTIES(wsclean-shared PROPERTIES SOVERSION 0)
+ set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 +target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS})
  
  add_executable(wsclean wscleanmain.cpp)
