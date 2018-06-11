@@ -75,17 +75,15 @@ void WSClean::imagePSF(ImagingTableEntry& entry)
 	_gridder->Invert();
 	
 	size_t centralIndex = _settings.trimmedImageWidth/2 + (_settings.trimmedImageHeight/2) * _settings.trimmedImageWidth;
-	if(_settings.normalizeForWeighting)
-	{
-		double normFactor;
-		if(_gridder->ImageRealResult()[centralIndex] != 0.0)
-			normFactor = 1.0/_gridder->ImageRealResult()[centralIndex];
-		else
-			normFactor = 0.0;
-		_infoPerChannel[channelIndex].psfNormalizationFactor = normFactor;
-		multiplyImage(normFactor, _gridder->ImageRealResult());
-		Logger::Debug << "Normalized PSF by factor of " << normFactor << ".\n";
-	}
+	
+	double normFactor;
+	if(_gridder->ImageRealResult()[centralIndex] != 0.0)
+		normFactor = 1.0/_gridder->ImageRealResult()[centralIndex];
+	else
+		normFactor = 0.0;
+	_infoPerChannel[channelIndex].psfNormalizationFactor = normFactor;
+	multiplyImage(normFactor, _gridder->ImageRealResult());
+	Logger::Debug << "Normalized PSF by factor of " << normFactor << ".\n";
 		
 	DeconvolutionAlgorithm::RemoveNaNsInPSF(_gridder->ImageRealResult(), _settings.trimmedImageWidth, _settings.trimmedImageHeight);
 	_psfImages.SetFitsWriter(createWSCFitsWriter(entry, false).Writer());
@@ -380,7 +378,6 @@ void WSClean::prepareInversionAlgorithm(PolarizationEnum polarization)
 	_gridder->SetWeighting(_settings.weightMode);
 	_gridder->SetWLimit(_settings.wLimit/100.0);
 	_gridder->SetSmallInversion(_settings.smallInversion);
-	_gridder->SetNormalizeForWeighting(_settings.normalizeForWeighting);
 	_gridder->SetVisibilityWeightingMode(_settings.visibilityWeightingMode);
 }
 
@@ -442,7 +439,7 @@ void WSClean::RunClean()
 
 	_settings.Propogate();
 	
-	_settings.GetMSSelection(_globalSelection);
+	_globalSelection = _settings.GetMSSelection();
 	MSSelection fullSelection = _globalSelection;
 	
 	for(size_t intervalIndex=0; intervalIndex!=_settings.intervalsOut; ++intervalIndex)
@@ -464,8 +461,11 @@ void WSClean::RunClean()
 		
 		if(_settings.useIDG)
 			_gridder.reset(new IdgMsGridder(_settings));
-		else
+		else {
 			_gridder.reset(new WSMSGridder(&_imageAllocator, _settings.threadCount, _settings.memFraction, _settings.absMemLimit));
+			static_cast<WSMSGridder*>(_gridder.get())->SetGridAtLOFARCentroid(
+				_settings.useLofarCentroids, _settings.fullResWidth);
+		}
 		
 		for(size_t groupIndex=0; groupIndex!=_imagingTable.IndependentGroupCount(); ++groupIndex)
 		{
@@ -565,7 +565,7 @@ void WSClean::RunPredict()
 	
 	_settings.Propogate();
 	
-	_settings.GetMSSelection(_globalSelection);
+	_globalSelection = _settings.GetMSSelection();
 	MSSelection fullSelection = _globalSelection;
 	
 	for(size_t intervalIndex=0; intervalIndex!=_settings.intervalsOut; ++intervalIndex)
@@ -673,7 +673,7 @@ void WSClean::runIndependentGroup(ImagingTable& groupTable)
 		runFirstInversion(entry);
 	}
 	
-	_deconvolution.InitializeDeconvolutionAlgorithm(groupTable, *_settings.polarizations.begin(), &_imageAllocator, _settings.trimmedImageWidth, _settings.trimmedImageHeight, _settings.pixelScaleX, _settings.pixelScaleY, minTheoreticalBeamSize(groupTable), _settings.threadCount);
+	_deconvolution.InitializeDeconvolutionAlgorithm(groupTable, *_settings.polarizations.begin(), &_imageAllocator, minTheoreticalBeamSize(groupTable), _settings.threadCount);
 
 	if(!_settings.makePSFOnly)
 	{
@@ -733,12 +733,12 @@ void WSClean::runIndependentGroup(ImagingTable& groupTable)
 							} // end of polarization loop
 						}
 					} // end of joined channels loop
-					
-					++_majorIterationNr;
 				}
 				
+				++_majorIterationNr;
 			} while(reachedMajorThreshold);
 			
+			--_majorIterationNr;
 			Logger::Info << _majorIterationNr << " major iterations were performed.\n";
 		}
 		
@@ -755,6 +755,8 @@ void WSClean::runIndependentGroup(ImagingTable& groupTable)
 			}
     }
 	}
+	
+	_deconvolution.FreeDeconvolutionAlgorithms();
 	
 	_imageAllocator.ReportStatistics();
 	Logger::Info << "Inversion: " << _inversionWatch.ToString() << ", prediction: " << _predictingWatch.ToString() << ", deconvolution: " << _deconvolutionWatch.ToString() << '\n';
@@ -1051,11 +1053,11 @@ void WSClean::runFirstInversion(ImagingTableEntry& entry)
 		
 		imageMainFirst(entry);
 		
+		entry.imageWeight = _gridder->ImageWeight();
 		// If this was the first polarization of this channel, we need to set
 		// the info for this channel
 		if(isFirstPol)
 		{
-			entry.imageWeight = _gridder->ImageWeight();
 			_infoPerChannel[entry.outputChannelIndex].weight = entry.imageWeight;
 			// If no PSF is made, also set the beam size. If the PSF was made, these would already be set
 			// after imaging the PSF.
@@ -1248,7 +1250,7 @@ MSSelection WSClean::selectInterval(MSSelection& fullSelection, size_t intervalI
 			Logger::Info.Flush();
 			casacore::ROScalarColumn<double> timeColumn(ms, casacore::MS::columnName(casacore::MSMainEnums::TIME));
 			double time = timeColumn(0);
-			size_t timestepIndex = 0;
+			size_t timestepIndex = 1;
 			for(size_t row = 0; row!=ms.nrow(); ++row)
 			{
 				if(time != timeColumn(row))
@@ -1262,6 +1264,12 @@ MSSelection WSClean::selectInterval(MSSelection& fullSelection, size_t intervalI
 			tE = timestepIndex;
 			// Store the full interval in the selection, so that it doesn't need to be determined again.
 			fullSelection.SetInterval(tS, tE);
+		}
+		if(_settings.intervalsOut > tE-tS)
+		{
+			std::ostringstream str;
+			str << "Invalid interval selection: " << _settings.intervalsOut << " intervals requested, but measurement set has only " << tE-tS << " intervals.";
+			throw std::runtime_error(str.str());
 		}
 		MSSelection newSelection(fullSelection);
 		newSelection.SetInterval(
@@ -1279,10 +1287,10 @@ void WSClean::saveUVImage(const double* image, PolarizationEnum pol, const Imagi
 		imagUV(_settings.trimmedImageWidth, _settings.trimmedImageHeight, _imageAllocator);
 	FFTResampler fft(_settings.trimmedImageWidth, _settings.trimmedImageHeight, _settings.trimmedImageWidth, _settings.trimmedImageHeight, 1, true);
 	fft.SingleFT(image, realUV.data(), imagUV.data());
-	// There are two factors of 2 involved: one coming from
-	// SingleFT(), and one from the fact that normF excludes a factor of two.
-	realUV *= 4.0 * _infoPerChannel[entry.outputChannelIndex].normalizationFactor / sqrt(_settings.trimmedImageWidth * _settings.trimmedImageHeight);
-	imagUV *= 4.0 * _infoPerChannel[entry.outputChannelIndex].normalizationFactor / sqrt(_settings.trimmedImageWidth * _settings.trimmedImageHeight);
+	// Factors of 2 involved: because of SingleFT()
+	// (also one from the fact that normF excludes a factor of two?)
+	realUV *= _infoPerChannel[entry.outputChannelIndex].normalizationFactor / sqrt(0.5*_settings.trimmedImageWidth * _settings.trimmedImageHeight);
+	imagUV *= _infoPerChannel[entry.outputChannelIndex].normalizationFactor / sqrt(0.5*_settings.trimmedImageWidth * _settings.trimmedImageHeight);
 	WSCFitsWriter writer(createWSCFitsWriter(entry, isImaginary));
 	writer.WriteUV(prefix+"-real.fits", realUV.data());
 	writer.WriteUV(prefix+"-imag.fits", imagUV.data());
@@ -1331,7 +1339,8 @@ void WSClean::makeImagingTable(size_t outputIntervalIndex)
 		str << "Parameter '-channelsout' was set to an invalid value: " << _settings.channelsOut << " output channels requested, but combined in all specified measurement sets, there are only " << channelSet.size() << " unique channels.";
 		throw std::runtime_error(str.str());
 	}
-	_inputChannelFrequencies = std::vector<ChannelInfo>(channelSet.begin(), channelSet.end());
+	_inputChannelFrequencies.assign(channelSet.begin(), channelSet.end());
+	Logger::Debug << "Total nr of channels found in measurement sets: " << _inputChannelFrequencies.size() << '\n';
 	
 	size_t joinedGroupIndex = 0, squaredGroupIndex = 0;
 	_imagingTable.Clear();
@@ -1382,11 +1391,40 @@ void WSClean::makeImagingTableEntry(const std::vector<ChannelInfo>& channels, si
 		width = channels.size();
 	}
 	
-	size_t
-		chLowIndex = startCh + outChannelIndex*width/_settings.channelsOut,
+	size_t chLowIndex, chHighIndex;
+	if(_settings.divideChannelsByGaps)
+	{
+		std::multimap<double, size_t> gaps;
+		for(size_t i = 1; i!=channels.size(); ++i)
+		{
+			double left = channels[i-1].Frequency();
+			double right = channels[i].Frequency();
+			gaps.insert(std::make_pair(right-left, i));
+		}
+		std::vector<size_t> orderedGaps;
+		auto iter = gaps.rbegin();
+		for(size_t i=0; i!=_settings.channelsOut-1; ++i)
+		{
+			orderedGaps.push_back(iter->second);
+			++iter;
+		}
+		std::sort(orderedGaps.begin(), orderedGaps.end());
+		if(outChannelIndex == 0)
+			chLowIndex = 0;
+		else
+			chLowIndex = orderedGaps[outChannelIndex-1];
+		if(outChannelIndex+1 == _settings.channelsOut)
+			chHighIndex = width-1;
+		else
+			chHighIndex = orderedGaps[outChannelIndex]-1;
+	}
+	else {
+		chLowIndex = startCh + outChannelIndex*width/_settings.channelsOut;
 		chHighIndex = startCh + (outChannelIndex+1)*width/_settings.channelsOut - 1;
+	}
 	if(channels[chLowIndex].Frequency() > channels[chHighIndex].Frequency())
 		std::swap(chLowIndex, chHighIndex);
+	entry.inputChannelCount = chHighIndex+1 - chLowIndex;
 	entry.lowestFrequency = channels[chLowIndex].Frequency();
 	entry.highestFrequency = channels[chHighIndex].Frequency();
 	entry.bandStartFrequency = entry.lowestFrequency - channels[chLowIndex].Width()*0.5;
@@ -1444,7 +1482,8 @@ void WSClean::fitBeamSize(double& bMaj, double& bMin, double& bPA, const double*
 		beamFitter.Fit2DCircularGaussianCentred(
 			image,
 			_settings.trimmedImageWidth, _settings.trimmedImageHeight,
-			bMaj);
+			bMaj,
+			_settings.beamFittingBoxSize);
 		bMin = bMaj;
 		bPA = 0.0;
 	}
@@ -1453,7 +1492,8 @@ void WSClean::fitBeamSize(double& bMaj, double& bMin, double& bPA, const double*
 			image,
 			_settings.trimmedImageWidth, _settings.trimmedImageHeight,
 			beamEstimate,
-			bMaj, bMin, bPA);
+			bMaj, bMin, bPA,
+			_settings.beamFittingBoxSize);
 	}
 	bMaj = bMaj*0.5*(_settings.pixelScaleX+_settings.pixelScaleY);
 	bMin = bMin*0.5*(_settings.pixelScaleX+_settings.pixelScaleY);
@@ -1461,6 +1501,15 @@ void WSClean::fitBeamSize(double& bMaj, double& bMin, double& bPA, const double*
 
 void WSClean::determineBeamSize(double& bMaj, double& bMin, double& bPA, const double* image, double theoreticBeam) const
 {
+	double theoreticBeamWithTaper = theoreticBeam;
+	if(_settings.gaussianTaperBeamSize != 0.0)
+	{
+		if(_settings.gaussianTaperBeamSize > theoreticBeamWithTaper)
+		{
+			theoreticBeamWithTaper = _settings.gaussianTaperBeamSize;
+			Logger::Debug << "Beam is tapered; using " << Angle::ToNiceString(theoreticBeamWithTaper) << " as initial value in PSF fitting.\n";
+		}
+	}
 	if(_settings.manualBeamMajorSize != 0.0)
 	{
 		bMaj = _settings.manualBeamMajorSize;
@@ -1468,16 +1517,16 @@ void WSClean::determineBeamSize(double& bMaj, double& bMin, double& bPA, const d
 		bPA = _settings.manualBeamPA;
 	} else if(_settings.fittedBeam)
 	{
-		fitBeamSize(bMaj, bMin, bPA, image, theoreticBeam*2.0/(_settings.pixelScaleX+_settings.pixelScaleY));
+		fitBeamSize(bMaj, bMin, bPA, image, theoreticBeamWithTaper*2.0/(_settings.pixelScaleX+_settings.pixelScaleY));
 		Logger::Info << "major=" << Angle::ToNiceString(bMaj) << ", minor=" <<
 		Angle::ToNiceString(bMin) << ", PA=" << Angle::ToNiceString(bPA) << ", theoretical=" <<
-		Angle::ToNiceString(theoreticBeam)<< ".\n";
+		Angle::ToNiceString(theoreticBeamWithTaper)<< ".\n";
 	}
 	else if(_settings.theoreticBeam) {
-		bMaj = theoreticBeam;
-		bMin = theoreticBeam;
+		bMaj = theoreticBeamWithTaper;
+		bMin = theoreticBeamWithTaper;
 		bPA = 0.0;
-		Logger::Info << "Beam size is " << Angle::ToNiceString(theoreticBeam) << '\n';
+		Logger::Info << "Beam size is " << Angle::ToNiceString(theoreticBeamWithTaper) << '\n';
 	} else {
 		bMaj = std::numeric_limits<double>::quiet_NaN();
 		bMin = std::numeric_limits<double>::quiet_NaN();

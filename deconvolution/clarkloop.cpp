@@ -99,8 +99,16 @@ boost::optional<double> ClarkLoop::Run(ImageSet& convolvedResidual, const ao::uv
 
 void ClarkModel::MakeSets(const ImageSet& residualSet)
 {
-	_residual.reset(new ImageSet(&residualSet.Table(), residualSet.Allocator(), residualSet.ChannelsInDeconvolution(), residualSet.SquareJoinedChannels(), size(), 1));
-	_model.reset(new ImageSet(&residualSet.Table(), residualSet.Allocator(), residualSet.ChannelsInDeconvolution(), residualSet.SquareJoinedChannels(), size(), 1));
+	_residual.reset(new ImageSet(
+			&residualSet.Table(), residualSet.Allocator(),
+			residualSet.ChannelsInDeconvolution(), residualSet.SquareJoinedChannels(),
+			residualSet.LinkedPolarizations(),
+			size(), 1));
+	_model.reset(new ImageSet(
+		&residualSet.Table(), residualSet.Allocator(),
+		residualSet.ChannelsInDeconvolution(), residualSet.SquareJoinedChannels(),
+		residualSet.LinkedPolarizations(),
+		size(), 1));
 	for(size_t imgIndex=0; imgIndex!=_model->size(); ++imgIndex)
 	{
 		std::fill((*_model)[imgIndex], (*_model)[imgIndex]+size(), 0.0);
@@ -185,7 +193,7 @@ void ClarkLoop::GetFullIndividualModel(size_t imageIndex, double* individualMode
 	}
 }
 
-void ClarkLoop::CorrectResidualDirty(double* scratchA, double* scratchB, double* scratchC, size_t imageIndex, double* residual, const double* singleConvolvedPsf) const
+void ClarkLoop::CorrectResidualDirty(class FFTWManager& fftw, double* scratchA, double* scratchB, double* scratchC, size_t imageIndex, double* residual, const double* singleConvolvedPsf) const
 {
 	// Get padded kernel in scratchB
 	Image::Untrim(scratchA, _untrimmedWidth, _untrimmedHeight, singleConvolvedPsf, _width, _height);
@@ -196,7 +204,7 @@ void ClarkLoop::CorrectResidualDirty(double* scratchA, double* scratchB, double*
 	Image::Untrim(scratchA, _untrimmedWidth, _untrimmedHeight, scratchC, _width, _height);
 	
 	// Convolve and store in scratchA
-	FFTConvolver::ConvolveSameSize(scratchA, scratchB, _untrimmedWidth, _untrimmedHeight);
+	FFTConvolver::ConvolveSameSize(fftw, scratchA, scratchB, _untrimmedWidth, _untrimmedHeight);
 	
 	//Trim the result into scratchC
 	Image::Trim(scratchC, _width, _height, scratchA, _untrimmedWidth, _untrimmedHeight);
