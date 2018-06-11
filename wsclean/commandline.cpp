@@ -1,10 +1,11 @@
 #include "commandline.h"
 
+#include <wscversion.h>
+
 #include "../units/angle.h"
 #include "../units/fluxdensity.h"
 
 #include "../numberlist.h"
-#include "../wscversion.h"
 
 #include "wsclean.h"
 #include "wscfitswriter.h"
@@ -67,6 +68,10 @@ void CommandLine::printHelp()
 		"   Assume the visibilities have already been beam-corrected for the reference direction.\n"
 		"-save-psf-pb\n"
 		"   When applying beam correction, also save the primary-beam corrected PSF image.\n"
+		"-pb-undersampling <factor>\n"
+		"   Normally, the primary beam is calculated at a lower resolution and interpolated, because calculating the beam is\n"
+		"   computationally expensive. The amount of undersampling can be controlled by this parameter, or set to '1' for no\n"
+		"   undersampling. Default: 8.\n"
 		"\n"
 		"  ** WEIGHTING OPTIONS **\n"
 		"-weight <weightmode>\n"
@@ -116,11 +121,11 @@ void CommandLine::printHelp()
 		"-predict\n"
 		"   Only perform a single prediction for an existing image. Doesn't do any imaging or cleaning.\n"
 		"   The input images should have the same name as the model output images would have in normal imaging mode.\n"
-		"-predict-channels <nchannels>\n"
-		"   Interpolate from a given number of images to the number of channels that are predicted\n"
-		"   as specified by -channelsout. Will interpolate using the frequencies of the images.\n"
-		"   Use one of the -fit-spectral-... options to specify the interpolation method / freedom.\n"
-		"   Only used when -predict is specified.\n"
+//		"-predict-channels <nchannels>\n"
+//		"   Interpolate from a given number of images to the number of channels that are predicted\n"
+//		"   as specified by -channelsout. Will interpolate using the frequencies of the images.\n"
+//		"   Use one of the -fit-spectral-... options to specify the interpolation method / freedom.\n"
+//		"   Only used when -predict is specified.\n"
 		"-continue\n"
 		"   Will continue an earlier WSClean run. Earlier model images will be read and model visibilities will be\n"
 		"   subtracted to create the first dirty residual. CS should have been used in the earlier run, and model data"
@@ -130,6 +135,9 @@ void CommandLine::printHelp()
 		"   an already cleaned image, e.g. at a different resolution.\n"
 		"-channels-out <count>\n"
 		"   Splits the bandwidth and makes count nr. of images. Default: 1.\n"
+		"-gap-channel-division\n"
+		"   In case of irregular frequency spacing, this option can be used to not try and split channels\n"
+		"   to make the output channel bandwidth similar, but instead to split largest gaps first.\n"
 		"-nwlayers <nwlayers>\n"
 		"   Number of w-layers to use. Default: minimum suggested #w-layers for first MS.\n"
 		"-nwlayers-for-size <width> <height>\n"
@@ -169,8 +177,15 @@ void CommandLine::printHelp()
 		"   to calculate this is with <baseline in nr. of lambdas> * 2pi * <acceptable integration in s> / (24*60*60).\n"
 		"-simulate-noise <stddev-in-jy>\n"
 		"   Will replace every visibility by a Gaussian distributed value with given standard deviation before imaging.\n"
+		"-lofar-centroids <nch fullres>\n"
+		"   Place visibilities on the high-resolution centroid uv position, by using the\n"
+		"   LOFAR fullres flag information that is generated when averaging with DPPP.\n"
 		"-grid-with-beam\n"
 		"   Apply a-terms to correct for the primary beam. This is only possible when IDG is enabled.\n"
+		"-use-idg\n"
+		"   Use the 'image-domain gridder' (Van der Tol et al.) to do the inversions and predictions.\n"
+		"-idg-mode [cpu/gpu/hybrid]\n"
+		"   Sets the IDG mode. Default: cpu. Hybrid is recommended when a GPU is available.\n"
 		"\n"
 		"  ** DATA SELECTION OPTIONS **\n"
 		"-pol <list>\n"
@@ -186,6 +201,10 @@ void CommandLine::printHelp()
 		"   Default: image all time steps.\n"
 		"-intervals-out <count>\n"
 		"   Number of intervals to image inside the selected global interval. Default: 1\n"
+		"-even-timesteps\n"
+		"   Only select even timesteps. Can be used together with -odd-timesteps to determine noise values.\n"
+		"-odd-timesteps\n"
+		"   Only select odd timesteps.\n"
 		"-channel-range <start-channel> <end-channel>\n"
 		"   Only image the given channel range. Indices specify channel indices, end index is exclusive.\n"
 		"   Default: image all channels.\n"
@@ -234,6 +253,9 @@ void CommandLine::printHelp()
 		"   Perform cleaning by searching for peaks in the sum of squares of the polarizations, but\n"
 		"   subtract components from the individual images. Only possible when imaging two or four Stokes\n"
 		"   or linear parameters. Default: off.\n"
+		"-link-polarizations <pollist>\n"
+		"   Links all polarizations to be cleaned from the given list: components are found in the\n"
+		"   given list, but cleaned from all polarizations. \n"
 		"-join-channels\n"
 		"   Perform cleaning by searching for peaks in the MFS image, but subtract components from individual channels.\n"
 		"   This will turn on mfsweighting by default. Default: off.\n"
@@ -304,8 +326,8 @@ void CommandLine::printHelp()
 		"   Use with -join-channels to perform peak finding in the sum of squared values over\n"
 		"   channels, instead of the normal sum. This is useful for imaging QU polarizations\n"
 		"   with non-zero rotation measures, for which the normal sum is insensitive.\n"
-		"-force-dynamic-join\n"
-		"   Use alternative joined clean algorithm (feature for testing).\n"
+		"-parallel-deconvolution <maxsize>\n"
+		"   Deconvolve subimages in parallel. Subimages will be at most of the given size.\n"
 		"\n"
 		"  ** RESTORATION OPTIONS **\n"
 		"-restore <input residual> <input model> <output image>\n"
@@ -322,6 +344,8 @@ void CommandLine::printHelp()
 		"   Determine beam shape by fitting the PSF (default if PSF is made).\n"
 		"-no-fit-beam\n"
 		"   Do not determine beam shape from the PSF.\n"
+		"-beam-fitting-size <factor>\n"
+		"   Use a fitting box the size of <factor> times the theoretical beam size for fitting a Gaussian to the PSF.\n"
 		"-theoretic-beam\n"
 		"   Write the beam in output fits files as calculated from the longest projected baseline.\n"
 		"   This method results in slightly less accurate beam size/integrated fluxes, but provides a beam size\n"
@@ -361,6 +385,33 @@ size_t CommandLine::parse_size_t(const char* param, const char* name)
 	if(v < 0) {
 		std::ostringstream msg;
 		msg << "Invalid value (" << v << ") for parameter -" << name;
+		throw std::runtime_error(msg.str());
+	}
+	return v;
+}
+
+double CommandLine::parse_double(const char* param, const char* name)
+{
+	char* endptr;
+	double v = std::strtod(param, &endptr);
+	if(*endptr!=0 || endptr == param || !std::isfinite(v)) {
+		std::ostringstream msg;
+		msg << "Could not parse value '" << param << "' for parameter -" << name << " to a (double-precision) floating point value";
+		throw std::runtime_error(msg.str());
+	}
+	return v;
+}
+
+double CommandLine::parse_double(const char* param, double lowerLimit, const char* name, bool inclusive)
+{
+	double v = parse_double(param, name);
+	if(v < lowerLimit || (v<=lowerLimit && !inclusive)) {
+		std::ostringstream msg;
+		msg << "Parameter value for -" << name << " was " << v << " but ";
+		if(inclusive)
+			msg << "is not allowed to smaller than " << lowerLimit;
+		else
+			msg << "has to be larger than " << lowerLimit;
 		throw std::runtime_error(msg.str());
 	}
 	return v;
@@ -462,7 +513,7 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "padding")
 		{
 			++argi;
-			settings.imagePadding = atof(argv[argi]);
+			settings.imagePadding = parse_double(argv[argi], 1.0, "padding");
 		}
 		else if(param == "scale")
 		{
@@ -484,12 +535,12 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "gain")
 		{
 			++argi;
-			settings.deconvolutionGain = atof(argv[argi]);
+			settings.deconvolutionGain = parse_double(argv[argi], 0.0, "gain", false);
 		}
 		else if(param == "mgain")
 		{
 			++argi;
-			settings.deconvolutionMGain = atof(argv[argi]);
+			settings.deconvolutionMGain = parse_double(argv[argi], 0.0, "mgain");
 		}
 		else if(param == "niter")
 		{
@@ -510,13 +561,13 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			++argi;
 			settings.autoDeconvolutionThreshold = true;
-			settings.autoDeconvolutionThresholdSigma = atof(argv[argi]);
+			settings.autoDeconvolutionThresholdSigma = parse_double(argv[argi], 0.0, "auto-threshold");
 		}
 		else if(param == "auto-mask")
 		{
 			++argi;
 			settings.autoMask = true;
-			settings.autoMaskSigma = atof(argv[argi]);
+			settings.autoMaskSigma = parse_double(argv[argi], 0.0, "auto-mask");
 		}
 		else if(param == "local-rms" || param == "rms-background")
 		{
@@ -528,7 +579,7 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			++argi;
 			settings.localRMS = true;
-			settings.localRMSWindow = atof(argv[argi]);
+			settings.localRMSWindow = parse_double(argv[argi], 0.0, "local-rms-window", false);
 			if(param == "rms-background-window")
 				deprecated(param, "local-rms-window");
 		}
@@ -581,6 +632,11 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "save-psf-pb")
 		{
 			settings.savePsfPb = true;
+		}
+		else if(param == "pb-undersampling")
+		{
+			++argi;
+			settings.primaryBeamUndersampling = parse_size_t(argv[argi], "pb-undersampling");
 		}
 		else if(param == "negative")
 		{
@@ -698,6 +754,14 @@ int CommandLine::Run(int argc, char* argv[])
 			if(param == "intervalsout")
 				deprecated(param, "intervals-out");
 		}
+		else if(param == "even-timesteps")
+		{
+			settings.evenOddTimesteps = MSSelection::EvenTimesteps;
+		}
+		else if(param == "odd-timesteps")
+		{
+			settings.evenOddTimesteps = MSSelection::OddTimesteps;
+		}
 		else if(param == "channel-range" || param == "channelrange")
 		{
 			settings.startChannel = parse_size_t(argv[argi+1], "channel-range");
@@ -713,11 +777,21 @@ int CommandLine::Run(int argc, char* argv[])
 			if(param == "channelsout")
 				deprecated(param, "channels-out");
 		}
+		else if(param == "gap-channel-division")
+		{
+			settings.divideChannelsByGaps = true;
+		}
 		else if(param == "join-polarizations" || param == "joinpolarizations")
 		{
 			settings.joinedPolarizationCleaning = true;
 			if(param == "joinpolarizations")
 				deprecated(param, "join-polarizations");
+		}
+		else if(param == "link-polarizations")
+		{
+			++argi;
+			settings.joinedPolarizationCleaning = true;
+			settings.linkedPolarizations = Polarization::ParseList(argv[argi]);
 		}
 		else if(param == "join-channels" || param == "joinchannels")
 		{
@@ -746,22 +820,22 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "taper-edge")
 		{
 			++argi;
-			settings.edgeTaperInLambda = atof(argv[argi]);
+			settings.edgeTaperInLambda = parse_double(argv[argi], 0.0, "taper-edge");
 		}
 		else if(param == "taper-edge-tukey")
 		{
 			++argi;
-			settings.edgeTukeyTaperInLambda = atof(argv[argi]);
+			settings.edgeTukeyTaperInLambda = parse_double(argv[argi], 0.0, "taper-edge-tukey");
 		}
 		else if(param == "taper-tukey")
 		{
 			++argi;
-			settings.tukeyTaperInLambda = atof(argv[argi]);
+			settings.tukeyTaperInLambda = parse_double(argv[argi], 0.0, "taper-tukey");
 		}
 		else if(param == "taper-inner-tukey")
 		{
 			++argi;
-			settings.tukeyInnerTaperInLambda = atof(argv[argi]);
+			settings.tukeyInnerTaperInLambda = parse_double(argv[argi], 0.0, "taper-inner-tukey");
 		}
 		else if(param == "store-imaging-weights")
 		{
@@ -774,12 +848,12 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "multiscale-gain")
 		{
 			++argi;
-			settings.multiscaleGain = atof(argv[argi]);
+			settings.multiscaleGain = parse_double(argv[argi], 0.0, "multiscale-gain", false);
 		}
 		else if(param == "multiscale-scale-bias")
 		{
 			++argi;
-			settings.multiscaleDeconvolutionScaleBias = atof(argv[argi]);
+			settings.multiscaleDeconvolutionScaleBias = parse_double(argv[argi], 0.0, "multiscale-scale-bias", false);
 		}
 		else if(param == "multiscale-normalize-response")
 		{
@@ -804,7 +878,7 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "multiscale-convolution-padding")
 		{
 			++argi;
-			settings.multiscaleConvolutionPadding = atof(argv[argi]);
+			settings.multiscaleConvolutionPadding = parse_double(argv[argi], 1.0, "multiscale-convolution-padding");
 		}
 		else if(param == "no-multiscale-fast-subminor")
 		{
@@ -813,7 +887,7 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "weighting-rank-filter")
 		{
 			++argi;
-			settings.rankFilterLevel = atof(argv[argi]);
+			settings.rankFilterLevel = parse_double(argv[argi], 0.0, "weighting-rank-filter");
 		}
 		else if(param == "weighting-rank-filter-size")
 		{
@@ -828,7 +902,7 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "clean-border" || param == "cleanborder")
 		{
 			++argi;
-			settings.deconvolutionBorderRatio = atof(argv[argi])*0.01;
+			settings.deconvolutionBorderRatio = parse_double(argv[argi], 0.0, "clean-border")*0.01;
 			if(param == "cleanborder")
 				deprecated(param, "clean-border");
 		}
@@ -867,9 +941,10 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			settings.squaredJoins = true;
 		}
-		else if(param == "force-dynamic-join")
+		else if(param == "parallel-deconvolution")
 		{
-			settings.forceDynamicJoin = true;
+			++argi;
+			settings.parallelDeconvolutionMaxSize = parse_size_t(argv[argi], "parallel-deconvolution");
 		}
 		else if(param == "field")
 		{
@@ -894,14 +969,14 @@ int CommandLine::Run(int argc, char* argv[])
 			else if(weightArg == "briggs")
 			{
 				++argi;
-				settings.weightMode = WeightMode::Briggs(atof(argv[argi]));
+				settings.weightMode = WeightMode::Briggs(parse_double(argv[argi], "weight briggs"));
 			}
 			else throw std::runtime_error("Unknown weighting mode specified");
 		}
 		else if(param == "super-weight" || param == "superweight")
 		{
 			++argi;
-			settings.weightMode.SetSuperWeight(atof(argv[argi]));
+			settings.weightMode.SetSuperWeight(parse_double(argv[argi], 0.0, "super-weight"));
 			if(param == "superweight")
 				deprecated(param, "super-weight");
 		}
@@ -946,6 +1021,11 @@ int CommandLine::Run(int argc, char* argv[])
 			settings.fittedBeam = false;
 			if(param == "nofitbeam")
 				deprecated(param, "no-fit-beam");
+		}
+		else if(param == "beam-fitting-size")
+		{
+			++argi;
+			settings.beamFittingBoxSize = parse_double(argv[argi], 0.0, "beam-fitting-size", false);
 		}
 		else if(param == "theoretic-beam" || param == "theoreticbeam")
 		{
@@ -1004,55 +1084,57 @@ int CommandLine::Run(int argc, char* argv[])
 		else if(param == "mem")
 		{
 			++argi;
-			settings.memFraction = atof(argv[argi]) / 100.0;
+			settings.memFraction = parse_double(argv[argi], 0.0, "mem", false) / 100.0;
 		}
 		else if(param == "abs-mem" || param == "absmem")
 		{
 			++argi;
-			settings.absMemLimit = atof(argv[argi]);
+			settings.absMemLimit = parse_double(argv[argi], 0.0, "abs-mem", false);
 			if(param == "absmem")
 				deprecated(param, "abs-mem");
 		}
 		else if(param == "maxuvw-m")
 		{
 			++argi;
-			settings.maxUVWInMeters = atof(argv[argi]);
+			settings.maxUVWInMeters = parse_double(argv[argi], 0.0, "maxuvw-m", false);
 		}
 		else if(param == "minuvw-m")
 		{
 			++argi;
-			settings.minUVWInMeters = atof(argv[argi]);
+			settings.minUVWInMeters = parse_double(argv[argi], 0.0, "minuvw-m");
 		}
 		else if(param == "maxuv-l")
 		{
 			++argi;
-			settings.maxUVInLambda = atof(argv[argi]);
+			settings.maxUVInLambda = parse_double(argv[argi], 0.0, "maxuv-l", false);
 		}
 		else if(param == "minuv-l")
 		{
 			++argi;
-			settings.minUVInLambda = atof(argv[argi]);
+			settings.minUVInLambda = parse_double(argv[argi], 0.0, "minuv-l");
 		}
 		else if(param == "maxw")
 		{
 			// This was to test the optimization suggested in Tasse et al., 2013, Appendix C.
 			++argi;
-			settings.wLimit = atof(argv[argi]);
-		}
-		else if(param == "no-normalize-for-weighting")
-		{
-			settings.normalizeForWeighting = false;
+			settings.wLimit = parse_double(argv[argi], 0.0, "maxw");
 		}
 		else if(param == "baseline-averaging")
 		{
 			++argi;
-			settings.baselineDependentAveragingInWavelengths = atof(argv[argi]);
+			settings.baselineDependentAveragingInWavelengths = parse_double(argv[argi], 0.0, "baseline-averaging", false);
 		}
 		else if(param == "simulate-noise")
 		{
 			++argi;
 			settings.simulateNoise = true;
-			settings.simulatedNoiseStdDev = atof(argv[argi]);
+			settings.simulatedNoiseStdDev = parse_double(argv[argi], 0.0, "simulate-noise");
+		}
+		else if(param == "lofar-centroids")
+		{
+			settings.useLofarCentroids = true;
+			++argi;
+			settings.fullResWidth = atoi(argv[argi]);
 		}
 		else if(param == "grid-with-beam")
 		{
@@ -1079,8 +1161,6 @@ int CommandLine::Run(int argc, char* argv[])
 #endif
 			settings.useIDG = true;
 			settings.smallInversion = false;
-			//settings.polarizations.clear();
-			//settings.polarizations.insert(Polarization::Instrumental);
 		}
 		else if(param == "idg-mode")
 		{
@@ -1115,6 +1195,12 @@ int CommandLine::Run(int argc, char* argv[])
 	printHeader();
 	
 	settings.mfsWeighting = (settings.joinedFrequencyCleaning && !noMFSWeighting) || mfsWeighting;
+	
+	// Joined polarizations is implemented by linking all polarizations
+	if(settings.joinedPolarizationCleaning && settings.linkedPolarizations.empty())
+	{
+		settings.linkedPolarizations = settings.polarizations;
+	}
 	
 	for(int i=argi; i != argc; ++i)
 		settings.filenames.push_back(argv[i]);

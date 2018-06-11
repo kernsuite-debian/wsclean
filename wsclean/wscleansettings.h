@@ -32,10 +32,13 @@ public:
 	double imagePadding;
 	size_t widthForNWCalculation, heightForNWCalculation;
 	size_t channelsOut, intervalsOut;
+	enum MSSelection::EvenOddSelection evenOddTimesteps;
+	bool divideChannelsByGaps;
 	double pixelScaleX, pixelScaleY;
 	std::string restoreModel, restoreInput, restoreOutput;
 	double manualBeamMajorSize, manualBeamMinorSize, manualBeamPA;
 	bool fittedBeam, theoreticBeam, circularBeam;
+	double beamFittingBoxSize;
 	bool continuedRun;
 	double memFraction, absMemLimit, minUVWInMeters, maxUVWInMeters, minUVInLambda, maxUVInLambda, wLimit, rankFilterLevel;
 	size_t rankFilterSize;
@@ -44,20 +47,24 @@ public:
 	size_t fieldId;
 	size_t startTimestep, endTimestep;
 	size_t startChannel, endChannel;
-	bool joinedPolarizationCleaning, joinedFrequencyCleaning;
 	size_t predictionChannels;
 	std::string dataColumnName;
 	std::set<PolarizationEnum> polarizations;
 	std::set<size_t> spectralWindows;
 	WeightMode weightMode;
 	std::string prefixName;
+	bool joinedPolarizationCleaning, joinedFrequencyCleaning;
+	std::set<PolarizationEnum> linkedPolarizations;
+	size_t parallelDeconvolutionMaxSize;
 	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved;
 	bool writeImagingWeightSpectrumColumn;
 	bool dftPrediction, dftWithBeam;
 	std::string temporaryDirectory;
 	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfsWeighting;
-	bool normalizeForWeighting;
+	bool useLofarCentroids;
+	size_t fullResOffset, fullResWidth, fullResPad;
 	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, savePsfPb;
+	size_t primaryBeamUndersampling;
 	bool useIDG, gridWithBeam;
 	enum IDGMode { IDG_DEFAULT, IDG_GPU, IDG_CPU, IDG_HYBRID } idgMode;
 	enum GridModeEnum gridMode;
@@ -78,7 +85,8 @@ public:
 	bool saveSourceList;
 	size_t deconvolutionIterationCount, majorIterationCount;
 	bool allowNegativeComponents, stopOnNegativeComponents;
-	bool useMultiscale, useClarkOptimization, squaredJoins, forceDynamicJoin;
+	bool useMultiscale, useClarkOptimization, squaredJoins;
+	//bool forceDynamicJoin;
 	bool multiscaleFastSubMinorLoop;
 	double multiscaleGain, multiscaleDeconvolutionScaleBias;
 	bool multiscaleNormalizeResponse;
@@ -105,13 +113,15 @@ public:
 	 * @}
 	 */
 	
-	void GetMSSelection(MSSelection& selection)
+	MSSelection GetMSSelection() const
 	{
-		selection = MSSelection();
+		MSSelection selection;
 		selection.SetInterval(startTimestep, endTimestep);
 		selection.SetFieldId(fieldId);
 		selection.SetMinUVWInM(minUVWInMeters);
 		selection.SetMaxUVWInM(maxUVWInMeters);
+		selection.SetEvenOrOddTimesteps(evenOddTimesteps);
+		return selection;
 	}
 	
 	bool IsSpectralFittingEnabled() const {
@@ -130,10 +140,13 @@ inline WSCleanSettings::WSCleanSettings() :
 	imagePadding(1.2),
 	widthForNWCalculation(0), heightForNWCalculation(0),
 	channelsOut(1), intervalsOut(1),
+	evenOddTimesteps(MSSelection::AllTimesteps),
+	divideChannelsByGaps(false),
 	pixelScaleX(0.0), pixelScaleY(0.0),
 	restoreModel(), restoreInput(), restoreOutput(),
 	manualBeamMajorSize(0.0), manualBeamMinorSize(0.0),
 	manualBeamPA(0.0), fittedBeam(true), theoreticBeam(false), circularBeam(false),
+	beamFittingBoxSize(10.0),
 	continuedRun(false),
 	memFraction(1.0), absMemLimit(0.0),
 	minUVWInMeters(0.0), maxUVWInMeters(0.0),
@@ -147,12 +160,14 @@ inline WSCleanSettings::WSCleanSettings() :
 	fieldId(0),
 	startTimestep(0), endTimestep(0),
 	startChannel(0), endChannel(0),
-	joinedPolarizationCleaning(false), joinedFrequencyCleaning(false),
 	predictionChannels(0),
 	dataColumnName(),
 	polarizations(),
 	weightMode(WeightMode::UniformWeighted),
 	prefixName("wsclean"),
+	joinedPolarizationCleaning(false), joinedFrequencyCleaning(false),
+	linkedPolarizations(),
+	parallelDeconvolutionMaxSize(0),
 	smallInversion(true), makePSF(false), makePSFOnly(false), isWeightImageSaved(false),
 	isUVImageSaved(false), isDirtySaved(true), isGriddingImageSaved(false),
 	writeImagingWeightSpectrumColumn(false),
@@ -162,10 +177,12 @@ inline WSCleanSettings::WSCleanSettings() :
 	subtractModel(false),
 	modelUpdateRequired(true),
 	mfsWeighting(false),
-	normalizeForWeighting(true),
+	useLofarCentroids(false),
+	fullResOffset(0), fullResWidth(0), fullResPad(0),
 	applyPrimaryBeam(false), reusePrimaryBeam(false),
 	useDifferentialLofarBeam(false),
 	savePsfPb(false),
+	primaryBeamUndersampling(8),
 	useIDG(false),
 	gridWithBeam(false),
 	idgMode(IDG_DEFAULT),
@@ -193,7 +210,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	useMultiscale(false),
 	useClarkOptimization(true),
 	squaredJoins(false),
-	forceDynamicJoin(false),
+	//forceDynamicJoin(false),
 	multiscaleFastSubMinorLoop(true),
 	multiscaleGain(0.2),
 	multiscaleDeconvolutionScaleBias(0.6),

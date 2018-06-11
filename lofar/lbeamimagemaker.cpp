@@ -9,6 +9,7 @@ void LBeamImageMaker::Make(PrimaryBeamImageSet&)
 #else
 
 #include "../units/angle.h"
+#include "../units/radeccoord.h"
 
 #include "../banddata.h"
 #include "../fftresampler.h"
@@ -82,13 +83,16 @@ void LBeamImageMaker::Make(PrimaryBeamImageSet& beamImages)
 		}
 	}
 	
-	FFTResampler resampler(_sampledWidth, _sampledHeight, _width, _height, 1);
-	ImageBufferAllocator::Ptr scratch;
-	_allocator->Allocate(_width*_height, scratch);
-	for(size_t p=0; p!=8; ++p)
+	if(_width!=_sampledWidth || _height!=_sampledHeight)
 	{
-		resampler.RunSingle(&beamImages[p][0], scratch.data());
-		memcpy(&beamImages[p][0], scratch.data(), sizeof(double)*_width*_height);
+		FFTResampler resampler(_sampledWidth, _sampledHeight, _width, _height, 1);
+		ImageBufferAllocator::Ptr scratch;
+		_allocator->Allocate(_width*_height, scratch);
+		for(size_t p=0; p!=8; ++p)
+		{
+			resampler.RunSingle(&beamImages[p][0], scratch.data());
+			memcpy(&beamImages[p][0], scratch.data(), sizeof(double)*_width*_height);
+		}
 	}
 }
 
@@ -111,6 +115,7 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 	if(fieldTable.nrow() != 1)
 		throw std::runtime_error("Set has multiple fields");
 	_delayDir = delayDirColumn(0);
+	//Logger::Debug << "Using delay direction: " << RaDecCoord::RaDecToString(_delayDir.getAngle().getValue()[0], _delayDir.getAngle().getValue()[1]) << '\n';
 	
 	casacore::ROScalarMeasColumn<casacore::MDirection> referenceDirColumn(fieldTable, casacore::MSField::columnName(casacore::MSFieldEnums::REFERENCE_DIR));
 	_referenceDir = referenceDirColumn(0);
@@ -119,8 +124,10 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 		casacore::ROArrayMeasColumn<casacore::MDirection> tileBeamDirColumn(fieldTable, "LOFAR_TILE_BEAM_DIR");
 		_tileBeamDir = *(tileBeamDirColumn(0).data());
 	} else {
-		throw std::runtime_error("LOFAR_TILE_BEAM_DIR column not found");
+		_tileBeamDir = _delayDir;
 	}
+	
+	Logger::Debug << "Using tile direction: " << RaDecCoord::RaDecToString(_tileBeamDir.getAngle().getValue()[0], _tileBeamDir.getAngle().getValue()[1]) << '\n';
 	
 	std::vector<Station::Ptr> stations(aTable.nrow());
 	readStations(ms, stations.begin());
@@ -235,6 +242,8 @@ void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations
 	dirToITRF(_delayDir, j2000ToITRFRef, station0);
 	dirToITRF(_tileBeamDir, j2000ToITRFRef, tile0);
 	
+	Logger::Debug << "Time=" << time << '\n';
+	
 	std::vector<MC2x2> inverseCentralGain;
 	if(_useDifferentialBeam)
 	{
@@ -331,7 +340,8 @@ void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, 
 	
 	MultiBandData multiband(ms.spectralWindow(), ms.dataDescription());
 	size_t channelCount = selection.ChannelRangeEnd() - selection.ChannelRangeStart();
-	ao::uvector<float> weightArr(channelCount);
+	size_t polarizationCount = (msProvider.Polarization() == Polarization::Instrumental) ? 4 : 1;
+	ao::uvector<float> weightArr(channelCount * polarizationCount);
 	
 	while(msProvider.CurrentRowAvailable())
 	{
@@ -348,7 +358,7 @@ void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, 
 				u = metaData.uInM / band.ChannelWavelength(ch),
 				v = metaData.vInM / band.ChannelWavelength(ch);
 			double iw = imageWeights.GetWeight(u, v);
-			double w = weightArr[ch] * iw;
+			double w = weightArr[ch*polarizationCount] * iw;
 			totalWeight += w;
 			weights[metaData.antenna1] += w;
 			weights[metaData.antenna2] += w;
