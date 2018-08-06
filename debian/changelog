@@ -1,3 +1,10 @@
+wsclean (2.6-1) unstable; urgency=low
+
+  * Push Standards-Versionto 4.2.0. No changes required
+  * Switch back to unstable
+
+ -- Ole Streicher <olebole@debian.org>  Mon, 06 Aug 2018 12:07:06 +0200
+
 wsclean (2.6-1~exp1) experimental; urgency=low
 
   * Update VCS fields to use salsa.d.o
