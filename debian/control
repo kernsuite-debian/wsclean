@@ -23,7 +23,7 @@ Homepage: https://sourceforge.net/projects/wsclean/
 
 Package: wsclean
 Architecture: any
-Depends: libwsclean0 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Depends: libwsclean2 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
 Suggests: wsclean-dev
 Description: Fast generic widefield interferometric imager
  WSClean (w-stacking clean) is a fast generic widefield imager. It uses the
