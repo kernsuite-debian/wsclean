@@ -19,6 +19,7 @@ WSMSGridder::WSMSGridder(ImageBufferAllocator* imageAllocator, size_t threadCoun
 	MSGridderBase(),
 	_cpuCount(threadCount),
 	_laneBufferSize(std::max<size_t>(_cpuCount*2,1024)),
+	_gridAtLOFARCentroid(false),
 	_imageBufferAllocator(imageAllocator)
 {
 	long int pageCount = sysconf(_SC_PHYS_PAGES), pageSize = sysconf(_SC_PAGE_SIZE);
@@ -134,8 +135,7 @@ void WSMSGridder::gridMeasurementSet(MSData &msData)
 	// to a lane is reasonably slow; it requires holding a mutex. Without
 	// these buffers, writing the lane was a bottleneck and multithreading
 	// did not help. I think.
-	std::unique_ptr<lane_write_buffer<InversionWorkSample>[]>
-		bufferedLanes(new lane_write_buffer<InversionWorkSample>[_cpuCount]);
+	std::vector<lane_write_buffer<InversionWorkSample>> bufferedLanes(_cpuCount);
 	size_t bufferSize = std::max<size_t>(8u, _inversionCPULanes[0].capacity()/8);
 	bufferSize = std::min<size_t>(128, std::min(bufferSize, _inversionCPULanes[0].capacity()));
 	for(size_t i=0; i!=_cpuCount; ++i)
@@ -194,8 +194,8 @@ void WSMSGridder::gridMeasurementSet(MSData &msData)
 		msData.msProvider->NextRow();
 	}
 	
-	for(size_t i=0; i!=_cpuCount; ++i)
-		bufferedLanes[i].write_end();
+	for(lane_write_buffer<InversionWorkSample>& buflane : bufferedLanes)
+		buflane.write_end();
 	
 	if(Verbose())
 		Logger::Info << "Rows that were required: " << rowsRead << '/' << msData.matchingRows << '\n';
@@ -204,22 +204,22 @@ void WSMSGridder::gridMeasurementSet(MSData &msData)
 
 void WSMSGridder::startInversionWorkThreads(size_t maxChannelCount)
 {
-	_inversionCPULanes.reset(new ao::lane<InversionWorkSample>[_cpuCount]);
-	boost::thread_group group;
-	_threadGroup.reset(new boost::thread_group());
+	_inversionCPULanes.resize(_cpuCount);
+	_threadGroup.clear();
 	for(size_t i=0; i!=_cpuCount; ++i)
 	{
 		_inversionCPULanes[i].resize(maxChannelCount * _laneBufferSize);
 		set_lane_debug_name(_inversionCPULanes[i], "Work lane (buffered) containing individual visibility samples");
-		_threadGroup->add_thread(new boost::thread(&WSMSGridder::workThreadPerSample, this, &_inversionCPULanes[i]));
+		_threadGroup.emplace_back(&WSMSGridder::workThreadPerSample, this, &_inversionCPULanes[i]);
 	}
 }
 
 void WSMSGridder::finishInversionWorkThreads()
 {
-	_threadGroup->join_all();
-	_threadGroup.reset();
-	_inversionCPULanes.reset();
+	for(std::thread& thrd : _threadGroup)
+		thrd.join();
+	_threadGroup.clear();
+	_inversionCPULanes.clear();
 }
 
 void WSMSGridder::workThreadPerSample(ao::lane<InversionWorkSample>* workLane)
@@ -248,11 +248,10 @@ void WSMSGridder::predictMeasurementSet(MSData &msData)
 	set_lane_debug_name(calcLane, "Prediction calculation lane (buffered) containing full row data");
 	set_lane_debug_name(writeLane, "Prediction write lane containing full row data");
 	lane_write_buffer<PredictionWorkItem> bufferedCalcLane(&calcLane, _laneBufferSize);
-	boost::thread writeThread(&WSMSGridder::predictWriteThread, this, &writeLane, &msData);
-	boost::thread_group calcThreads;
+	std::thread writeThread(&WSMSGridder::predictWriteThread, this, &writeLane, &msData);
+	std::vector<std::thread> calcThreads;
 	for(size_t i=0; i!=_cpuCount; ++i)
-		calcThreads.add_thread(new boost::thread(&WSMSGridder::predictCalcThread, this, &calcLane, &writeLane));
-
+		calcThreads.emplace_back(&WSMSGridder::predictCalcThread, this, &calcLane, &writeLane);
 		
 	/* Start by reading the u,v,ws in, so we don't need IO access
 	 * from this thread during further processing */
@@ -298,7 +297,8 @@ void WSMSGridder::predictMeasurementSet(MSData &msData)
 	msData.totalRowsProcessed += rowsProcessed;
 	
 	bufferedCalcLane.write_end();
-	calcThreads.join_all();
+	for(std::thread& thr : calcThreads)
+		thr.join();
 	writeLane.write_end();
 	writeThread.join();
 }
@@ -362,7 +362,10 @@ void WSMSGridder::Invert()
 			
 			startInversionWorkThreads(selectedBand.MaxChannels());
 		
-			gridMeasurementSet(msData);
+			if(_gridAtLOFARCentroid)
+				gridLOFARCentroidMeasurementSet(msData);
+			else
+				gridMeasurementSet(msData);
 			
 			finishInversionWorkThreads();
 		}
@@ -380,18 +383,13 @@ void WSMSGridder::Invert()
 			totalMatchingRows += msDataVector[i].matchingRows;
 		}
 		
-		Logger::Info << "Total rows read: " << totalRowsRead;
+		Logger::Debug << "Total rows read: " << totalRowsRead;
 		if(totalMatchingRows != 0)
-			Logger::Info << " (overhead: " << std::max(0.0, round(totalRowsRead * 100.0 / totalMatchingRows - 100.0)) << "%)";
-		Logger::Info << '\n';
+			Logger::Debug << " (overhead: " << std::max(0.0, round(totalRowsRead * 100.0 / totalMatchingRows - 100.0)) << "%)";
+		Logger::Debug << '\n';
 	}
 	
-	if(NormalizeForWeighting())
-		_gridder->FinalizeImage(1.0/totalWeight(), false);
-	else {
-		Logger::Info << "Not dividing by normalization factor of " << totalWeight()/2.0 << ".\n";
-		_gridder->FinalizeImage(2.0, true);
-	}
+	_gridder->FinalizeImage(1.0/totalWeight(), false);
 	Logger::Info << "Gridded visibility count: " << double(GriddedVisibilityCount());
 	if(Weighting().IsNatural())
 		Logger::Info << ", effective count after weighting: " << EffectiveGriddedVisibilityCount();
@@ -423,7 +421,7 @@ void WSMSGridder::Invert()
 	
 	if(TrimWidth() != ImageWidth() || TrimHeight() != ImageHeight())
 	{
-		Logger::Info << "Trimming " << ImageWidth() << " x " << ImageHeight() << " -> " << TrimWidth() << " x " << TrimHeight() << '\n';
+		Logger::Debug << "Trimming " << ImageWidth() << " x " << ImageHeight() << " -> " << TrimWidth() << " x " << TrimHeight() << '\n';
 		// Perform trimming
 		
 		double *trimmed = _imageBufferAllocator->Allocate(TrimWidth() * TrimHeight());
@@ -466,7 +464,7 @@ void WSMSGridder::Predict(double* real, double* imaginary)
 	ImageBufferAllocator::Ptr untrimmedReal, untrimmedImag;
 	if(TrimWidth() != ImageWidth() || TrimHeight() != ImageHeight())
 	{
-		Logger::Info << "Untrimming " << TrimWidth() << " x " << TrimHeight() << " -> " << ImageWidth() << " x " << ImageHeight() << '\n';
+		Logger::Debug << "Untrimming " << TrimWidth() << " x " << TrimHeight() << " -> " << ImageWidth() << " x " << ImageHeight() << '\n';
 		// Undo trimming (i.e., extend with zeros)
 		// The input is of size TrimWidth() x TrimHeight()
 		// This will make the model image of size ImageWidth() x ImageHeight()
@@ -534,8 +532,8 @@ void WSMSGridder::Predict(double* real, double* imaginary)
 		totalMatchingRows += msDataVector[i].matchingRows;
 	}
 	
-	Logger::Info << "Total rows written: " << totalRowsWritten;
+	Logger::Debug << "Total rows written: " << totalRowsWritten;
 	if(totalMatchingRows != 0)
-		Logger::Info << " (overhead: " << std::max(0.0, round(totalRowsWritten * 100.0 / totalMatchingRows - 100.0)) << "%)";
-	Logger::Info << '\n';
+		Logger::Debug << " (overhead: " << std::max(0.0, round(totalRowsWritten * 100.0 / totalMatchingRows - 100.0)) << "%)";
+	Logger::Debug << '\n';
 }

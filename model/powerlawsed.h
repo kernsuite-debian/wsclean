@@ -90,7 +90,7 @@ public:
 			_factors[p] *= factor;
 	}
 	
-	virtual void operator+=(const SpectralEnergyDistribution &other) override
+	virtual void operator+=(const SpectralEnergyDistribution &) override
 	{
 		throw std::runtime_error("operator+= not yet implemented for power law sed");
 	}
@@ -100,6 +100,11 @@ public:
 		return _referenceFrequency;
 	}
 	
+	/**
+	 * @param referenceFrequency Frequency in Hz
+	 * @param brightnessVector A Stokes matrix representing the fluxes at the reference frequency
+	 * @param siTerms The SI terms
+	 */
 	void SetData(double referenceFrequency, const double* brightnessVector, const ao::uvector<double>& siTerms)
 	{
 		_referenceFrequency = referenceFrequency;
@@ -129,6 +134,14 @@ public:
 			_factors[p] = 0.0;
 	}
 	
+	/**
+	 * Retrieve the parameters for this SED.
+	 * 
+	 * The terms are in units as they are regularly found in sky models.
+	 * @param referenceFrequency In Hz the frequency with which the spectral function is evaluated.
+	 * @param brightnessVector Flux of Stokes I, Q, U, V in Jy.
+	 * @param siTerms SI index, SI curvature and higher terms.
+	 */
 	void GetData(double& referenceFrequency, double* brightnessVector, std::vector<double>& siTerms) const
 	{
 		referenceFrequency = _referenceFrequency;

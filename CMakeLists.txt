@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 2.8.8)
 
 project(wsclean)
 
+include(CMakeVersionInfo.txt)
+
 #if(NOT CMAKE_BUILD_TYPE)
 #  set(CMAKE_BUILD_TYPE "Release")
 #endif()
@@ -72,26 +74,6 @@ include_directories(${GSL_INCLUDE_DIR})
 
 include(CheckCXXSourceCompiles)
 
-check_cxx_source_compiles(
-"#include \"${CMAKE_CURRENT_SOURCE_DIR}/aocommon/uvector_11.h\"
-int main(int argc, char* argv[])
-{
-return 0;
-}" UVECTOR_COMPILES)
-check_cxx_source_compiles(
-"#include \"${CMAKE_CURRENT_SOURCE_DIR}/aocommon/lane_11.h\"
-int main(int argc, char* argv[])
-{
-return 0;
-}" LANE11_COMPILES)
-
-if(UVECTOR_COMPILES)
-  add_definitions(-DHAVE_UVECTOR)
-endif(UVECTOR_COMPILES)
-if(LANE11_COMPILES)
-  add_definitions(-DHAVE_LANE11)
-endif(LANE11_COMPILES)
-
 # GSL is required for WSClean, so always available
 add_definitions(-DHAVE_GSL)
 
@@ -113,9 +95,12 @@ IF("${isSystemDir}" STREQUAL "-1")
    SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 ENDIF("${isSystemDir}" STREQUAL "-1")
 
+configure_file("${PROJECT_SOURCE_DIR}/wscversion.h.in" "${PROJECT_BINARY_DIR}/wscversion.h")
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
 add_library(wsclean-object OBJECT
-  casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmultithreadenabler.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialchannelfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
-  deconvolution/clarkloop.cpp deconvolution/componentlist.cpp deconvolution/deconvolution.cpp deconvolution/deconvolutionalgorithm.cpp deconvolution/genericclean.cpp deconvolution/imageset.cpp deconvolution/moresane.cpp deconvolution/simpleclean.cpp deconvolution/spectralfitter.cpp
+  casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmanager.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialchannelfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
+  deconvolution/clarkloop.cpp deconvolution/componentlist.cpp deconvolution/deconvolution.cpp deconvolution/deconvolutionalgorithm.cpp deconvolution/genericclean.cpp deconvolution/imageset.cpp deconvolution/paralleldeconvolution.cpp deconvolution/moresane.cpp deconvolution/simpleclean.cpp deconvolution/spectralfitter.cpp
   interface/wscleaninterface.cpp
   iuwt/imageanalysis.cpp iuwt/iuwtdecomposition.cpp iuwt/iuwtdeconvolutionalgorithm.cpp iuwt/iuwtmask.cpp
   lofar/lbeamimagemaker.cpp
@@ -123,7 +108,7 @@ add_library(wsclean-object OBJECT
   msproviders/averagingmsrowprovider.cpp msproviders/contiguousms.cpp msproviders/directmsrowprovider.cpp msproviders/msprovider.cpp msproviders/msrowprovider.cpp msproviders/partitionedms.cpp
   multiscale/multiscalealgorithm.cpp multiscale/multiscaletransforms.cpp multiscale/threadeddeconvolutiontools.cpp
   wsclean/commandline.cpp wsclean/imagingtable.cpp wsclean/logger.cpp wsclean/msgridderbase.cpp wsclean/wscfitswriter.cpp wsclean/wsclean.cpp
-  wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/wstackinggridder.cpp
+  wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/lofarcentroidgridding.cpp wsclean/wstackinggridder.cpp
 	${LBEAM_FILES} ${IDG_FILES})
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
@@ -132,9 +117,11 @@ set(WSCLEANFILES $<TARGET_OBJECTS:wsclean-object>)
 
 add_library(wsclean-lib STATIC ${WSCLEANFILES})
 set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 
 add_library(wsclean-shared SHARED ${WSCLEANFILES})
 target_link_libraries(wsclean-shared)
+set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 
 add_executable(wsclean wscleanmain.cpp)
 target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
@@ -164,6 +151,7 @@ find_package(Boost COMPONENTS date_time filesystem thread system program_options
 if(Boost_FOUND)
   add_executable(runtest EXCLUDE_FROM_ALL
 		tests/test.cpp
+		tests/testbanddata.cpp
 		tests/testbaselinedependentaveraging.cpp
 		tests/testclean.cpp 
 		tests/testcomponentlist.cpp
@@ -171,6 +159,7 @@ if(Boost_FOUND)
 		tests/testfluxdensity.cpp
 		tests/testgaussianfitter.cpp
 		tests/testimage.cpp
+		tests/testimagebufferallocator.cpp
 		tests/testimageset.cpp
 		tests/testmatrix2x2.cpp
 		tests/testpolynomialchannelfitter.cpp

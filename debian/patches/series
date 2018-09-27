@@ -1,3 +1,2 @@
 Don-t-use-RPATH.patch
 Build-and-use-shared-lib-for-libwsclean.patch
-disable-test-using-boost-158-plus

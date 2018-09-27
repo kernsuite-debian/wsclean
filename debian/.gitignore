@@ -5,6 +5,6 @@ files
 *.substvars
 tmp/
 .debhelper/
-libwsclean0/
+libwsclean*/
 wsclean-dev/
 wsclean/

@@ -38,6 +38,8 @@ void WSCleanSettings::Validate() const
 		}
 		if(allStokes && !joinedPolarizationCleaning && deconvolutionIterationCount!=0)
 			throw std::runtime_error("Cleaning IDG images with multiple polarizations is only possible in joined polarization mode");
+		if(trimmedImageWidth != trimmedImageHeight)
+			throw std::runtime_error("IDG can not yet make rectangular images -- this will be implemented at a later time");
 	}
 	
 	if(baselineDependentAveragingInWavelengths != 0.0)
@@ -58,7 +60,7 @@ void WSCleanSettings::Validate() const
 		throw std::runtime_error("You have specified 0 output channels -- at least one output channel is required.");
 	
 	if(joinedFrequencyCleaning && channelsOut == 1)
-		throw std::runtime_error("Joined frequency cleaning was requested, but only one output channel is being requested. Did you forget -channelsout?");
+		throw std::runtime_error("Joined frequency cleaning was requested, but only one output channel is being requested. Did you forget -channels-out?");
 	
 	if(forceReorder && forceNoReorder)
 		throw std::runtime_error("Can not both force reordering and force not reordering!");
@@ -85,22 +87,39 @@ void WSCleanSettings::checkPolarizations() const
 	if(joinedPolarizationCleaning)
 	{
 		if(polarizations.size() == 1)
-			throw std::runtime_error("Joined polarization cleaning requested, but only one polarization is being imaged. Specify multiple polarizatons, or do not request to join the polarizations");
-		else if(polarizations.size() != 2 && polarizations.size() != 4)
-			throw std::runtime_error("Joined polarization cleaning requested, but neither 2 or 4 polarizations are imaged that are suitable for this");
+			throw std::runtime_error("Joined/linked polarization cleaning requested, but only one polarization is being imaged. Specify multiple polarizations, or do not request to join the polarizations");
 	}
 	else {
 		if((hasXY || hasYX) && deconvolutionIterationCount !=0)
-			throw std::runtime_error("You are imaging XY and/or YX polarizations and have enabled cleaning (niter!=0). This is not possible -- you have to specify '-joinpolarizations' or disable cleaning.");
+			throw std::runtime_error("You are imaging XY and/or YX polarizations and have enabled cleaning (niter!=0). This is not possible -- you have to specify '-join-polarizations' or disable cleaning.");
 	}
+	
+	for(PolarizationEnum p : linkedPolarizations)
+	{
+		if(polarizations.count(p) == 0)
+		{
+			std::ostringstream str;
+			str << "Linked polarization cleaning was requested for polarization "
+				<< Polarization::TypeToFullString(p)
+				<< ", but this polarization is not imaged";
+			throw std::runtime_error(str.str());
+		}
+	}
+	
 	if((hasXY && !hasYX) || (!hasXY && hasYX))
-		throw std::runtime_error("You are imaging only one of XY or YX polarizations. This is not possible -- you have to specify both XY and YX polarizations (the output of imaging both polarizations will be the XY and imaginary XY images).");
+		throw std::runtime_error("You are imaging only one of the XY or YX polarizations. This is not possible -- you have to specify both XY and YX polarizations (the output of imaging both polarizations will be the XY and imaginary XY images).");
 	if(IsSpectralFittingEnabled())
 	{
 		if(joinedPolarizationCleaning)
-			throw std::runtime_error("You have requested spectral fitting, but you are joining multiple polarizations. This is not supported. You probably want to turn off the joining of polarizations (leave out -joinpolarizations).");
+			throw std::runtime_error("You have requested spectral fitting, but you are joining multiple polarizations. This is not supported. You probably want to turn off the joining of polarizations (leave out -join-polarizations).");
 		if(!joinedFrequencyCleaning)
-			throw std::runtime_error("You have requested spectral fitting, but you are not joining channels. This is not possible: you probably want to turn channel joining on (add -joinchannels).");
+			throw std::runtime_error("You have requested spectral fitting, but you are not joining channels. This is not possible: you probably want to turn channel joining on (add -join-channels).");
+	}
+	
+	if(autoDeconvolutionThreshold && autoMask)
+	{
+		if(autoDeconvolutionThresholdSigma >= autoMaskSigma)
+			throw std::runtime_error("The auto-masking threshold was smaller or equal to the auto-threshold. This does not make sense. Did you accidentally reverse the auto-mask and auto-threshold values?");
 	}
 }
 

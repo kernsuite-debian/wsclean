@@ -22,9 +22,9 @@ public:
 		_posConstrained = positionOffsetConstrained;
 	}
 	
-	void Fit2DGaussianCentred(const double* image, size_t width, size_t height, double beamEst, double& beamMaj, double& beamMin, double& beamPA, bool verbose=false)
+	void Fit2DGaussianCentred(const double* image, size_t width, size_t height, double beamEst, double& beamMaj, double& beamMin, double& beamPA, double boxScaleFactor=10.0, bool verbose=false)
 	{
-		size_t prefSize = std::max<size_t>(10, std::ceil(beamEst*10.0));
+		size_t prefSize = std::max<size_t>(std::ceil(boxScaleFactor), std::ceil(beamEst*boxScaleFactor));
 		if(prefSize%2 != 0) ++prefSize;
 		if(prefSize < width || prefSize < height)
 		{
@@ -40,24 +40,28 @@ public:
 					std::cout << "Fit result:" << beamMaj << " x " << beamMin << " px, " << beamPA << " (box was " << boxWidth << " x " << boxHeight << ")\n";
 				
 				boxWasLargeEnough =
-					(beamMaj*8.0 < boxWidth || boxWidth>=width) &&
-					(beamMaj*8.0 < boxHeight || boxHeight>=height);
+					(beamMaj*boxScaleFactor*0.8 < boxWidth || boxWidth>=width) &&
+					(beamMaj*boxScaleFactor*0.8 < boxHeight || boxHeight>=height);
 				if(!boxWasLargeEnough)
 				{
-					prefSize = std::max<size_t>(10, std::ceil(beamMaj*10.0));
+					prefSize = std::max<size_t>(std::ceil(boxScaleFactor), std::ceil(beamMaj*boxScaleFactor));
 					if(prefSize%2 != 0) ++prefSize;
+					beamEst = std::max(beamMaj, beamEst);
 				}
 				++nIter;
 			} while(!boxWasLargeEnough && nIter < 5);
 		}
 		else {
+			if(verbose)
+				std::cout << "Image is as large as the fitting box.\n";
 			fit2DGaussianCentred(image, width, height, beamEst, beamMaj, beamMin, beamPA, verbose);
 		}
 	}
 	
-	void Fit2DCircularGaussianCentred(const double* image, size_t width, size_t height, double& beamSize)
+	void Fit2DCircularGaussianCentred(const double* image, size_t width, size_t height, double& beamSize, double boxScaleFactor=10.0)
 	{
-		size_t prefSize = std::max<size_t>(10, std::ceil(beamSize*10.0));
+		double initialValue = beamSize;
+		size_t prefSize = std::max<size_t>(std::ceil(boxScaleFactor), std::ceil(beamSize*boxScaleFactor));
 		if(prefSize%2 != 0) ++prefSize;
 		if(prefSize < width || prefSize < height)
 		{
@@ -69,12 +73,13 @@ public:
 				fit2DCircularGaussianCentredInBox(image, width, height, beamSize, boxWidth, boxHeight);
 				
 				boxWasLargeEnough =
-					(beamSize*4.0 < boxWidth || width>=boxWidth) &&
-					(beamSize*4.0 < boxHeight || height>=boxHeight);
+					(beamSize*boxScaleFactor*0.8 < boxWidth || width>=boxWidth) &&
+					(beamSize*boxScaleFactor*0.8 < boxHeight || height>=boxHeight);
 				if(!boxWasLargeEnough)
 				{
-					prefSize = std::max<size_t>(10, std::ceil(beamSize*10.0));
+					prefSize = std::max<size_t>(std::ceil(boxScaleFactor), std::ceil(beamSize*boxScaleFactor));
 					if(prefSize%2 != 0) ++prefSize;
+					beamSize = std::max(initialValue, beamSize);
 				}
 				++nIter;
 			} while(!boxWasLargeEnough && nIter < 5);
