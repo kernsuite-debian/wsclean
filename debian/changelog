@@ -1,3 +1,10 @@
+wsclean (2.6-1kern2) bionic; urgency=medium
+
+  [ Gijs Molenaar ]
+  * switch to lofarbeam package
+
+ -- KERN packaging <packaging@kernsuite.info>  Thu, 10 Jan 2019 11:26:34 +0200
+
 wsclean (2.6-1kern1) bionic; urgency=medium
 
   [ Gijs Molenaar ]
