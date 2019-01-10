@@ -15,7 +15,7 @@ Build-Depends: casacore-dev (>= 2.4.0),
                libcfitsio-dev | libcfitsio3-dev,
                libfftw3-dev,
                libgsl0-dev,
-               lofar-dev
+               lofarbeam-dev
 Standards-Version: 4.2.0
 Vcs-Git: https://salsa.debian.org/debian-astro-team/wsclean.git
 Vcs-Browser: https://salsa.debian.org/debian-astro-team/wsclean
