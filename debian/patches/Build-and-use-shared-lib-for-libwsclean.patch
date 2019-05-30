@@ -34,8 +34,8 @@ index 789b432..3b6fa1b 100644
  
  install(TARGETS wsclean DESTINATION bin)
 -install(TARGETS wsclean-lib DESTINATION lib)
-+install(TARGETS wsclean-lib DESTINATION lib/${DEB_BUILD_MULTIARCH})
-+install(TARGETS wsclean-shared DESTINATION lib/${DEB_BUILD_MULTIARCH})
++install(TARGETS wsclean-lib DESTINATION lib/${DEB_HOST_MULTIARCH})
++install(TARGETS wsclean-shared DESTINATION lib/${DEB_HOST_MULTIARCH})
  install(FILES interface/wscleaninterface.h DESTINATION include)
  
  # add target to generate API documentation with Doxygen

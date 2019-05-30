@@ -1,3 +1,10 @@
+wsclean (2.6-1.1) UNRELEASED; urgency=medium
+
+  * Non-maintainer upload.
+  * Fix FTCBFS: Fix build/host confusion. (Closes: #-1)
+
+ -- Helmut Grohne <helmut@subdivi.de>  Thu, 30 May 2019 09:52:20 +0200
+
 wsclean (2.6-1) unstable; urgency=low
 
   * Push Standards-Versionto 4.2.0. No changes required

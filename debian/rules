@@ -3,7 +3,8 @@
 
 #export DH_VERBOSE=1
 
-CMAKE_FLAGS += -DDEB_BUILD_MULTIARCH=`dpkg-architecture -qDEB_BUILD_MULTIARCH` -DPORTABLE=yes
+include /usr/share/dpkg/architecture.mk
+CMAKE_FLAGS += -DDEB_HOST_MULTIARCH=$(DEB_HOST_MULTIARCH) -DPORTABLE=yes
 
 %:
 	dh $@
