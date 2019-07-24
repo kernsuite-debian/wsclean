@@ -6,7 +6,7 @@ Uploaders: Gijs Molenaar <gijs@pythonic.nl>,
            Ole Streicher <olebole@debian.org>
 Build-Depends: casacore-dev,
                cmake,
-               debhelper (>= 11),
+               debhelper-compat (= 12),
                libboost-dev,
                libboost-filesystem-dev,
                libboost-program-options-dev,
