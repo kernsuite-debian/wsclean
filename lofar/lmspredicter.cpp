@@ -7,7 +7,7 @@
 
 LMSPredicter::~LMSPredicter()
 {
-	if(_readThread != 0)
+	if(_readThread != nullptr)
 		_readThread->join();
 	clearBuffers();
 }
@@ -28,13 +28,13 @@ void LMSPredicter::InitializeInput(const Model& model)
 
 void LMSPredicter::clearBuffers()
 {
-	for(std::vector<MC2x2*>::iterator buffer=_buffers.begin(); buffer!=_buffers.end(); ++buffer)
-		delete[] *buffer;
+	for(MC2x2* buffer : _buffers)
+		delete[] buffer;
 }
 
 void LMSPredicter::Start()
 {
-	boost::mutex::scoped_lock lock(_mutex);
+	std::lock_guard<std::mutex> lock(_mutex);
 	if(_ms.nrow() == 0) throw std::runtime_error("Table has no rows (no data)");
 	
 	casacore::ROArrayColumn<casacore::Complex> dataColumn(_ms, _ms.columnName(casacore::MSMainEnums::DATA));
@@ -44,6 +44,11 @@ void LMSPredicter::Start()
 		throw std::runtime_error("Expecting MS with 4 polarizations");
 	
 	_bandData = BandData(_ms.spectralWindow());
+	if(_endChannel == 0)
+	{
+		_startChannel = 0;
+		_endChannel = _bandData.ChannelCount();
+	}
 	
 	if(!_useModelColumn)
 	{
@@ -56,7 +61,7 @@ void LMSPredicter::Start()
 		{
 			_beamEvaluator.reset(new LBeamEvaluator(_ms));
 			_beamEvaluator->SetTime(startTime);
-			_predicter->UpdateBeam(*_beamEvaluator);
+			_predicter->UpdateBeam(*_beamEvaluator, _startChannel, _endChannel);
 		}
 		else {
 			_dftInput.SetUnitaryBeam();
@@ -78,8 +83,8 @@ void LMSPredicter::Start()
 
 	// Start all threads
 	if(!_useModelColumn)
-		_workThreadGroup.reset(new boost::thread_group());
-	_readThread.reset(new boost::thread(&LMSPredicter::ReadThreadFunc, this));
+		_workThreadGroup.clear();
+	_readThread.reset(new std::thread(&LMSPredicter::ReadThreadFunc, this));
 }
 	
 void LMSPredicter::ReadThreadFunc()
@@ -88,17 +93,16 @@ void LMSPredicter::ReadThreadFunc()
 	boost::asio::io_service::work work(_ioService);
 	if(!_useModelColumn)
 	{
-		//if(_dftInput.ComponentCount() == 0)
-		//	actualThreadCount = 1;
+		if(_dftInput.ComponentCount() == 0)
+			actualThreadCount = 1;
 		for(size_t i=0; i!=actualThreadCount; ++i)
 		{
-			//_workThreadGroup->add_thread(new boost::thread(&LMSPredicter::PredictThreadFunc, this));
-			_workThreadGroup->add_thread(new boost::thread(boost::bind(&boost::asio::io_service::run, &_ioService)));
+			_workThreadGroup.emplace_back(boost::bind(&boost::asio::io_service::run, &_ioService));
 			_ioService.post(boost::bind(&LMSPredicter::PredictThreadFunc, this));
 		}
 	}
 	
-	boost::mutex::scoped_lock lock(_mutex);
+	std::unique_lock<std::mutex> lock(_mutex);
 
 	casacore::ROScalarColumn<int> ant1Column(_ms, _ms.columnName(casacore::MSMainEnums::ANTENNA1));
 	casacore::ROScalarColumn<int> ant2Column(_ms, _ms.columnName(casacore::MSMainEnums::ANTENNA2));
@@ -148,7 +152,7 @@ void LMSPredicter::ReadThreadFunc()
 				
 				_workLane.clear();
 				_beamEvaluator->SetTime(time);
-				_predicter->UpdateBeam(*_beamEvaluator);
+				_predicter->UpdateBeam(*_beamEvaluator, _startChannel, _endChannel);
 				for(size_t i=0; i!=actualThreadCount; ++i)
 					_ioService.post(boost::bind(&LMSPredicter::PredictThreadFunc, this));
 			}
@@ -190,7 +194,9 @@ void LMSPredicter::ReadThreadFunc()
 		_workLane.write_end();
 		_barrier.wait();
 		_ioService.stop();
-		_workThreadGroup->join_all();
+		for(std::thread& t : _workThreadGroup)
+			t.join();
+		_workThreadGroup.clear();
 	}
 	_outputLane.write_end();
 }
@@ -201,7 +207,7 @@ void LMSPredicter::PredictThreadFunc()
 	while(_workLane.read(rowData))
 	{
 		MC2x2 *valIter = rowData.modelData;
-		for(size_t ch=0; ch!=_bandData.ChannelCount(); ++ch)
+		for(size_t ch=_startChannel; ch!=_endChannel; ++ch)
 		{
 			double lambda = _bandData.ChannelWavelength(ch);
 			_predicter->Predict(*valIter, rowData.u/lambda, rowData.v/lambda, rowData.w/lambda, ch, rowData.a1, rowData.a2);

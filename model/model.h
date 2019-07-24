@@ -12,28 +12,17 @@ class Model
 		typedef std::vector<ModelSource>::iterator iterator;
 		typedef std::vector<ModelSource>::const_iterator const_iterator;
 		
-		Model() :
-			_polarizationType(FullXY)
-		{
-		}
+		Model()
+		{ }
 
-		Model(const Model &source) :
-			_polarizationType(source._polarizationType),
-			_sources(source._sources),
-			_clusters(source._clusters)
-		{
-		}
+		Model(const Model&) = default;
+		Model(Model&&) = default;
 		
 		explicit Model(const char *filename) { read(filename); }
 		explicit Model(const std::string& filename) { read(filename.c_str()); }
 		
-		Model& operator=(const Model &source)
-		{
-			_polarizationType = source._polarizationType;
-			_sources = source._sources;
-			_clusters = source._clusters;
-			return *this;
-		}
+		Model& operator=(const Model&) = default;
+		Model& operator=(Model&&) = default;
 		
 		void operator+=(const Model &rhs);
 		
@@ -134,8 +123,6 @@ class Model
 		void Save(const char* filename) const;
 		void Save(std::ostream& stream) const;
 		
-		enum PolarizationType { FullXY };
-		
 		double TotalFlux(double frequencyStartHz, double frequencyEndHz, PolarizationEnum polarization) const
 		{
 			double flux = 0.0;
@@ -200,7 +187,6 @@ class Model
 		}
 	private:
 		void read(const char* filename);
-		enum PolarizationType _polarizationType;
 		std::vector<ModelSource> _sources;
 		std::map<std::string, ModelCluster> _clusters;
 		

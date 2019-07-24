@@ -85,9 +85,9 @@ private:
 		ao::uvector<double> _weights;
 	};
 	
-	void makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider& msProvider, const ImagingTableEntry::MSInfo& msInfo, const MSSelection& selection, double centralFrequency);
+	void makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider& msProvider, const MSSelection& selection, double centralFrequency);
 
-	void makeBeamSnapshot(const std::vector<LOFAR::StationResponse::Station::Ptr>& stations, const ao::uvector<double>& weights, const WeightMatrix& baselineWeights, double** imgPtr, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame);
+	void makeBeamSnapshot(const std::vector<LOFAR::StationResponse::Station::Ptr>& stations, const ao::uvector<double>& weights, double** imgPtr, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame);
 	
 	void calculateStationWeights(const class ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, MSProvider& msProvider, const MSSelection& selection, double endTime);
 	
@@ -115,7 +115,7 @@ private:
 	double _pixelSizeX, _pixelSizeY, _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
 	double _sPixelSizeX, _sPixelSizeY, _totalWeightSum;
  	bool _useDifferentialBeam;
-	casacore::MDirection _delayDir, _referenceDir, _tileBeamDir;
+	casacore::MDirection _delayDir, _preappliedDir, _tileBeamDir;
 };
 
 #endif
