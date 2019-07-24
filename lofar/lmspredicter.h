@@ -11,11 +11,11 @@
 #include "lbeamevaluator.h"
 
 #include <boost/asio/io_service.hpp>
-#include <boost/thread/thread.hpp>
 #include <boost/thread/barrier.hpp>
 
 #include <complex>
 #include <memory>
+#include <thread>
 
 class LMSPredicter
 {
@@ -32,6 +32,8 @@ public:
 	
 	explicit LMSPredicter(casacore::MeasurementSet &ms, size_t threadCount) :
 		_ms(ms),
+		_startChannel(0),
+		_endChannel(0),
 		_applyBeam(false),
 		_useModelColumn(false),
 		_dftInput(),
@@ -65,12 +67,18 @@ public:
 		_bufferedBufferLane.write(data);
 	}
 	
-	boost::mutex &IOMutex() { return _mutex; }
+	std::mutex &IOMutex() { return _mutex; }
 	
 	void SetApplyBeam(bool applyBeam) { _applyBeam = applyBeam; }
 	void SetStartRow(size_t startRow) { _startRow = startRow; }
 	void SetEndRow(size_t endRow) { _endRow = endRow; }
 	void SetUseModelColumn(bool useModelColumn) { _useModelColumn = useModelColumn; }
+	void SetChannelRange(size_t startChannel, size_t endChannel)
+	{
+		_startChannel = startChannel;
+		_endChannel = endChannel;
+	}
+
 private:
 	void ReadThreadFunc();
 	void PredictThreadFunc();
@@ -78,10 +86,11 @@ private:
 	
 	casacore::MeasurementSet &_ms;
 	std::unique_ptr<LBeamEvaluator> _beamEvaluator;
+	size_t _startChannel, _endChannel;
 	bool _applyBeam, _useModelColumn;
 	
 	DFTPredictionInput _dftInput;
-	boost::mutex _mutex;
+	std::mutex _mutex;
 	boost::barrier _barrier;
 	boost::asio::io_service _ioService;
 	
@@ -90,8 +99,8 @@ private:
 	lane_read_buffer<RowData> _bufferedOutputLane;
 	lane_write_buffer<RowData> _bufferedBufferLane;
 	
-	std::unique_ptr<boost::thread> _readThread;
-	std::unique_ptr<boost::thread_group> _workThreadGroup;
+	std::unique_ptr<std::thread> _readThread;
+	std::vector<std::thread> _workThreadGroup;
 	std::unique_ptr<DFTPredictionAlgorithm> _predicter;
 	std::vector<MC2x2*> _buffers;
 	BandData _bandData;

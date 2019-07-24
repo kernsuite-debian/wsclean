@@ -9,6 +9,7 @@
 
 #include <complex>
 #include <set>
+#include <vector>
 
 namespace casacore {
 	class MeasurementSet;
@@ -37,7 +38,9 @@ public:
 
 	virtual ~MSProvider() { }
 	
-	virtual casacore::MeasurementSet &MS() = 0;
+	virtual casacore::MeasurementSet MS() = 0;
+	
+	virtual const std::string& DataColumnName() = 0;
 	
 	virtual size_t RowId() const = 0;
 	
@@ -89,7 +92,7 @@ protected:
 	
 	static void getRowRange(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow);
 	
-	static void getRowRangeAndIDMap(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow, const std::set<size_t>& dataDescIdMap, vector<size_t>& idToMSRow);
+	static void getRowRangeAndIDMap(casacore::MeasurementSet& ms, const MSSelection& selection, size_t& startRow, size_t& endRow, const std::set<size_t>& dataDescIdMap, std::vector<size_t>& idToMSRow);
 	
 	static void copyRealToComplex(std::complex<float>* dest, const float* source, size_t n)
 	{
@@ -126,6 +129,7 @@ protected:
 	}
 	
 	MSProvider() { }
+	
 private:
 	MSProvider(const MSProvider&) { }
 	void operator=(const MSProvider&) { }

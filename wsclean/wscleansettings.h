@@ -10,6 +10,8 @@
 #include "../deconvolution/deconvolutionalgorithm.h"
 #include "../multiscale/multiscaletransforms.h"
 
+enum class DirectFTPrecision { Half, Float, Double, LongDouble };
+
 /**
  * This class describes all settings for a single WSClean run.
  * @sa WSClean
@@ -43,7 +45,11 @@ public:
 	double memFraction, absMemLimit, minUVWInMeters, maxUVWInMeters, minUVInLambda, maxUVInLambda, wLimit, rankFilterLevel;
 	size_t rankFilterSize;
 	double gaussianTaperBeamSize, tukeyTaperInLambda, tukeyInnerTaperInLambda, edgeTaperInLambda, edgeTukeyTaperInLambda;
-	size_t nWLayers, antialiasingKernelSize, overSamplingFactor, threadCount;
+	bool useWeightsAsTaper;
+	size_t nWLayers;
+	double nWLayersFactor;
+	size_t antialiasingKernelSize, overSamplingFactor, threadCount, parallelReordering, parallelGridding;
+	bool useMPI;
 	size_t fieldId;
 	size_t startTimestep, endTimestep;
 	size_t startChannel, endChannel;
@@ -56,16 +62,22 @@ public:
 	bool joinedPolarizationCleaning, joinedFrequencyCleaning;
 	std::set<PolarizationEnum> linkedPolarizations;
 	size_t parallelDeconvolutionMaxSize;
-	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isGriddingImageSaved;
+	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isFirstResidualSaved, isGriddingImageSaved;
 	bool writeImagingWeightSpectrumColumn;
-	bool dftPrediction, dftWithBeam;
 	std::string temporaryDirectory;
-	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfsWeighting;
-	bool useLofarCentroids;
+	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfWeighting;
 	size_t fullResOffset, fullResWidth, fullResPad;
 	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, savePsfPb;
+	std::string mwaPath;
 	size_t primaryBeamUndersampling;
-	bool useIDG, gridWithBeam;
+	bool directFT;
+	DirectFTPrecision directFTPrecision;
+	bool useIDG;
+	std::string atermConfigFilename;
+	double atermKernelSize;
+	bool gridWithBeam;
+	double beamAtermUpdateTime; // in seconds.
+	bool saveATerms;
 	enum IDGMode { IDG_DEFAULT, IDG_GPU, IDG_CPU, IDG_HYBRID } idgMode;
 	enum GridModeEnum gridMode;
 	enum MeasurementSetGridder::VisibilityWeightingMode visibilityWeightingMode;
@@ -155,8 +167,12 @@ inline WSCleanSettings::WSCleanSettings() :
 	gaussianTaperBeamSize(0.0),
 	tukeyTaperInLambda(0.0), tukeyInnerTaperInLambda(0.0),
 	edgeTaperInLambda(0.0), edgeTukeyTaperInLambda(0.0),
-	nWLayers(0), antialiasingKernelSize(7), overSamplingFactor(63),
+	useWeightsAsTaper(false),
+	nWLayers(0), nWLayersFactor(1.0), antialiasingKernelSize(7), overSamplingFactor(1023),
 	threadCount(System::ProcessorCount()),
+	parallelReordering(1),
+	parallelGridding(1),
+	useMPI(false),
 	fieldId(0),
 	startTimestep(0), endTimestep(0),
 	startChannel(0), endChannel(0),
@@ -169,22 +185,26 @@ inline WSCleanSettings::WSCleanSettings() :
 	linkedPolarizations(),
 	parallelDeconvolutionMaxSize(0),
 	smallInversion(true), makePSF(false), makePSFOnly(false), isWeightImageSaved(false),
-	isUVImageSaved(false), isDirtySaved(true), isGriddingImageSaved(false),
+	isUVImageSaved(false), isDirtySaved(true), isFirstResidualSaved(false), isGriddingImageSaved(false),
 	writeImagingWeightSpectrumColumn(false),
-	dftPrediction(false), dftWithBeam(false),
 	temporaryDirectory(),
 	forceReorder(false), forceNoReorder(false),
 	subtractModel(false),
 	modelUpdateRequired(true),
-	mfsWeighting(false),
-	useLofarCentroids(false),
+	mfWeighting(false),
 	fullResOffset(0), fullResWidth(0), fullResPad(0),
 	applyPrimaryBeam(false), reusePrimaryBeam(false),
 	useDifferentialLofarBeam(false),
 	savePsfPb(false),
 	primaryBeamUndersampling(8),
+	directFT(false),
+	directFTPrecision(DirectFTPrecision::Double),
 	useIDG(false),
+	atermConfigFilename(),
+	atermKernelSize(5.0),
 	gridWithBeam(false),
+	beamAtermUpdateTime(300.0),
+	saveATerms(false),
 	idgMode(IDG_DEFAULT),
 	gridMode(KaiserBesselKernel),
 	visibilityWeightingMode(MeasurementSetGridder::NormalVisibilityWeighting),
@@ -210,7 +230,6 @@ inline WSCleanSettings::WSCleanSettings() :
 	useMultiscale(false),
 	useClarkOptimization(true),
 	squaredJoins(false),
-	//forceDynamicJoin(false),
 	multiscaleFastSubMinorLoop(true),
 	multiscaleGain(0.2),
 	multiscaleDeconvolutionScaleBias(0.6),

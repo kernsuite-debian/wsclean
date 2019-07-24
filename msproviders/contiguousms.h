@@ -22,7 +22,9 @@ public:
 	
 	ContiguousMS& operator=(const ContiguousMS&) = delete;
 	
-	casacore::MeasurementSet &MS() final override { return _ms; }
+	casacore::MeasurementSet MS() final override { return _ms; }
+	
+	const std::string& DataColumnName() final override { return _dataColumnName; }
 	
 	size_t RowId() const final override { return _rowId; }
 	
@@ -66,7 +68,7 @@ private:
 	bool _isMetaRead, _isDataRead, _isModelRead, _isWeightRead;
 	bool _isModelColumnPrepared;
 	size_t _startRow, _endRow;
-	vector<size_t> _idToMSRow;
+	std::vector<size_t> _idToMSRow;
 	std::vector<PolarizationEnum> _inputPolarizations;
 	MSSelection _selection;
 	PolarizationEnum _polOut;

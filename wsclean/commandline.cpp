@@ -29,6 +29,11 @@ void CommandLine::printHelp()
 		"-j <threads>\n"
 		"   Specify number of computing threads to use, i.e., number of cpu cores that will be used.\n"
 		"   Default: use all cpu cores.\n"
+		"-parallel-gridding <n>\n"
+		"   Will execute multiple gridders simultaneously. This can make things faster in certain cases,\n"
+		"   but will increase memory usage. \n"
+		"-parallel-reordering <n>\n"
+		"   Process the reordering with multipliple threads. \n"
 		"-mem <percentage>\n"
 		"   Limit memory usage to the given fraction of the total system memory. This is an approximate value.\n"
 		"   Default: 100.\n"
@@ -54,6 +59,8 @@ void CommandLine::printHelp()
 		"   the model data column.\n"
 		"-no-dirty\n"
 		"   Do not save the dirty image.\n"
+		"-save-first-residual\n"
+		"   Save the residual after the first iteration.\n"
 		"-save-weights\n"
 		"   Save the gridded weights in the a fits file named <image-prefix>-weights.fits.\n"
 		"-save-uv\n"
@@ -61,11 +68,13 @@ void CommandLine::printHelp()
 		"   two images will be output: <prefix>-uv-real.fits and <prefix>-uv-imag.fits.\n"
 		"-apply-primary-beam\n"
 		"   Calculate and apply the primary beam and save images for the Jones components, with weighting identical to the\n"
-		"   weighting as used by the imager. Only available for LOFAR.\n"
+		"   weighting as used by the imager. Only available for LOFAR, AARTFAAC, MWA and ATCA.\n"
 		"-reuse-primary-beam\n"
 		"   If a primary beam image exists on disk, reuse those images.\n"
 		"-use-differential-lofar-beam\n"
 		"   Assume the visibilities have already been beam-corrected for the reference direction.\n"
+		"-mwa-path <path>\n"
+		"   Set path where to find the MWA beam file(s).\n"
 		"-save-psf-pb\n"
 		"   When applying beam correction, also save the primary-beam corrected PSF image.\n"
 		"-pb-undersampling <factor>\n"
@@ -80,13 +89,13 @@ void CommandLine::printHelp()
 		"-super-weight <factor>\n"
 		"   Increase the weight gridding box size, similar to Casa's superuniform weighting scheme. Default: 1.0\n"
 		"   The factor can be rational and can be less than one for subpixel weighting.\n"
-		"-mfs-weighting\n"
-		"   In spectral mode, calculate the weights as if the image was made using MFS. This makes sure that the sum of\n"
-		"   channel images equals the MFS weights. Otherwise, the channel image will become a bit more naturally weighted.\n"
+		"-mf-weighting\n"
+		"   In spectral mode, calculate the weights as if the image was made using MF. This makes sure that the sum of\n"
+		"   channel images equals the MF weights. Otherwise, the channel image will become a bit more naturally weighted.\n"
 		"   This is only relevant for weighting modes that require gridding (i.e., Uniform, Briggs').\n"
 		"   Default: off, unless -join-channels is specified.\n"
-		"-no-mfs-weighting\n"
-		"   Opposite of -mfs-weighting; can be used to turn off MFS weighting in -join-channels mode.\n"
+		"-no-mf-weighting\n"
+		"   Opposite of -ms-weighting; can be used to turn off MF weighting in -join-channels mode.\n"
 		"-weighting-rank-filter <level>\n"
 		"   Filter the weights and set high weights to the local mean. The level parameter specifies\n"
 		"   the filter level; any value larger than level*localmean will be set to level*localmean.\n"
@@ -106,6 +115,11 @@ void CommandLine::printHelp()
 		"-taper-edge-tukey <lambda>\n"
 		"   Taper the edge weights with a Tukey window. Lambda is the size of the Tukey transition. When -taper-edge\n"
 		"   is also specified, the Tukey transition starts inside the inner rectangle.\n"
+		"-use-weights-as-taper\n"
+		"   Will not use visibility weights when determining the imaging weights.\n"
+		"   This has the effect that e.g. uniform weighting can be modified by increasing\n"
+		"   the visibility weight of certain baselines. Without this option, uniform imaging\n"
+		"   weights absorb the visibility weight to make the weighting truly uniform.\n"
 		"-store-imaging-weights\n"
 		"   Will store the imaging weights in a column named 'IMAGING_WEIGHT_SPECTRUM'.\n"
 		"\n"
@@ -149,7 +163,7 @@ void CommandLine::printHelp()
 		"   in most cases <1%. Default: on.\n"
 		"-grid-mode <\"nn\", \"kb\" or \"rect\">\n"
 		"   Kernel and mode used for gridding: kb = Kaiser-Bessel (default with 7 pixels), nn = nearest\n"
-		"   neighbour (no kernel), rect = rectangular window. Default: kb.\n"
+		"   neighbour (no kernel), more options: rect, kb-no-sinc, gaus, bn. Default: kb.\n"
 		"-kernel-size <size>\n"
 		"   Gridding antialiasing kernel size. Default: 7.\n"
 		"-oversampling <factor>\n"
@@ -160,11 +174,6 @@ void CommandLine::printHelp()
 		"   Only make the psf, no images are made.\n"
 		"-save-gridding\n"
 		"   Save the gridding correction image. This shows the effect of the antialiasing filter. Default: not saved.\n"
-		"-dft-prediction\n"
-		"   Predict via a direct Fourier transform. This is slow, but can account for direction-dependent effects. This has\n"
-		"   only effect when -mgain is set or -predict is given.\n"
-		"-dft-with-beam\n"
-		"   Apply the beam during DFT. Currently only works for LOFAR.\n"
 		"-visibility-weighting-mode [normal/squared/unit]\n"
 		"   Specify visibility weighting modi. Affects how the weights (normally) stored in\n"
 		"   WEIGHT_SPECTRUM column are applied. Useful for estimating e.g. EoR power spectra errors.\n"
@@ -177,25 +186,35 @@ void CommandLine::printHelp()
 		"   to calculate this is with <baseline in nr. of lambdas> * 2pi * <acceptable integration in s> / (24*60*60).\n"
 		"-simulate-noise <stddev-in-jy>\n"
 		"   Will replace every visibility by a Gaussian distributed value with given standard deviation before imaging.\n"
-		"-lofar-centroids <nch fullres>\n"
-		"   Place visibilities on the high-resolution centroid uv position, by using the\n"
-		"   LOFAR fullres flag information that is generated when averaging with DPPP.\n"
-		"-grid-with-beam\n"
-		"   Apply a-terms to correct for the primary beam. This is only possible when IDG is enabled.\n"
+		"-direct-ft\n"
+		"   Do not grid the visibilities on the uv grid, but instead perform a fully accurate direct Fourier transform (slow!).\n"
 		"-use-idg\n"
 		"   Use the 'image-domain gridder' (Van der Tol et al.) to do the inversions and predictions.\n"
 		"-idg-mode [cpu/gpu/hybrid]\n"
 		"   Sets the IDG mode. Default: cpu. Hybrid is recommended when a GPU is available.\n"
 		"\n"
+		"  ** A-TERM GRIDDING **\n"
+		"-aterm-config <filename>\n"
+		"   Specify a parameter set describing how a-terms should be applied. Please refer to the documentation for\n"
+		"   details of the configuration file format. Applying a-terms is only possible when IDG is enabled.\n"
+		"-grid-with-beam\n"
+		"   Apply a-terms to correct for the primary beam. This is only possible when IDG is enabled.\n"
+		"-beam-aterm-update <seconds>\n"
+		"   Set the ATerm update time in seconds. The default is every 300 seconds.\n"
+		"-aterm-kernel-size\n"
+		"   Kernel size reserved for aterms by IDG.\n"
+		"-save-aterms\n"
+		"   Output a fits file for every aterm update, containing the applied image for every station.\n"
+		"\n"
 		"  ** DATA SELECTION OPTIONS **\n"
 		"-pol <list>\n"
 		"   Default: \'I\'. Possible values: XX, XY, YX, YY, I, Q, U, V, RR, RL, LR or LL (case insensitive).\n"
-		"   Multiple values can be separated with commas, e.g.: 'xx,xy,yx,yy'. Two or four polarizations can be\n"
-		"   joinedly cleaned (see '-joinpolarizations'), but this is not the default. I, Q, U and V\n"
-		"   polarizations will be directly calculated from the visibilities, which is not appropriate for\n"
-		"   telescopes with non-orthogonal feeds, such as MWA and LOFAR. The 'xy' polarization will output both\n"
-		"   a real and an imaginary image, which allows calculating true Stokes polarizations for those\n"
-		"   telescopes.\n"
+		"   It is allowed but not necessary to separate with commas, e.g.: 'xx,xy,yx,yy'."
+		"   Two or four polarizations can be joinedly cleaned (see '-joinpolarizations'), but \n"
+		"   this is not the default. I, Q, U and V polarizations will be directly calculated from\n"
+		"   the visibilities, which might require correction to get to real IQUV values. The\n"
+		"   'xy' polarization will output both a real and an imaginary image, which allows calculating\n"
+		"   true Stokes polarizations for those telescopes.\n"
 		"-interval <start-index> <end-index>\n"
 		"   Only image the given time interval. Indices specify the timesteps, end index is exclusive.\n"
 		"   Default: image all time steps.\n"
@@ -257,16 +276,12 @@ void CommandLine::printHelp()
 		"   Links all polarizations to be cleaned from the given list: components are found in the\n"
 		"   given list, but cleaned from all polarizations. \n"
 		"-join-channels\n"
-		"   Perform cleaning by searching for peaks in the MFS image, but subtract components from individual channels.\n"
-		"   This will turn on mfsweighting by default. Default: off.\n"
+		"   Perform cleaning by searching for peaks in the MF image, but subtract components from individual channels.\n"
+		"   This will turn on mf-weighting by default. Default: off.\n"
 		"-multiscale\n"
 		"   Clean on different scales. This is a new algorithm. Default: off.\n"
 		"   This parameter invokes the v1.9 multiscale algorithm, which is slower but more accurate\n"
 		"   compared to the older algorithm, and therefore the recommended one to use.\n"
-		"-multiscale-threshold-bias\n"
-		"   Parameter to lower the threshold for larger scales. The used threshold for a scale\n"
-		"   is threshold(scale)=pointsource_threshold x tbias^scale. A lower bias will clean\n"
-		"   larger scales deeper. Default: 0.7\n"
 		"-multiscale-scale-bias\n"
 		"   Parameter to prevent cleaning small scales in the large-scale iterations. A higher\n"
 		"   bias will give more focus to larger scales. Default: 0.6\n"
@@ -280,7 +295,7 @@ void CommandLine::printHelp()
 		"   Size of step made in the subminor loop of multi-scale. Default currently 0.2, but shows sign of instability.\n"
 		"   A value of 0.1 might be more stable.\n"
 		"-multiscale-convolution-padding <padding>\n"
-		"   Size of zero-padding for convolutions during the multi-scale cleaning.\n"
+		"   Size of zero-padding for convolutions during the multi-scale cleaning. Default: 1.1\n"
 		"-no-multiscale-fast-subminor\n"
 		"   Disable the 'fast subminor loop' optimization, that will only search a part of the\n"
 		"   image during the multi-scale subminor loop. The optimization is on by default.\n"
@@ -409,7 +424,7 @@ double CommandLine::parse_double(const char* param, double lowerLimit, const cha
 		std::ostringstream msg;
 		msg << "Parameter value for -" << name << " was " << v << " but ";
 		if(inclusive)
-			msg << "is not allowed to smaller than " << lowerLimit;
+			msg << "is not allowed to be smaller than " << lowerLimit;
 		else
 			msg << "has to be larger than " << lowerLimit;
 		throw std::runtime_error(msg.str());
@@ -417,19 +432,18 @@ double CommandLine::parse_double(const char* param, double lowerLimit, const cha
 	return v;
 }
 
-int CommandLine::Run(int argc, char* argv[])
+bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 {
 	if(argc < 2)
 	{
 		printHeader();
 		printHelp();
-		return -1;
+		return false;
 	}
 	
-	WSClean wsclean;
 	WSCleanSettings& settings = wsclean.Settings();
 	int argi = 1;
-	bool mfsWeighting = false, noMFSWeighting = false;
+	bool mfWeighting = false, noMFWeighting = false;
 	while(argi < argc && argv[argi][0] == '-')
 	{
 		const std::string param = argv[argi][1]=='-' ? (&argv[argi][2]) : (&argv[argi][1]);
@@ -442,13 +456,13 @@ int CommandLine::Run(int argc, char* argv[])
 #ifdef HAVE_IDG
 			Logger::Info << "IDG is available.\n";
 #endif
-			return 0;
+			return false;
 		}
 		else if(param == "help")
 		{
 			printHeader();
 			printHelp();
-			return -1;
+			return false;
 		}
 		else if(param == "quiet")
 		{
@@ -525,6 +539,11 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			++argi;
 			settings.nWLayers = parse_size_t(argv[argi], "nwlayers");
+		}
+		else if(param == "nwlayers-factor")
+		{
+			++argi;
+			settings.nWLayersFactor = parse_double(argv[argi], 0.0, "nwlayers-factor", false);
 		}
 		else if(param == "nwlayers-for-size")
 		{
@@ -629,6 +648,11 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			settings.useDifferentialLofarBeam = true;
 		}
+		else if(param == "mwa-path")
+		{
+			++argi;
+			settings.mwaPath = argv[argi];
+		}
 		else if(param == "save-psf-pb")
 		{
 			settings.savePsfPb = true;
@@ -700,14 +724,6 @@ int CommandLine::Run(int argc, char* argv[])
 			if(param == "savegridding")
 				deprecated(param, "save-gridding");
 		}
-		else if(param == "dft-prediction")
-		{
-			settings.dftPrediction = true;
-		}
-		else if(param == "dft-with-beam")
-		{
-			settings.dftWithBeam = true;
-		}
 		else if(param == "name")
 		{
 			++argi;
@@ -720,12 +736,20 @@ int CommandLine::Run(int argc, char* argv[])
 			boost::to_lower(gridModeStr);
 			if(gridModeStr == "kb" || gridModeStr == "kaiserbessel" || gridModeStr == "kaiser-bessel")
 				settings.gridMode = KaiserBesselKernel;
+			else if(gridModeStr == "bn")
+				settings.gridMode = BlackmanNuttallKernel;
+			else if(gridModeStr == "bh")
+				settings.gridMode = BlackmanHarrisKernel;
+			else if(gridModeStr == "gaus")
+				settings.gridMode = GaussianKernel;
 			else if(gridModeStr == "rect")
 				settings.gridMode = RectangularKernel;
+			else if(gridModeStr == "kb-no-sinc")
+				settings.gridMode = KaiserBesselWithoutSinc;
 			else if(gridModeStr == "nn" || gridModeStr == "nearestneighbour")
 				settings.gridMode = NearestNeighbourGridding;
 			else
-				throw std::runtime_error("Invalid gridding mode: should be either kb (Kaiser-Bessel) or nn (NearestNeighbour)");
+				throw std::runtime_error("Invalid gridding mode: should be either kb (Kaiser-Bessel), nn (NearestNeighbour), bn, bh, gaus, kb-no-sinc or rect");
 			if(param == "gridmode")
 				deprecated(param, "grid-mode");
 		}
@@ -799,17 +823,18 @@ int CommandLine::Run(int argc, char* argv[])
 			if(param == "joinchannels")
 				deprecated(param, "join-channels");
 		}
-		else if(param == "mfs-weighting" || param == "mfsweighting")
+		else if(param == "mf-weighting" || param == "mfs-weighting" || param == "mfsweighting")
 		{
-			mfsWeighting = true;
-			if(param == "mfsweighting")
-				deprecated(param, "mfs-weighting");
+			// mfs was renamed to mf in wsclean 2.7
+			mfWeighting = true;
+			if(param != "mf-weighting")
+				deprecated(param, "mf-weighting");
 		}
-		else if(param == "no-mfs-weighting" || param == "nomfsweighting")
+		else if(param == "no-mf-weighting" || param == "no-mfs-weighting" || param == "nomfsweighting")
 		{
-			noMFSWeighting = true;
-			if(param == "nomfsweighting")
-				deprecated(param, "no-mfs-weighting");
+			noMFWeighting = true;
+			if(param != "no-mf-weighting")
+				deprecated(param, "no-mf-weighting");
 		}
 		else if(param == "taper-gaussian")
 		{
@@ -836,6 +861,10 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			++argi;
 			settings.tukeyInnerTaperInLambda = parse_double(argv[argi], 0.0, "taper-inner-tukey");
+		}
+		else if(param == "use-weights-as-taper")
+		{
+			settings.useWeightsAsTaper = true;
 		}
 		else if(param == "store-imaging-weights")
 		{
@@ -1081,6 +1110,16 @@ int CommandLine::Run(int argc, char* argv[])
 			++argi;
 			settings.threadCount = parse_size_t(argv[argi], "j");
 		}
+		else if(param == "parallel-reordering")
+		{
+			++argi;
+			settings.parallelReordering = parse_size_t(argv[argi], "parallel-reordering");
+		}
+		else if(param == "parallel-gridding")
+		{
+			++argi;
+			settings.parallelGridding = parse_size_t(argv[argi], "parallel-gridding");
+		}
 		else if(param == "mem")
 		{
 			++argi;
@@ -1130,15 +1169,28 @@ int CommandLine::Run(int argc, char* argv[])
 			settings.simulateNoise = true;
 			settings.simulatedNoiseStdDev = parse_double(argv[argi], 0.0, "simulate-noise");
 		}
-		else if(param == "lofar-centroids")
+		else if(param == "aterm-config")
 		{
-			settings.useLofarCentroids = true;
 			++argi;
-			settings.fullResWidth = atoi(argv[argi]);
+			settings.atermConfigFilename = argv[argi];
 		}
 		else if(param == "grid-with-beam")
 		{
 			settings.gridWithBeam = true;
+		}
+		else if(param == "beam-aterm-update")
+		{
+			++argi;
+			settings.beamAtermUpdateTime = parse_double(argv[argi], "beam-aterm-update");
+		}
+		else if(param == "aterm-kernel-size")
+		{
+			++argi;
+			settings.atermKernelSize = parse_double(argv[argi], 0.0, "aterm-kernel-size");
+		}
+		else if(param == "save-aterms")
+		{
+			settings.saveATerms = true;
 		}
 		else if(param == "visibility-weighting-mode")
 		{
@@ -1153,6 +1205,27 @@ int CommandLine::Run(int argc, char* argv[])
 				settings.visibilityWeightingMode = MeasurementSetGridder::UnitVisibilityWeighting;
 			else
 				throw std::runtime_error("Unknown weighting mode: " + modeStr);
+		}
+		else if(param == "direct-ft")
+		{
+			settings.directFT = true;
+			settings.imagePadding = 1.0;
+			settings.smallInversion = false;
+		}
+		else if(param == "direct-ft-precision")
+		{
+			++argi;
+			std::string precStr = argv[argi];
+			if(precStr == "half")
+				settings.directFTPrecision = DirectFTPrecision::Half;
+			else if(precStr == "float")
+				settings.directFTPrecision = DirectFTPrecision::Float;
+			else if(precStr == "double")
+				settings.directFTPrecision = DirectFTPrecision::Double;
+			else if(precStr == "ldouble")
+				settings.directFTPrecision = DirectFTPrecision::LongDouble;
+			else
+				throw std::runtime_error("Invalid direct ft precision specified. Allowed options: float, double and ldouble.");
 		}
 		else if(param == "use-idg")
 		{
@@ -1178,6 +1251,10 @@ int CommandLine::Run(int argc, char* argv[])
 		{
 			settings.isDirtySaved = false;
 		}
+		else if(param == "save-first-residual")
+		{
+			settings.isFirstResidualSaved = true;
+		}
 		else {
 			throw std::runtime_error("Unknown parameter: " + param);
 		}
@@ -1194,7 +1271,7 @@ int CommandLine::Run(int argc, char* argv[])
 	// and possibly set to quiet.
 	printHeader();
 	
-	settings.mfsWeighting = (settings.joinedFrequencyCleaning && !noMFSWeighting) || mfsWeighting;
+	settings.mfWeighting = (settings.joinedFrequencyCleaning && !noMFWeighting) || mfWeighting;
 	
 	// Joined polarizations is implemented by linking all polarizations
 	if(settings.joinedPolarizationCleaning && settings.linkedPolarizations.empty())
@@ -1213,6 +1290,12 @@ int CommandLine::Run(int argc, char* argv[])
 	
 	settings.Validate();
 	
+	return true;
+}
+
+void CommandLine::Run(class WSClean& wsclean)
+{
+	WSCleanSettings& settings = wsclean.Settings();
 	switch(settings.mode)
 	{
 		case WSCleanSettings::RestoreMode:
@@ -1225,7 +1308,6 @@ int CommandLine::Run(int argc, char* argv[])
 			wsclean.RunClean();
 			break;
 	}
-	return 0;
 }
 
 void CommandLine::deprecated(const std::string& param, const std::string& replacement)

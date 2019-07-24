@@ -1,5 +1,4 @@
 #include "wstackinggridder.h"
-#include "imagebufferallocator.h"
 #include "logger.h"
 
 #include <fftw3.h>
@@ -24,24 +23,22 @@ WStackingGridder::WStackingGridder(size_t width, size_t height, double pixelSize
 	_gridMode(KaiserBesselKernel),
 	_overSamplingFactor(overSamplingFactor),
 	_kernelSize(kernelSize),
-	_imageData(fftThreadCount, 0),
-	_imageDataImaginary(fftThreadCount, 0),
+	_imageData(fftThreadCount),
+	_imageDataImaginary(fftThreadCount),
 	_nFFTThreads(fftThreadCount),
 	_imageBufferAllocator(allocator)
 {
 	makeKernels();
+	fftw_make_planner_thread_safe();
 }
 
 WStackingGridder::~WStackingGridder()
 {
 	try {
-		for(size_t i=0; i!=_nFFTThreads; ++i)
-		{
-			_imageBufferAllocator->Free(_imageData[i]);
-			_imageBufferAllocator->Free(_imageDataImaginary[i]);
-		}
+		_imageData.clear();
+		_imageDataImaginary.clear();
 		freeLayeredUVData();
-		fftw_cleanup();
+		//fftw_cleanup();
 	} catch(std::exception& e) { }
 }
 
@@ -80,12 +77,12 @@ void WStackingGridder::PrepareWLayers(size_t nWLayers, double maxMem, double min
 	size_t imgSize = _height * _width;
 	for(size_t i=0; i!=_nFFTThreads; ++i)
 	{
-		_imageData[i] = _imageBufferAllocator->Allocate(imgSize);
-		memset(_imageData[i], 0, imgSize * sizeof(double));
+		_imageData[i] = _imageBufferAllocator->AllocatePtr(imgSize);
+		std::fill_n(_imageData[i].data(), imgSize, 0.0);
 		if(_isComplex)
 		{
-			_imageDataImaginary[i] = _imageBufferAllocator->Allocate(imgSize);
-			memset(_imageDataImaginary[i], 0, imgSize * sizeof(double));
+			_imageDataImaginary[i] = _imageBufferAllocator->AllocatePtr(imgSize);
+			std::fill_n(_imageDataImaginary[i].data(), imgSize, 0.0);
 		}
 	}
 	
@@ -119,7 +116,7 @@ void WStackingGridder::StartInversionPass(size_t passIndex)
 	size_t nLayersInPass = layerRangeStart(passIndex+1) - layerRangeStart(passIndex);
 	initializeLayeredUVData(nLayersInPass);
 	for(size_t i=0; i!=nLayersInPass; ++i)
-		memset(_layeredUVData[i], 0, _width*_height * sizeof(double)*2);
+		std::uninitialized_fill_n(_layeredUVData[i], _width*_height, 0.0);
 }
 
 void WStackingGridder::StartPredictionPass(size_t passIndex)
@@ -190,9 +187,7 @@ void WStackingGridder::fftToUVThreadFunction(std::mutex *mutex, std::stack<size_
 {
 	const size_t imgSize = _width * _height;
 	std::complex<double> *fftwIn = _imageBufferAllocator->AllocateComplex(imgSize);
-		// reinterpret_cast<std::complex<double>*>(fftw_malloc(imgSize * sizeof(double) * 2));
 	std::complex<double> *fftwOut = _imageBufferAllocator->AllocateComplex(imgSize);
-		// reinterpret_cast<std::complex<double>*>(fftw_malloc(imgSize * sizeof(double) * 2));
 	
 	std::unique_lock<std::mutex> lock(*mutex);
 	fftw_plan plan =
@@ -217,7 +212,7 @@ void WStackingGridder::fftToUVThreadFunction(std::mutex *mutex, std::stack<size_
 		// Fourier transform the layer
 		fftw_execute(plan);
 		std::complex<double> *uvData = _layeredUVData[layer];
-		memcpy(uvData, fftwOut, imgSize * sizeof(double) * 2);
+		std::copy_n(fftwOut, imgSize, uvData);
 		
 		// lock for accessing tasks in guard
 		lock.lock();
@@ -256,11 +251,28 @@ void WStackingGridder::makeKernels()
 	{
 		case NearestNeighbourGridding:
 		case KaiserBesselKernel:
-			makeKaiserBesselKernel(_1dKernel, alpha, _overSamplingFactor);
+			makeKaiserBesselKernel(_1dKernel, alpha, _overSamplingFactor, true);
+			break;
+		case KaiserBesselWithoutSinc:
+			makeKaiserBesselKernel(_1dKernel, alpha, _overSamplingFactor, false);
 			break;
 		case RectangularKernel:
 			makeRectangularKernel(_1dKernel, _overSamplingFactor);
 			break;
+		case GaussianKernel:
+			makeGaussianKernel(_1dKernel, _overSamplingFactor, true);
+			break;
+		case GaussianKernelWithoutSinc:
+			makeGaussianKernel(_1dKernel, _overSamplingFactor, false);
+			break;
+		case BlackmanNuttallKernel:
+			makeBlackmanNutallKernel(_1dKernel, _overSamplingFactor, true);
+			break;
+		case BlackmanNuttallKernelWithoutSinc:
+			makeBlackmanNutallKernel(_1dKernel, _overSamplingFactor, false);
+			break;
+		case BlackmanHarrisKernel:
+			throw std::runtime_error("Blackman-Harris kernel not supported by W-Stacking gridder");
 	}
 	
 	std::vector<std::vector<double>>::iterator gridKernelIter = _griddingKernels.begin();
@@ -279,12 +291,40 @@ void WStackingGridder::makeKernels()
 	}
 }
 
-void WStackingGridder::GetKaiserBesselKernel(double* kernel, size_t n, bool multiplyWithSinc)
+void WStackingGridder::GetKernel(enum GridModeEnum gridMode, double* kernel, size_t oversampling, size_t size)
 {
 	double alpha = 8.6;
-	std::vector<double> v(n);
-	makeKaiserBesselKernel(v, alpha, n/7, multiplyWithSinc);
-	for(size_t i=0; i!=n; ++i)
+	std::vector<double> v(oversampling * size);
+	switch(gridMode)
+	{
+		case KaiserBesselKernel:
+			makeKaiserBesselKernel(v, alpha, oversampling, true);
+			break;
+		case KaiserBesselWithoutSinc:
+			makeKaiserBesselKernel(v, alpha, oversampling, false);
+			break;
+		case GaussianKernel:
+			makeGaussianKernel(v, oversampling, true);
+			break;
+		case GaussianKernelWithoutSinc:
+			makeGaussianKernel(v, oversampling, false);
+			break;
+		case RectangularKernel:
+			makeRectangularKernel(v, oversampling);
+			break;
+		case NearestNeighbourGridding:
+			v[oversampling * size/2] = 1.0;
+			break;
+		case BlackmanNuttallKernel:
+			makeBlackmanNutallKernel(v, oversampling, true);
+			break;
+		case BlackmanNuttallKernelWithoutSinc:
+			makeBlackmanNutallKernel(v, oversampling, false);
+			break;
+		case BlackmanHarrisKernel:
+			throw std::runtime_error("Blackman-Harris kernel not supported by W-Stacking gridder");
+	}
+	for(size_t i=0; i!=oversampling*size; ++i)
 		kernel[i] = v[i];
 }
 
@@ -294,7 +334,7 @@ void WStackingGridder::makeKaiserBesselKernel(std::vector<double> &kernel, doubl
 		n = kernel.size(),
 		mid = n/2;
 	std::vector<double> sincKernel(mid+1);
-	const double filterRatio = 1.0 / double(overSamplingFactor); // FILTER POINT / TOTAL BANDWIDTH
+	const double filterRatio = 1.0 / double(overSamplingFactor);
 	sincKernel[0] = filterRatio;
 	for(size_t i=1; i!=mid+1; i++)
 	{
@@ -323,6 +363,49 @@ void WStackingGridder::makeRectangularKernel(std::vector<double> &kernel, size_t
 	{
 		double x = i;
 		kernel[mid+i] = normFactor * sin(M_PI*filterRatio*x)/(M_PI*x);
+	}
+	for(size_t i=0; i!=mid; i++)
+		kernel[i] = kernel[n-1-i];
+}
+
+void WStackingGridder::makeGaussianKernel(std::vector<double> &kernel, size_t overSamplingFactor, bool withSinc)
+{
+	size_t
+		n = kernel.size(),
+		mid = n/2;
+	const double filterRatio = 1.0 / double(overSamplingFactor);
+	kernel[mid] = 1.0;
+	const double normFactor = double(overSamplingFactor);
+	for(size_t i=1; i!=mid+1; i++)
+	{
+		double x = i, y = x*x*3.0*3.0/(mid*mid);
+		kernel[mid+i] = withSinc ? normFactor * sin(M_PI*filterRatio*x)/(M_PI*x) * exp(y/-2.0) : exp(y/-2.0);
+	}
+	for(size_t i=0; i!=mid; i++)
+		kernel[i] = kernel[n-1-i];
+}
+
+void WStackingGridder::makeBlackmanNutallKernel(std::vector<double> &kernel, size_t overSamplingFactor, bool withSinc)
+{
+	size_t
+		n = kernel.size(),
+		mid = n/2;
+	const double filterRatio = 1.0 / double(overSamplingFactor);
+	kernel[mid] = 1.0;
+	const double normFactor = double(overSamplingFactor);
+	const double
+		a0 = 0.3635819,
+		a1 = 0.4891775,
+		a2 = 0.1365995,
+		a3 = 0.0106411;
+	for(size_t i=1; i!=mid+1; i++)
+	{
+		double x = i, y = mid + i;
+		double bn = a0 - a1 * cos(2.0*M_PI*y/(n-1)) + a2 * cos(4.0*M_PI*y/(n-1)) - a3 * cos(6.0*M_PI*y/(n-1));
+		if(withSinc)
+			kernel[mid+i] = normFactor * sin(M_PI*filterRatio*x)/(M_PI*x) * bn;
+		else
+			kernel[mid+i] = bn;
 	}
 	for(size_t i=0; i!=mid; i++)
 		kernel[i] = kernel[n-1-i];
@@ -549,19 +632,19 @@ void WStackingGridder::FinalizeImage(double multiplicationFactor, bool correctFF
 		finalizeImage(multiplicationFactor, _imageDataImaginary);
 }
 
-void WStackingGridder::finalizeImage(double multiplicationFactor, std::vector<double*>& dataArray)
+void WStackingGridder::finalizeImage(double multiplicationFactor, std::vector<ImageBufferAllocator::Ptr>& dataArray)
 {
 	for(size_t i=1;i!=_nFFTThreads;++i)
 	{
-		double *primaryData = dataArray[0];
-		double *endPtr = dataArray[i] + (_width * _height);
-		for(double *dataPtr = dataArray[i]; dataPtr!=endPtr; ++dataPtr)
+		double *primaryData = dataArray[0].data();
+		double *endPtr = dataArray[i].data() + (_width * _height);
+		for(double *dataPtr = dataArray[i].data(); dataPtr!=endPtr; ++dataPtr)
 		{
 			*primaryData += *dataPtr;
 			++primaryData;
 		}
 	}
-	double *dataPtr = dataArray[0];
+	double *dataPtr = dataArray[0].data();
 	for(size_t y=0;y!=_height;++y)
 	{
 		//double m = ((double) y-(_height/2)) * _pixelSizeY + _phaseCentreDM;
@@ -574,7 +657,7 @@ void WStackingGridder::finalizeImage(double multiplicationFactor, std::vector<do
 	}
 	
 	if(_gridMode != NearestNeighbourGridding)
-		correctImageForKernel<false>(dataArray[0]);
+		correctImageForKernel<false>(dataArray[0].data());
 }
 
 template<bool Inverse>
@@ -637,10 +720,10 @@ void WStackingGridder::GetGriddingCorrectionImage(double *image) const
 	correctImageForKernel<true>(image);
 }
 
-void WStackingGridder::initializePrediction(const double* image, std::vector<double*>& dataArray)
+void WStackingGridder::initializePrediction(ImageBufferAllocator::Ptr image, std::vector<ImageBufferAllocator::Ptr>& dataArray)
 {
-	double *dataPtr = dataArray[0];
-	const double *inPtr = image;
+	double *dataPtr = dataArray[0].data();
+	const double *inPtr = image.data();
 	for(size_t y=0;y!=_height;++y)
 	{
 		double m = ((double) y-(_height/2)) * _pixelSizeY + _phaseCentreDM;
@@ -657,7 +740,7 @@ void WStackingGridder::initializePrediction(const double* image, std::vector<dou
 	}
 	if(_gridMode != NearestNeighbourGridding)
 	{
-		correctImageForKernel<false>(dataArray[0]);
+		correctImageForKernel<false>(dataArray[0].data());
 	}
 }
 
@@ -689,9 +772,9 @@ void WStackingGridder::initializeSqrtLMLookupTable()
 template<bool IsComplexImpl>
 void WStackingGridder::projectOnImageAndCorrect(const std::complex<double> *source, double w, size_t threadIndex)
 {
-	double *dataReal = _imageData[threadIndex], *dataImaginary;
+	double *dataReal = _imageData[threadIndex].data(), *dataImaginary;
 	if(IsComplexImpl)
-		dataImaginary = _imageDataImaginary[threadIndex];
+		dataImaginary = _imageDataImaginary[threadIndex].data();
 	
 	const double twoPiW = -2.0 * M_PI * w;
 	std::vector<double>::const_iterator sqrtLMIter = _sqrtLMLookupTable.begin();
@@ -758,9 +841,9 @@ void WStackingGridder::initializeSqrtLMLookupTableForSampling()
 template<bool IsComplexImpl>
 void WStackingGridder::copyImageToLayerAndInverseCorrect(std::complex<double> *dest, double w)
 {
-	double *dataReal = _imageData[0], *dataImaginary;
+	double *dataReal = _imageData[0].data(), *dataImaginary;
 	if(IsComplexImpl)
-		dataImaginary = _imageDataImaginary[0];
+		dataImaginary = _imageDataImaginary[0].data();
 	
 	const double twoPiW = 2.0 * M_PI * w;
 	std::vector<double>::const_iterator sqrtLMIter = _sqrtLMLookupTable.begin();
@@ -799,16 +882,14 @@ void WStackingGridder::copyImageToLayerAndInverseCorrect(std::complex<double> *d
 	}
 }
 
-void WStackingGridder::ReplaceRealImageBuffer(double* newBuffer)
+void WStackingGridder::ReplaceRealImageBuffer(ImageBufferAllocator::Ptr newBuffer)
 {
-	_imageBufferAllocator->Free(_imageData[0]);
-	_imageData[0] = newBuffer;
+	_imageData[0] = std::move(newBuffer);
 }
 
-void WStackingGridder::ReplaceImaginaryImageBuffer(double* newBuffer)
+void WStackingGridder::ReplaceImaginaryImageBuffer(ImageBufferAllocator::Ptr newBuffer)
 {
-	_imageBufferAllocator->Free(_imageDataImaginary[0]);
-	_imageDataImaginary[0] = newBuffer;
+	_imageDataImaginary[0] = std::move(newBuffer);
 }
 
 #ifndef AVOID_CASACORE

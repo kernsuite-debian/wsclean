@@ -6,6 +6,8 @@
 #include "../multibanddata.h"
 #include "../uvector.h"
 
+#include <mutex>
+
 class MSGridderBase : public MeasurementSetGridder
 {
 public:
@@ -52,15 +54,24 @@ public:
 	
 	const std::string& FieldName() const { return _fieldName; }
 	
+	class AverageBeamBase
+	{
+	public:
+			virtual ~AverageBeamBase() {}
+	};
+
 	struct MetaDataCache
 	{
 		struct Entry {
 			double minW, maxW, maxWWithFlags, maxBaselineUVW, maxBaselineInM;
 		};
 		std::vector<Entry> msDataVector;
+		std::unique_ptr<AverageBeamBase> averageBeam;
 	};
 	
 	void SetMetaDataCache(MetaDataCache* cache) { _metaDataCache = cache; }
+	
+	void SetCasacoreMutex(std::mutex& mutex) { _casacoreMutex = &mutex; }
 	
 protected:
 	struct MSData
@@ -160,6 +171,9 @@ protected:
 	double totalWeight() const { return _totalWeight; }
 	
 	void initializeMSDataVector(std::vector<MSData>& msDataVector);
+
+	struct MetaDataCache* _metaDataCache;
+
 	
 private:
 	template<size_t PolarizationCount>
@@ -175,7 +189,6 @@ private:
 	double _freqHigh, _freqLow;
 	double _bandStart, _bandEnd;
 	double _startTime;
-	struct MetaDataCache* _metaDataCache;
 	
 	double _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
 	bool _denormalPhaseCentre;
@@ -185,6 +198,7 @@ private:
 	double _totalWeight;
 	double _maxGriddedWeight;
 	double _visibilityWeightSum;
+	std::mutex* _casacoreMutex;
 	
 	ao::uvector<float> _scratchWeights;
 };
