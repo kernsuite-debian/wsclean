@@ -14,7 +14,8 @@ Build-Depends: casacore-dev,
                libboost-thread-dev,
                libcfitsio-dev | libcfitsio3-dev,
                libfftw3-dev,
-               libgsl0-dev
+               libgsl0-dev,
+               libhdf5-dev
 Standards-Version: 4.4.0
 Vcs-Git: https://salsa.debian.org/debian-astro-team/wsclean.git
 Vcs-Browser: https://salsa.debian.org/debian-astro-team/wsclean
