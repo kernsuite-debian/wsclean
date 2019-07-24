@@ -10,10 +10,10 @@ place.
  1 file changed, 8 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2927fc1..789b432 100644
+index 3a9b520..5173acd 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -81,19 +81,19 @@ add_definitions(-DHAVE_GSL)
+@@ -82,19 +82,19 @@ add_definitions(-DHAVE_GSL)
  # LD_LIBRARY_PATH doesn't have to be set.
  
  # use, i.e. don't skip the full RPATH for the build tree
