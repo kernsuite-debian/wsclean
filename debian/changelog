@@ -1,9 +1,16 @@
-wsclean (2.6-1.1) UNRELEASED; urgency=medium
+wsclean (2.7-1) unstable; urgency=low
 
-  * Non-maintainer upload.
-  * Fix FTCBFS: Fix build/host confusion. (Closes: #-1)
+  [ Helmut Grohne ]
+  * Fix FTCBFS: Fix build/host confusion. (Closes: #929757)
 
- -- Helmut Grohne <helmut@subdivi.de>  Thu, 30 May 2019 09:52:20 +0200
+  [ Ole Streicher ]
+  * New upstream version 2.7
+  * Rediff patches
+  * Push Standards-Version to 4.4.0. No changes required.
+  * Push compat to 12; switch to debhelper-compat
+  * Add HDF5 dependency
+
+ -- Ole Streicher <olebole@debian.org>  Thu, 25 Jul 2019 13:12:28 +0200
 
 wsclean (2.6-1) unstable; urgency=low
 
