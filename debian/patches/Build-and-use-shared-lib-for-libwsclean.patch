@@ -7,7 +7,7 @@ Subject: Build and use shared lib for libwsclean
  1 file changed, 8 insertions(+), 6 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 5173acd..6c7e1ef 100644
+index 1fd996a..becb7c8 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -125,20 +125,22 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)

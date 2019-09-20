@@ -10,7 +10,7 @@ place.
  1 file changed, 8 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3a9b520..5173acd 100644
+index 4bc239e..1fd996a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -82,19 +82,19 @@ add_definitions(-DHAVE_GSL)
