@@ -15,6 +15,7 @@
 #include "imagebufferallocator.h"
 #include "imagingtable.h"
 #include "msgridderbase.h"
+#include "observationinfo.h"
 #include "outputchannelinfo.h"
 #include "wscfitswriter.h"
 #include "wscleansettings.h"
@@ -44,7 +45,7 @@ private:
 	
 	void performReordering(bool isPredictMode);
 	
-	ImageWeights& initializeImageWeights(const ImagingTableEntry& entry, std::vector<std::pair<std::unique_ptr<MSProvider>, MSSelection>>& msList);
+	std::shared_ptr<ImageWeights> initializeImageWeights(const ImagingTableEntry& entry, std::vector<std::pair<std::unique_ptr<MSProvider>, MSSelection>>& msList);
 	void initializeMFSImageWeights();
 	std::unique_ptr<MSProvider> initializeMSProvider(const ImagingTableEntry& entry, const MSSelection& selection, size_t filenameIndex, size_t dataDescId);
 	void initializeCurMSProviders(const ImagingTableEntry& entry, class GriddingTask& task);
@@ -56,6 +57,7 @@ private:
 	
 	void makeImagingTable(size_t outputIntervalIndex);
 	void makeImagingTableEntry(const std::vector<ChannelInfo>& channels, size_t outIntervalIndex, size_t outChannelIndex, ImagingTableEntry& entry);
+	void makeImagingTableEntryChannelSettings(const std::vector<ChannelInfo>& channels, size_t outIntervalIndex, size_t outChannelIndex, size_t nOutChannels, ImagingTableEntry& entry);
 	void addPolarizationsToImagingTable(size_t& joinedGroupIndex, size_t& squaredGroupIndex, size_t outChannelIndex, const ImagingTableEntry& templateEntry);
 	std::unique_ptr<class ImageWeightCache> createWeightCache();
 	
@@ -65,7 +67,6 @@ private:
 	void imagePSF(ImagingTableEntry& entry);
 	void imagePSFCallback(ImagingTableEntry& entry, struct GriddingResult& result);
 	
-	void imageGridding();
 	void imageMain(ImagingTableEntry& entry, bool isFirst, bool updateBeamInfo, bool isInitialInversion);
 	void imageMainCallback(ImagingTableEntry& entry, struct GriddingResult& result, bool updateBeamInfo, bool isInitialInversion);
 	
@@ -121,7 +122,7 @@ private:
 	std::vector<MultiBandData> _msBands;
 	Deconvolution _deconvolution;
 	ImagingTable _imagingTable;
-	double _phaseCentreRA, _phaseCentreDec;
+	ObservationInfo _observationInfo;
 };
 
 #endif

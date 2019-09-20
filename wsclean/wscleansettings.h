@@ -36,13 +36,16 @@ public:
 	size_t channelsOut, intervalsOut;
 	enum MSSelection::EvenOddSelection evenOddTimesteps;
 	bool divideChannelsByGaps;
+	ao::uvector<double> divideChannelFrequencies;
 	double pixelScaleX, pixelScaleY;
 	std::string restoreModel, restoreInput, restoreOutput;
 	double manualBeamMajorSize, manualBeamMinorSize, manualBeamPA;
 	bool fittedBeam, theoreticBeam, circularBeam;
 	double beamFittingBoxSize;
 	bool continuedRun;
-	double memFraction, absMemLimit, minUVWInMeters, maxUVWInMeters, minUVInLambda, maxUVInLambda, wLimit, rankFilterLevel;
+	double memFraction, absMemLimit;
+	bool directAllocation;
+	double minUVWInMeters, maxUVWInMeters, minUVInLambda, maxUVInLambda, wLimit, rankFilterLevel;
 	size_t rankFilterSize;
 	double gaussianTaperBeamSize, tukeyTaperInLambda, tukeyInnerTaperInLambda, edgeTaperInLambda, edgeTukeyTaperInLambda;
 	bool useWeightsAsTaper;
@@ -97,8 +100,9 @@ public:
 	bool saveSourceList;
 	size_t deconvolutionIterationCount, majorIterationCount;
 	bool allowNegativeComponents, stopOnNegativeComponents;
-	bool useMultiscale, useClarkOptimization, squaredJoins;
-	//bool forceDynamicJoin;
+	bool useMultiscale, useSubMinorOptimization, squaredJoins;
+	double spectralCorrectionFrequency;
+	ao::uvector<double> spectralCorrection;
 	bool multiscaleFastSubMinorLoop;
 	double multiscaleGain, multiscaleDeconvolutionScaleBias;
 	bool multiscaleNormalizeResponse;
@@ -108,6 +112,8 @@ public:
 	
 	double deconvolutionBorderRatio;
 	std::string fitsDeconvolutionMask, casaDeconvolutionMask;
+	bool horizonMask;
+	double horizonMaskDistance;
 	std::string localRMSImage;
 	bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
 	std::string moreSaneLocation, moreSaneArgs;
@@ -154,6 +160,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	channelsOut(1), intervalsOut(1),
 	evenOddTimesteps(MSSelection::AllTimesteps),
 	divideChannelsByGaps(false),
+	divideChannelFrequencies(),
 	pixelScaleX(0.0), pixelScaleY(0.0),
 	restoreModel(), restoreInput(), restoreOutput(),
 	manualBeamMajorSize(0.0), manualBeamMinorSize(0.0),
@@ -161,6 +168,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	beamFittingBoxSize(10.0),
 	continuedRun(false),
 	memFraction(1.0), absMemLimit(0.0),
+	directAllocation(false),
 	minUVWInMeters(0.0), maxUVWInMeters(0.0),
 	minUVInLambda(0.0), maxUVInLambda(0.0), wLimit(0.0),
 	rankFilterLevel(3.0), rankFilterSize(16),
@@ -228,8 +236,10 @@ inline WSCleanSettings::WSCleanSettings() :
 	allowNegativeComponents(true), 
 	stopOnNegativeComponents(false),
 	useMultiscale(false),
-	useClarkOptimization(true),
+	useSubMinorOptimization(true),
 	squaredJoins(false),
+	spectralCorrectionFrequency(0.0),
+	spectralCorrection(),
 	multiscaleFastSubMinorLoop(true),
 	multiscaleGain(0.2),
 	multiscaleDeconvolutionScaleBias(0.6),
@@ -240,6 +250,8 @@ inline WSCleanSettings::WSCleanSettings() :
 	deconvolutionBorderRatio(0.0),
 	fitsDeconvolutionMask(),
 	casaDeconvolutionMask(),
+	horizonMask(false),
+	horizonMaskDistance(0.0),
 	useMoreSaneDeconvolution(false),
 	useIUWTDeconvolution(false),
 	iuwtSNRTest(false),

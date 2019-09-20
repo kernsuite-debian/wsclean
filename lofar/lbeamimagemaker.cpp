@@ -66,8 +66,11 @@ void LBeamImageMaker::Make(PrimaryBeamImageSet& beamImages)
 	{
 		const ImagingTableEntry::MSInfo& msInfo = _tableEntry->msData[msProviderInfo.msIndex];
 		const MSSelection& selection = *msProviderInfo.selection;
-		casacore::MeasurementSet ms = msProviderInfo.provider->MS();
-		MultiBandData band(ms.spectralWindow(), ms.dataDescription());
+		MultiBandData band;
+		{
+			SynchronizedMS ms = msProviderInfo.provider->MS();
+			band = MultiBandData(ms->spectralWindow(), ms->dataDescription());
+		}
 		double centralFrequency = 0.0;
 		for(size_t dataDescId=0; dataDescId!=band.DataDescCount(); ++dataDescId)
 		{
@@ -104,23 +107,23 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 	/**
 		* Read some meta data from the measurement set
 		*/
-	casacore::MeasurementSet ms = msProvider.MS();
+	SynchronizedMS ms = msProvider.MS();
 	
-	casacore::MSAntenna aTable = ms.antenna();
+	casacore::MSAntenna aTable = ms->antenna();
 	if(aTable.nrow() == 0) throw std::runtime_error("No antennae in set");
 	casacore::MPosition::ROScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
 	casacore::MPosition arrayPos = antPosColumn(0);
 	
 	Logger::Debug << "Making beam for frequency " << centralFrequency * 1e-6 << " MHz.\n";
 	
-	casacore::MSField fieldTable(ms.field());
+	casacore::MSField fieldTable(ms->field());
 	casacore::ROScalarMeasColumn<casacore::MDirection> delayDirColumn(fieldTable, casacore::MSField::columnName(casacore::MSFieldEnums::DELAY_DIR));
 	if(fieldTable.nrow() != 1)
 		throw std::runtime_error("Set has multiple fields");
 	_delayDir = delayDirColumn(0);
 	//Logger::Debug << "Using delay direction: " << RaDecCoord::RaDecToString(_delayDir.getAngle().getValue()[0], _delayDir.getAngle().getValue()[1]) << '\n';
 
-	LOFARBeamKeywords::GetPreappliedBeamDirection(ms, msProvider.DataColumnName(), _useDifferentialBeam, _preappliedDir);
+	LOFARBeamKeywords::GetPreappliedBeamDirection(*ms, msProvider.DataColumnName(), _useDifferentialBeam, _preappliedDir);
 	
 	if(fieldTable.tableDesc().isColumn("LOFAR_TILE_BEAM_DIR")) {
 		casacore::ROArrayMeasColumn<casacore::MDirection> tileBeamDirColumn(fieldTable, "LOFAR_TILE_BEAM_DIR");
@@ -132,7 +135,7 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 	Logger::Debug << "Using tile direction: " << RaDecCoord::RaDecToString(_tileBeamDir.getAngle().getValue()[0], _tileBeamDir.getAngle().getValue()[1]) << '\n';
 	
 	std::vector<Station::Ptr> stations(aTable.nrow());
-	readStations(ms, stations.begin());
+	readStations(*ms, stations.begin());
 	
 	Logger::Debug << "Counting timesteps...\n";
 	msProvider.Reset();
@@ -163,7 +166,7 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 		intervalCount = timestepCount;
 	Logger::Debug << "MS spans " << totalSeconds << " seconds, dividing in " << intervalCount << " intervals.\n";
 	
-	casacore::MEpoch::ROScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
+	casacore::MEpoch::ScalarColumn timeColumn(*ms, ms->columnName(casacore::MSMainEnums::TIME));
 	casacore::MEpoch midTime(casacore::MVEpoch((0.5/86400.0) * (startTime + endTime)), timeColumn(0).getRef());
 	Logger::Debug << "Mid time for full selection: " << midTime << '\n';
 	casacore::MeasFrame midFrame(arrayPos, midTime);
@@ -192,7 +195,7 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 		double intervalWeight = 0.0;
 		ao::uvector<double> stationWeights(stations.size(), 0.0);
 		WeightMatrix baselineWeights(stations.size());
-		calculateStationWeights(_imageWeightCache->Weights(), intervalWeight, stationWeights, baselineWeights, msProvider, selection, lastTime);
+		calculateStationWeights(*_imageWeights, intervalWeight, stationWeights, baselineWeights, ms, msProvider, selection, lastTime);
 		
 		if(refIntervalWeight == 0.0)
 			refIntervalWeight = intervalWeight;
@@ -332,14 +335,13 @@ void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations
 	progressBar.SetProgress(_sampledHeight, _sampledHeight);
 }
 
-void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, MSProvider& msProvider, const MSSelection& selection, double endTime)
+void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, SynchronizedMS& ms, MSProvider& msProvider, const MSSelection& selection, double endTime)
 {
-	casacore::MeasurementSet ms = msProvider.MS();
-	casacore::MSAntenna antTable(ms.antenna());
+	casacore::MSAntenna antTable(ms->antenna());
 	totalWeight = 0.0;
 	weights.assign(antTable.nrow(), 0.0);
 	
-	MultiBandData multiband(ms.spectralWindow(), ms.dataDescription());
+	MultiBandData multiband(ms->spectralWindow(), ms->dataDescription());
 	size_t channelCount = selection.ChannelRangeEnd() - selection.ChannelRangeStart();
 	size_t polarizationCount = (msProvider.Polarization() == Polarization::Instrumental) ? 4 : 1;
 	ao::uvector<float> weightArr(channelCount * polarizationCount);
@@ -368,7 +370,7 @@ void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, 
 		msProvider.NextRow();
 	}
 	if(Logger::IsVerbose())
-		logWeights(ms, weights);
+		logWeights(*ms, weights);
 }
 
 void LBeamImageMaker::logWeights(casacore::MeasurementSet& ms, const ao::uvector<double>& weights)

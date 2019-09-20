@@ -39,6 +39,9 @@ void CommandLine::printHelp()
 		"   Default: 100.\n"
 		"-abs-mem <memory limit>\n"
 		"   Like -mem, but this specifies a fixed amount of memory in gigabytes.\n"
+		"-direct-allocation\n"
+		"   Enabled direct allocation, which changes memory usage. Not recommended for general usage, but when\n"
+		"   using extremely large images that barely fit in memory it might improve memory usage in rare cases.\n"
 		"-verbose (or -v)\n"
 		"   Increase verbosity of output.\n"
 		"-log-time\n"
@@ -152,8 +155,15 @@ void CommandLine::printHelp()
 		"-gap-channel-division\n"
 		"   In case of irregular frequency spacing, this option can be used to not try and split channels\n"
 		"   to make the output channel bandwidth similar, but instead to split largest gaps first.\n"
+		"-channel-division-frequencies <list>\n"
+		"   Split the bandwidth at the specified frequencies (in Hz) before the normal bandwidth\n"
+		"   division is performed. This can e.g. be useful for imaging multiple bands with irregular\n"
+		"   number of channels.\n"
 		"-nwlayers <nwlayers>\n"
 		"   Number of w-layers to use. Default: minimum suggested #w-layers for first MS.\n"
+		"-nwlayers-factor <factor>\n"
+		"   Use automatic calculation of the number of w-layers, but multiple that number by\n"
+		"   the given factor. This can e.g. be useful for increasing w-accuracy.\n"
 		"-nwlayers-for-size <width> <height>\n"
 		"   Use the minimum suggested w-layers for an image of the given size. Can e.g. be used to increase\n"
 		"   accuracy when predicting small part of full image. \n"
@@ -278,10 +288,16 @@ void CommandLine::printHelp()
 		"-join-channels\n"
 		"   Perform cleaning by searching for peaks in the MF image, but subtract components from individual channels.\n"
 		"   This will turn on mf-weighting by default. Default: off.\n"
+		"-spectral-correction <reffreq> <term list>\n"
+		"   Enable correction of the given spectral function inside deconvolution.\n"
+		"   This can e.g. avoid downweighting higher frequencies because of\n"
+		"   reduced flux density. 1st term is total flux, 2nd is si, 3rd curvature, etc. \n"
+		"   Example: -spectral-correction 150e6 83.084,-0.699,-0.110\n"
+		"-no-fast-subminor\n"
+		"   Do not use the subminor loop optimization during (non-multiscale) cleaning. Default: use the optimization.\n"
 		"-multiscale\n"
 		"   Clean on different scales. This is a new algorithm. Default: off.\n"
-		"   This parameter invokes the v1.9 multiscale algorithm, which is slower but more accurate\n"
-		"   compared to the older algorithm, and therefore the recommended one to use.\n"
+		"   This parameter invokes the optimized multiscale algorithm published by Offringa & Smirnov (2017).\n"
 		"-multiscale-scale-bias\n"
 		"   Parameter to prevent cleaning small scales in the large-scale iterations. A higher\n"
 		"   bias will give more focus to larger scales. Default: 0.6\n"
@@ -322,6 +338,9 @@ void CommandLine::printHelp()
 		"   Use the specified fits-file as mask during cleaning.\n"
 		"-casa-mask <mask>\n"
 		"   Use the specified CASA mask as mask during cleaning.\n"
+		"-horizon-mask <distance>\n"
+		"   Use a mask that avoids cleaning emission beyond the horizon. Distance is an angle (e.g. \"5deg\")\n"
+		"   that (when positive) decreases the size of the mask to stay further away from the horizon.\n"
 		"-no-negative\n"
 		"   Do not allow negative components during cleaning. Not the default.\n"
 		"-negative\n"
@@ -708,7 +727,7 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		else if(param == "moresane-sl")
 		{
 			++argi;
-			NumberList::ParseDoubleList(argv[argi], settings.moreSaneSigmaLevels);
+			settings.moreSaneSigmaLevels = NumberList::ParseDoubleList(argv[argi]);
 		}
 		else if(param == "make-psf")
 		{
@@ -805,6 +824,11 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		{
 			settings.divideChannelsByGaps = true;
 		}
+		else if(param == "channel-division-frequencies")
+		{
+			++argi;
+			settings.divideChannelFrequencies = NumberList::ParseDoubleList(argv[argi]);
+		}
 		else if(param == "join-polarizations" || param == "joinpolarizations")
 		{
 			settings.joinedPolarizationCleaning = true;
@@ -825,16 +849,24 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		}
 		else if(param == "mf-weighting" || param == "mfs-weighting" || param == "mfsweighting")
 		{
-			// mfs was renamed to mf in wsclean 2.7
 			mfWeighting = true;
+			// mfs was renamed to mf in wsclean 2.7
 			if(param != "mf-weighting")
 				deprecated(param, "mf-weighting");
 		}
 		else if(param == "no-mf-weighting" || param == "no-mfs-weighting" || param == "nomfsweighting")
 		{
 			noMFWeighting = true;
+			// mfs was renamed to mf in wsclean 2.7
 			if(param != "no-mf-weighting")
 				deprecated(param, "no-mf-weighting");
+		}
+		else if(param == "spectral-correction")
+		{
+			settings.spectralCorrectionFrequency =
+				parse_double(argv[argi+1], 0.0, "spectral-correction", false);
+			settings.spectralCorrection = NumberList::ParseDoubleList(argv[argi+2]);
+			argi += 2;
 		}
 		else if(param == "taper-gaussian")
 		{
@@ -870,6 +902,10 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		{
 			settings.writeImagingWeightSpectrumColumn = true;
 		}
+		else if(param == "no-fast-subminor")
+		{
+			settings.useSubMinorOptimization = false;
+		}
 		else if(param == "multiscale")
 		{
 			settings.useMultiscale = true;
@@ -892,7 +928,7 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		else if(param == "multiscale-scales")
 		{
 			++argi;
-			NumberList::ParseDoubleList(argv[argi], settings.multiscaleScaleList);
+			settings.multiscaleScaleList = NumberList::ParseDoubleList(argv[argi]);
 		}
 		else if(param == "multiscale-shape")
 		{
@@ -949,6 +985,12 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 			if(param == "casamask")
 				deprecated(param, "casa-mask");
 		}
+		else if(param == "horizon-mask")
+		{
+			++argi;
+			settings.horizonMask = true;
+			settings.horizonMaskDistance = Angle::Parse(argv[argi], "horizon mask distance", Angle::Degrees);
+		}
 		else if(param == "fit-spectral-pol")
 		{
 			++argi;
@@ -983,8 +1025,7 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		else if(param == "spws")
 		{
 			++argi;
-			ao::uvector<int> list;
-			NumberList::ParseIntList(argv[argi], list);
+			ao::uvector<int> list = NumberList::ParseIntList(argv[argi]);
 			settings.spectralWindows.insert(list.begin(), list.end());
 		}
 		else if(param == "weight")
@@ -1131,6 +1172,10 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 			settings.absMemLimit = parse_double(argv[argi], 0.0, "abs-mem", false);
 			if(param == "absmem")
 				deprecated(param, "abs-mem");
+		}
+		else if(param == "direct-allocation")
+		{
+			settings.directAllocation = true;
 		}
 		else if(param == "maxuvw-m")
 		{

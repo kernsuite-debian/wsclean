@@ -31,9 +31,9 @@ public:
 		_msProviders.push_back(MSProviderInfo(msProvider, selection, msIndex));
 	}
 	
-	void SetImageWeight(const class ImageWeightCache* imageWeightCache)
+	void SetImageWeight(std::shared_ptr<class ImageWeights> imageWeights)
 	{
-		_imageWeightCache = imageWeightCache;
+		_imageWeights = imageWeights;
 	}
 	
 	void SetImageDetails(size_t width, size_t height, double pixelSizeX, double pixelSizeY, double phaseCentreRA, double phaseCentreDec, double phaseCentreDL, double phaseCentreDM)
@@ -89,7 +89,7 @@ private:
 
 	void makeBeamSnapshot(const std::vector<LOFAR::StationResponse::Station::Ptr>& stations, const ao::uvector<double>& weights, double** imgPtr, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame);
 	
-	void calculateStationWeights(const class ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, MSProvider& msProvider, const MSSelection& selection, double endTime);
+	void calculateStationWeights(const class ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, SynchronizedMS& ms, MSProvider& msProvider, const MSSelection& selection, double endTime);
 	
 	void logWeights(casacore::MeasurementSet& ms, const ao::uvector<double>& weights);
 #endif
@@ -107,7 +107,7 @@ private:
 	const ImagingTableEntry* _tableEntry;
 	std::vector<MSProviderInfo> _msProviders;
 	
-	const class ImageWeightCache* _imageWeightCache;
+	std::shared_ptr<class ImageWeights> _imageWeights;
 	class ImageBufferAllocator* _allocator;
 	
 	size_t _width, _height, _sampledWidth, _sampledHeight;
