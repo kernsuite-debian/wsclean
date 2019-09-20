@@ -65,7 +65,7 @@ PartitionedMS::PartitionedMS(const Handle& handle, size_t partIndex, Polarizatio
 			throw std::runtime_error("Error opening temporary model data file");
 		size_t length = _partHeader.channelCount * _metaHeader.selectedRowCount * _polarizationCountInFile * sizeof(std::complex<float>);
 		if(length == 0)
-			_modelFileMap = 0;
+			_modelFileMap = nullptr;
 		else {
 			_modelFileMap = reinterpret_cast<char*>( mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NORESERVE, _fd, 0) );
 			if(_modelFileMap == MAP_FAILED)
@@ -374,8 +374,11 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 		else
 			rowProvider.reset(new DirectMSRowProvider(msPath, selection, selectedDataDescIds, dataColumnName, initialModelRequired));
 	}
-	else
+	else {
+		if(initialModelRequired)
+			throw std::runtime_error("Baseline-dependent averaging is enabled together with a model that requires the model data (e.g. -continue or -subtract-model). This is not possible.");
 		rowProvider.reset(new AveragingMSRowProvider(settings.baselineDependentAveragingInWavelengths, msPath, selection, selectedDataDescIds, dataColumnName, initialModelRequired));
+	}
 	
 	std::vector<PolarizationEnum> msPolarizations = GetMSPolarizations(rowProvider->MS());
 	
@@ -596,14 +599,14 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 		casacore::MeasurementSet ms(handle._msPath, casacore::Table::Update);
 		const std::vector<PolarizationEnum> msPolarizations = GetMSPolarizations(ms);
 		initializeModelColumn(ms);
-		casacore::ROScalarColumn<int> antenna1Column(ms, ms.columnName(casacore::MSMainEnums::ANTENNA1));
-		casacore::ROScalarColumn<int> antenna2Column(ms, ms.columnName(casacore::MSMainEnums::ANTENNA2));
-		casacore::ROScalarColumn<int> fieldIdColumn(ms, ms.columnName(casacore::MSMainEnums::FIELD_ID));
-		casacore::ROScalarColumn<double> timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
-		casacore::ROScalarColumn<int> dataDescIdColumn(ms, ms.columnName(casacore::MSMainEnums::DATA_DESC_ID));
-		casacore::ROArrayColumn<casacore::Complex> dataColumn(ms, handle._dataColumnName);
+		casacore::ScalarColumn<int> antenna1Column(ms, ms.columnName(casacore::MSMainEnums::ANTENNA1));
+		casacore::ScalarColumn<int> antenna2Column(ms, ms.columnName(casacore::MSMainEnums::ANTENNA2));
+		casacore::ScalarColumn<int> fieldIdColumn(ms, ms.columnName(casacore::MSMainEnums::FIELD_ID));
+		casacore::ScalarColumn<double> timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
+		casacore::ScalarColumn<int> dataDescIdColumn(ms, ms.columnName(casacore::MSMainEnums::DATA_DESC_ID));
+		casacore::ArrayColumn<casacore::Complex> dataColumn(ms, handle._dataColumnName);
 		casacore::ArrayColumn<casacore::Complex> modelColumn(ms, ms.columnName(casacore::MSMainEnums::MODEL_DATA));
-		casacore::ROArrayColumn<double> uvwColumn(ms, ms.columnName(casacore::MSMainEnums::UVW));
+		casacore::ArrayColumn<double> uvwColumn(ms, ms.columnName(casacore::MSMainEnums::UVW));
 		
 		const casacore::IPosition shape(dataColumn.shape(0));
 		size_t channelCount = shape[1];
@@ -708,8 +711,8 @@ void PartitionedMS::MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow)
 	for(std::map<size_t, size_t>::const_iterator i=dataDescIds.begin(); i!=dataDescIds.end(); ++i)
 		dataDescIdSet.insert(i->first);
 	size_t startRow, endRow;
-	casacore::MeasurementSet ms = MS();
-	getRowRangeAndIDMap(ms, selection, startRow, endRow, dataDescIdSet, idToMSRow);
+	SynchronizedMS ms = MS();
+	getRowRangeAndIDMap(*ms, selection, startRow, endRow, dataDescIdSet, idToMSRow);
 }
 
 void PartitionedMS::getDataDescIdMap(std::map<size_t, size_t>& dataDescIds, const std::vector<PartitionedMS::ChannelRange>& channels)

@@ -50,12 +50,10 @@ void TileBeamBase<Implementation>::ArrayResponse(double raRad, double decRad, co
 	// convert ra, dec to ha
 	casacore::MDirection hadec = j2000ToHaDec(imageDir);
 	double ha = hadec.getValue().get()[0];
-	double sinLat, cosLat;
-	sincos(arrLatitude, &sinLat, &cosLat);
-	double sinDec, cosDec;
-	sincos(decRad, &sinDec, &cosDec);
-	double cosHA = cos(ha);
-	double zenithDistance = acos(sinLat * sinDec + cosLat * cosDec * cosHA);
+	double sinLat = std::sin(arrLatitude), cosLat = std::cos(arrLatitude);
+	double sinDec = std::sin(decRad), cosDec = std::cos(decRad);
+	double cosHA = std::cos(ha);
+	double zenithDistance = std::acos(sinLat * sinDec + cosLat * cosDec * cosHA);
 	casacore::MDirection azel = j2000ToAzelGeo(imageDir);
 	double azimuth = azel.getValue().get()[0];
 	//std::cout << "ha=" << ha*180.0/M_PI << '-' << haAntennaZenith*180.0/M_PI << ", za=" << zenithDistance*180.0/M_PI << ", az=" << azimuth*180.0/M_PI << '\n';
@@ -88,11 +86,9 @@ void TileBeamBase<Implementation>::PrecalculatePositionInfo(TileBeamBase::Precal
 	casacore::MDirection hadec = j2000ToHaDec(imageDir);
 	posInfo.ha = hadec.getValue().get()[0];
 	posInfo.dec = decRad;
-	double sinLat, cosLat;
-	sincos(arrLatitude, &sinLat, &cosLat);
-	double sinDec, cosDec;
-	sincos(decRad, &sinDec, &cosDec);
-	double cosHA = cos(posInfo.ha);
+	double sinLat = std::sin(arrLatitude), cosLat = std::cos(arrLatitude);
+	double sinDec = std::sin(decRad), cosDec = std::cos(decRad);
+	double cosHA = std::cos(posInfo.ha);
 	posInfo.zenithAngle = acos(sinLat * sinDec + cosLat * cosDec * cosHA);
 	casacore::MDirection azel = j2000ToAzelGeo(imageDir);
 	posInfo.azimuth = azel.getValue().get()[0];

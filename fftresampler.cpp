@@ -8,6 +8,7 @@ FFTResampler::FFTResampler(size_t inWidth, size_t inHeight, size_t outWidth, siz
 	_inputWidth(inWidth), _inputHeight(inHeight),
 	_outputWidth(outWidth), _outputHeight(outHeight),
 	_fftWidth(std::max(inWidth, outWidth)), _fftHeight(std::max(inHeight, outHeight)),
+	_windowFunction(WindowFunction::Rectangular),
 	_tukeyInsetSize(0.0),
 	_correctWindow(false),
 	_tasks(cpuCount),
@@ -50,7 +51,7 @@ void FFTResampler::runSingle(const Task& task, bool skipWindow) const
 			*i = 0.0;
 	}
 	
-	if(_tukeyInsetSize != 0.0 && !skipWindow)
+	if(_windowFunction != WindowFunction::Rectangular && !skipWindow)
 		applyWindow(task.input);
 	
 	size_t fftInWidth = _inputWidth/2+1;
@@ -111,7 +112,7 @@ void FFTResampler::runSingle(const Task& task, bool skipWindow) const
 	
 	fftw_free(newfftData);
 	
-	if(_correctWindow && _tukeyInsetSize != 0.0 && !skipWindow)
+	if(_correctWindow && _windowFunction != WindowFunction::Rectangular && !skipWindow)
 		unapplyWindow(task.output);
 }
 
@@ -180,6 +181,17 @@ void FFTResampler::SingleFT(const double* input, double* realOutput, double* ima
 
 void FFTResampler::makeWindow(ao::uvector<double>& data, size_t width) const
 {
+	if(_windowFunction == WindowFunction::Tukey)
+		makeTukeyWindow(data, width);
+	else {
+		data.resize(width);
+		for(size_t x=0; x!=width; ++x)
+			data[x] = WindowFunction::Evaluate(_windowFunction, width, x) + 1e-5;
+	}
+}
+
+void FFTResampler::makeTukeyWindow(ao::uvector<double>& data, size_t width) const
+{
 	// Make a Tukey window, which consists of
 	// left: a cosine going from 0 to 1
 	// mid: all 1
@@ -214,8 +226,6 @@ void FFTResampler::applyWindow(double* data) const
 		if(_correctWindow)
 		{
 			ao::uvector<double> windowImgIn(_inputWidth * _inputHeight);
-			_windowOut.resize(_outputWidth * _outputHeight);
-			Task task;
 			double *inPtr = windowImgIn.data();
 			for(size_t y=0; y!=_inputHeight; ++y)
 			{
@@ -226,6 +236,8 @@ void FFTResampler::applyWindow(double* data) const
 				}
 			}
 			
+			_windowOut.resize(_outputWidth * _outputHeight);
+			Task task;
 			task.input = windowImgIn.data();
 			task.output = _windowOut.data();
 			runSingle(task, true);
@@ -248,4 +260,15 @@ void FFTResampler::unapplyWindow(double* data) const
 	{
 		data[i] /= _windowOut[i];
 	}
+	
+	/*
+	for(size_t i=0; i!=n; ++i)
+		data[i] = 0;
+	for(size_t y=0; y!=_inputHeight; ++y)
+	{
+		for(size_t x=0; x!=_inputWidth; ++x)
+		{
+			data[y*_outputWidth + x] = _windowRowIn[x] * _windowColIn[y];
+		}
+	}*/
 }

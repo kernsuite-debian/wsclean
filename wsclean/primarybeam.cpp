@@ -14,7 +14,7 @@
 
 #include <boost/algorithm/string/case_conv.hpp>
 
-void PrimaryBeam::MakeBeamImages(const ImageFilename& imageName, const ImagingTableEntry& entry, const ImageWeightCache* imageWeightCache, ImageBufferAllocator& allocator)
+void PrimaryBeam::MakeBeamImages(const ImageFilename& imageName, const ImagingTableEntry& entry, std::shared_ptr<ImageWeights> imageWeights, ImageBufferAllocator& allocator)
 {
 	bool useExistingBeam = false;
 	if(_settings.reusePrimaryBeam)
@@ -46,20 +46,25 @@ void PrimaryBeam::MakeBeamImages(const ImageFilename& imageName, const ImagingTa
 		PrimaryBeamImageSet beamImages(_settings.trimmedImageWidth, _settings.trimmedImageHeight, allocator);
 		beamImages.SetToZero();
 		
-		switch(Telescope::GetType(_msProviders.front().first->MS()))
 		{
-			case Telescope::LOFAR:
-			case Telescope::AARTFAAC:
-				makeLOFARImage(beamImages, entry, imageWeightCache, allocator);
-				break;
-			case Telescope::MWA:
-				makeMWAImage(beamImages, entry, allocator);
-				break;
-			case Telescope::ATCA:
-				makeATCAImage(beamImages, entry);
-				break;
-			default:
-				throw std::runtime_error("Can't make beam for this telescope");
+			SynchronizedMS ms(_msProviders.front().first->MS());
+			Telescope::TelescopeType type = Telescope::GetType(*ms);
+			ms.Reset();
+			switch(type)
+			{
+				case Telescope::LOFAR:
+				case Telescope::AARTFAAC:
+					makeLOFARImage(beamImages, entry, imageWeights, allocator);
+					break;
+				case Telescope::MWA:
+					makeMWAImage(beamImages, entry, allocator);
+					break;
+				case Telescope::ATCA:
+					makeATCAImage(beamImages, entry);
+					break;
+				default:
+					throw std::runtime_error("Can't make beam for this telescope");
+			}
 		}
 		
 		// Save the beam images as fits files
@@ -155,14 +160,14 @@ void PrimaryBeam::load(PrimaryBeamImageSet& beamImages, const ImageFilename& ima
 	}
 }
 
-void PrimaryBeam::makeLOFARImage(PrimaryBeamImageSet& beamImages, const ImagingTableEntry& entry, const ImageWeightCache* imageWeightCache, ImageBufferAllocator& allocator)
+void PrimaryBeam::makeLOFARImage(PrimaryBeamImageSet& beamImages, const ImagingTableEntry& entry, std::shared_ptr<ImageWeights> imageWeights, ImageBufferAllocator& allocator)
 {
 	LBeamImageMaker lbeam(&entry, &allocator);
 	for(size_t i=0; i!=_msProviders.size(); ++i)
 		lbeam.AddMS(_msProviders[i].first, &_msProviders[i].second, i);
 	lbeam.SetUseDifferentialBeam(_settings.useDifferentialLofarBeam);
 	lbeam.SetImageDetails(_settings.trimmedImageWidth, _settings.trimmedImageHeight, _settings.pixelScaleX, _settings.pixelScaleY, _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM);
-	lbeam.SetImageWeight(imageWeightCache);
+	lbeam.SetImageWeight(std::move(imageWeights));
 	lbeam.SetUndersampling(_settings.primaryBeamUndersampling);
 	lbeam.Make(beamImages);
 }

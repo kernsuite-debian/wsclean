@@ -137,7 +137,8 @@ void ImageWeights::Grid(MSProvider& msProvider, const MSSelection& selection)
 	size_t polarizationCount = (msProvider.Polarization() == Polarization::Instrumental) ? 4 : 1;
 	if(_weightMode.RequiresGridding())
 	{
-		const MultiBandData bandData(msProvider.MS().spectralWindow(), msProvider.MS().dataDescription());
+		SynchronizedMS ms(msProvider.MS());
+		const MultiBandData bandData(ms->spectralWindow(), ms->dataDescription());
 		MultiBandData selectedBand;
 		if(selection.HasChannelRange())
 			selectedBand = MultiBandData(bandData, selection.ChannelRangeStart(), selection.ChannelRangeEnd());
@@ -199,7 +200,7 @@ void ImageWeights::FinishGridding()
 			for(ao::uvector<double>::const_iterator i=_grid.begin(); i!=_grid.end(); ++i)
 				avgW += *i * *i;
 			avgW /= _totalSum;
-			double numeratorSqrt = 5.0 * pow(10.0, -_weightMode.BriggsRobustness());
+			double numeratorSqrt = 5.0 * exp10(-_weightMode.BriggsRobustness());
 			double sSq = numeratorSqrt*numeratorSqrt / avgW;
 			for(ao::uvector<double>::iterator i=_grid.begin(); i!=_grid.end(); ++i)
 			{
