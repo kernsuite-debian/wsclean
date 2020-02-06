@@ -1,3 +1,10 @@
+wsclean (2.8-1kern2) bionic; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * New upstream version 2.8
+
+ -- KERN packaging <packaging@kernsuite.info>  Thu, 06 Feb 2020 11:25:10 +0200
+
 wsclean (2.6-1kern2) bionic; urgency=medium
 
   [ Gijs Molenaar ]
