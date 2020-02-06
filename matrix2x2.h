@@ -226,14 +226,15 @@ public:
 		double trHalf = tr*0.5;
 		e1 = trHalf + term;
 		e2 = trHalf - term;
-		if(matrix[2] != 0.0)
+		double limit = std::min(std::fabs(e1), std::fabs(e2)) * 1e-6;
+		if(std::fabs(matrix[2]) > limit)
 		{
 			vec1[0] = matrix[3] - e1;
 			vec1[1] = -matrix[2];
 			vec2[0] = matrix[3] - e2;
 			vec2[1] = -matrix[2];
 		}
-		else if(matrix[1] != 0.0)
+		else if(std::fabs(matrix[1]) > limit)
 		{
 			vec1[0] = -matrix[1];
 			vec1[1] = matrix[0] - e1;
@@ -241,10 +242,20 @@ public:
 			vec2[1] = matrix[0] - e2;
 		}
 		else {
-			vec1[0] = 1.0;
-			vec1[1] = 0.0;
-			vec2[0] = 0.0;
-			vec2[1] = 1.0;
+			// We know that A v = lambda v, and we know that v1 or v2 = [1, 0]:
+			double
+				// Evaluate for v = [1, 0] and see if the error is smaller for e1 than for e2
+				err1_0 = matrix[0] - e1,
+				err2_0 = matrix[0] - e2;
+			if(err1_0*err1_0 < err2_0*err2_0)
+			{
+				vec1[0] = 1.0; vec1[1] = 0.0;
+				vec2[0] = 0.0; vec2[1] = 1.0;
+			}
+			else {
+				vec1[0] = 0.0; vec1[1] = 1.0;
+				vec2[0] = 1.0; vec2[1] = 0.0;
+			}
 		}
 	}
 	
@@ -298,6 +309,62 @@ public:
 		}
 	}
 	
+	/**
+	 * Calculates L, the lower triangle of the Cholesky decomposition, such that
+	 * L L^H = M. The result is undefined when the matrix is not positive definite.
+	 */
+	static void UncheckedCholesky(std::complex<double>* matrix)
+	{
+		// solve:
+		// ( a 0 ) ( a* b* ) = ( aa* ;    ab*    )
+		// ( b c ) ( 0  c* )   ( a*b ; bb* + cc* )
+		// With a and c necessarily real.
+		double a = sqrt(matrix[0].real());
+		std::complex<double> b = std::conj(matrix[1] / a);
+		double bbConj = b.real()*b.real() + b.imag()*b.imag();
+		double c = sqrt(matrix[3].real() - bbConj);
+		matrix[0] = a;
+		matrix[1] = 0.0;
+		matrix[2] = b;
+		matrix[3] = c;
+	}
+	
+	/**
+	 * Calculates L, the lower triangle of the Cholesky decomposition, such that
+	 * L L^H = M. Return false when the result would not be finite. 
+	 */
+	static bool Cholesky(std::complex<double>* matrix)
+	{
+		if(matrix[0].real() < 0.0)
+			return false;
+		double a = sqrt(matrix[0].real());
+		std::complex<double> b = std::conj(matrix[1] / a);
+		double bbConj = b.real()*b.real() + b.imag()*b.imag();
+		double cc = matrix[3].real() - bbConj;
+		if(cc < 0.0)
+			return false;
+		double c = sqrt(cc);
+		matrix[0] = a;
+		matrix[1] = 0.0;
+		matrix[2] = b;
+		matrix[3] = c;
+		return true;
+	}
+	
+	/**
+	 * Calculates L, the lower triangle of the Cholesky decomposition, such that
+	 * L L^H = M. Return false when the matrix was not positive semi-definite.
+	 */
+	static bool CheckedCholesky(std::complex<double>* matrix)
+	{
+		if(matrix[0].real() <= 0.0 || matrix[0].imag() != 0.0 ||
+			matrix[3].real() <= 0.0 || matrix[3].imag() != 0.0 || 
+			matrix[1] != std::conj(matrix[2]))
+			return false;
+		UncheckedCholesky(matrix);
+		return true;
+	}
+	
 	template<typename T>
 	static T RotationAngle(const std::complex<T>* matrix)
 	{
@@ -307,8 +374,7 @@ public:
 	template<typename T>
 	static void RotationMatrix(std::complex<T>* matrix, double alpha)
 	{
-		T cosAlpha, sinAlpha;
-		sincos(alpha, &sinAlpha, &cosAlpha);
+		T cosAlpha = std::cos(alpha), sinAlpha = std::sin(alpha);
 		matrix[0] = cosAlpha; matrix[1] = -sinAlpha;
 		matrix[2] = sinAlpha; matrix[3] = cosAlpha;
 	}
@@ -338,6 +404,18 @@ public:
 	MC2x2Base<ValType>& operator+=(const MC2x2Base<ValType>& rhs)
 	{
 		Matrix2x2::Add(_values, rhs._values);
+		return *this;
+	}
+	MC2x2Base<ValType>& operator-=(const MC2x2Base<ValType>& rhs)
+	{
+		Matrix2x2::Subtract(_values, rhs._values);
+		return *this;
+	}
+	MC2x2Base<ValType>& operator*=(const MC2x2Base<ValType>& rhs)
+	{
+		MC2x2Base<ValType> dest;
+		Matrix2x2::ATimesB(dest._values, _values, rhs._values);
+		*this = dest;
 		return *this;
 	}
 	MC2x2Base<ValType>& operator*=(ValType rhs)
@@ -372,6 +450,12 @@ public:
 	}
 	std::complex<ValType>* Data() { return _values; }
 	const std::complex<ValType>* Data() const { return _values; }
+	
+	void AssignTo(std::complex<ValType>* destination) const
+	{
+    Matrix2x2::Assign(destination, _values);
+  }
+	
 	MC2x2Base<ValType> Multiply(const MC2x2Base<ValType>& rhs) const
 	{
 		MC2x2Base<ValType> dest;
@@ -439,14 +523,29 @@ public:
 	{
 		Matrix2x2::EigenValues(_values, e1, e2);
 	}
-	bool HasNaN() const
+	bool IsFinite() const
 	{
-		return !(
+		return
 			std::isfinite(_values[0].real()) && std::isfinite(_values[0].imag()) &&
 			std::isfinite(_values[1].real()) && std::isfinite(_values[1].imag()) &&
 			std::isfinite(_values[2].real()) && std::isfinite(_values[2].imag()) &&
-			std::isfinite(_values[3].real()) && std::isfinite(_values[3].imag())
-		);
+			std::isfinite(_values[3].real()) && std::isfinite(_values[3].imag());
+	}
+	/**
+	 * Calculates L, the lower triangle of the Cholesky decomposition, such that
+	 * L L^H = M.
+	 */
+	bool Cholesky()
+	{
+		return Matrix2x2::Cholesky(_values);
+	}
+	bool CheckedCholesky()
+	{
+		return Matrix2x2::CheckedCholesky(_values);
+	}
+	void UncheckedCholesky()
+	{
+		Matrix2x2::UncheckedCholesky(_values);
 	}
 private:
 	std::complex<ValType> _values[4];

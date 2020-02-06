@@ -1,5 +1,6 @@
 #include "deconvolution.h"
 
+#include "imageset.h"
 #include "simpleclean.h"
 #include "moresane.h"
 #include "iuwtdeconvolution.h"
@@ -15,16 +16,17 @@
 
 #include "../units/fluxdensity.h"
 
-#include "../wsclean/imagefilename.h"
 #include "../wsclean/imagingtable.h"
-#include "../wsclean/primarybeam.h"
 #include "../wsclean/wscleansettings.h"
 
 Deconvolution::Deconvolution(const class WSCleanSettings& settings) :
-	_settings(settings), _autoMaskIsFinished(false),
-	_beamSize(0.0), _pixelScaleX(0.0), _pixelScaleY(0.0)
-{
-}
+	_settings(settings), _parallelDeconvolution(settings),
+	_autoMaskIsFinished(false),
+	_imgWidth(0), // these are not yet set the in settings obj -- load later
+	_imgHeight(0),
+	_beamSize(0.0),
+	_pixelScaleX(0), _pixelScaleY(0)
+{ }
 
 Deconvolution::~Deconvolution()
 {
@@ -38,9 +40,9 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	
 	_imageAllocator->FreeUnused();
 	ImageSet
-		residualSet(&groupTable, *_imageAllocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _imgWidth, _imgHeight),
-		modelSet(&groupTable, *_imageAllocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _imgWidth, _imgHeight);
-		
+		residualSet(&groupTable, *_imageAllocator, _settings, _imgWidth, _imgHeight),
+		modelSet(&groupTable, *_imageAllocator, _settings, _imgWidth, _imgHeight);
+	
 	residualSet.LoadAndAverage(*_residualImages);
 	modelSet.LoadAndAverage(*_modelImages);
 	
@@ -52,7 +54,7 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	{
 		// When we are in the second phase of automasking, don't use
 		// the RMS background anymore
-		_cleanAlgorithm->SetRMSFactorImage(Image());
+		_parallelDeconvolution.SetRMSFactorImage(Image());
 	}
 	else {
 		if(!_settings.localRMSImage.empty())
@@ -70,7 +72,7 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 				if(value != 0.0)
 					value = stddev / value;
 			}
-			_cleanAlgorithm->SetRMSFactorImage(std::move(rmsImage));
+			_parallelDeconvolution.SetRMSFactorImage(std::move(rmsImage));
 		}
 		else if(_settings.localRMS)
 		{
@@ -93,31 +95,30 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 				if(value != 0.0)
 					value = stddev / value;
 			}
-			_cleanAlgorithm->SetRMSFactorImage(std::move(rmsImage));
+			_parallelDeconvolution.SetRMSFactorImage(std::move(rmsImage));
 		}
 	}
 	if(_settings.autoMask && !_autoMaskIsFinished)
-		_cleanAlgorithm->SetThreshold(std::max(stddev * _settings.autoMaskSigma, _settings.deconvolutionThreshold));
+		_parallelDeconvolution.SetThreshold(std::max(stddev * _settings.autoMaskSigma, _settings.deconvolutionThreshold));
 	else if(_settings.autoDeconvolutionThreshold)
-		_cleanAlgorithm->SetThreshold(std::max(stddev * _settings.autoDeconvolutionThresholdSigma, _settings.deconvolutionThreshold));
+		_parallelDeconvolution.SetThreshold(std::max(stddev * _settings.autoDeconvolutionThresholdSigma, _settings.deconvolutionThreshold));
 	integrated.reset();
 	
-	std::vector<ao::uvector<double>> psfVecs(groupTable.SquaredGroupCount());
+	std::vector<ao::uvector<double>> psfVecs(residualSet.PSFCount());
 	residualSet.LoadAndAveragePSFs(*_psfImages, psfVecs, _psfPolarization);
 	
-	ao::uvector<const double*> psfs(groupTable.SquaredGroupCount());
+	ao::uvector<const double*> psfs(residualSet.PSFCount());
 	for(size_t i=0; i!=psfVecs.size(); ++i)
 		psfs[i] = psfVecs[i].data();
 	
 	if(_settings.useMultiscale)
 	{
-		MultiScaleAlgorithm& algorithm = static_cast<MultiScaleAlgorithm&>(*_cleanAlgorithm.get());
 		if(_settings.autoMask)
 		{
 			if(_autoMaskIsFinished)
-				algorithm.SetAutoMaskMode(false, true);
+				_parallelDeconvolution.SetAutoMaskMode(false, true);
 			else
-				algorithm.SetAutoMaskMode(true, false);
+				_parallelDeconvolution.SetAutoMaskMode(true, false);
 		}
 	}
 	else {
@@ -135,11 +136,11 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 					}
 				}
 			}
-			_cleanAlgorithm->SetCleanMask(_autoMask.data());
+			_parallelDeconvolution.SetCleanMask(_autoMask.data());
 		}
 	}
 		
-	_cleanAlgorithm->ExecuteMajorIteration(residualSet, modelSet, psfs, _imgWidth, _imgHeight, reachedMajorThreshold);
+	_parallelDeconvolution.ExecuteMajorIteration(residualSet, modelSet, psfs, reachedMajorThreshold);
 	
 	if(!reachedMajorThreshold && _settings.autoMask && !_autoMaskIsFinished)
 	{
@@ -155,28 +156,24 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	}
 	
 	residualSet.AssignAndStore(*_residualImages);
-	modelSet.InterpolateAndStore(*_modelImages, _cleanAlgorithm->Fitter());
+	modelSet.InterpolateAndStore(*_modelImages, _parallelDeconvolution.FirstAlgorithm().Fitter());
 }
 
-void Deconvolution::FreeDeconvolutionAlgorithms()
+void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, PolarizationEnum psfPolarization, class ImageBufferAllocator* imageAllocator, double beamSize, size_t threadCount)
 {
-	_cleanAlgorithm.reset();
-}
-
-void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, PolarizationEnum psfPolarization, class ImageBufferAllocator* imageAllocator, size_t imgWidth, size_t imgHeight, double pixelScaleX, double pixelScaleY, double beamSize, size_t threadCount)
-{
+	_imgWidth = _settings.trimmedImageWidth;
+	_imgHeight = _settings.trimmedImageHeight;
+	_pixelScaleX = _settings.pixelScaleX;
+	_pixelScaleY = _settings.pixelScaleY;
+	
 	_imageAllocator = imageAllocator;
-	_imgWidth = imgWidth;
-	_imgHeight = imgHeight;
 	_psfPolarization = psfPolarization;
 	_beamSize = beamSize;
-	_pixelScaleX = pixelScaleX;
-	_pixelScaleY = pixelScaleY;
 	_autoMaskIsFinished = false;
+	_autoMask.clear();
 	FreeDeconvolutionAlgorithms();
-	
-	_summedCount = groupTable.SquaredGroupCount();
-	if(_summedCount == 0)
+	_parallelDeconvolution.SetAllocator(imageAllocator);
+	if(groupTable.SquaredGroupCount() == 0)
 		throw std::runtime_error("Nothing to clean");
 	
 	if(!std::isfinite(_beamSize))
@@ -186,9 +183,9 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	}
 	
 	ImagingTable firstSquaredGroup = groupTable.GetSquaredGroup(0);
-	_squaredCount = firstSquaredGroup.EntryCount();
+	size_t squaredCount = firstSquaredGroup.EntryCount();
 	_polarizations.clear();
-	for(size_t p=0; p!=_squaredCount; ++p)
+	for(size_t p=0; p!=squaredCount; ++p)
 	{
 		if(_polarizations.count(firstSquaredGroup[p].polarization) != 0)
 			throw std::runtime_error("Two equal polarizations were given to the deconvolution algorithm within a single polarized group");
@@ -196,48 +193,58 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 			_polarizations.insert(firstSquaredGroup[p].polarization);
 	}
 	
+	std::unique_ptr<class DeconvolutionAlgorithm> algorithm;
+	
 	if(_settings.useMoreSaneDeconvolution)
 	{
-		_cleanAlgorithm.reset(new MoreSane(_settings.moreSaneLocation, _settings.moreSaneArgs, _settings.moreSaneSigmaLevels, _settings.prefixName, *_imageAllocator));
+		algorithm.reset(
+			new MoreSane(_settings.moreSaneLocation, _settings.moreSaneArgs, _settings.moreSaneSigmaLevels, _settings.prefixName, *_imageAllocator, _parallelDeconvolution.GetFFTWManager()));
 	}
 	else if(_settings.useIUWTDeconvolution)
 	{
-		IUWTDeconvolution* method = new IUWTDeconvolution();
-		_cleanAlgorithm.reset(method);
+		IUWTDeconvolution* method = new IUWTDeconvolution(_parallelDeconvolution.GetFFTWManager());
 		method->SetUseSNRTest(_settings.iuwtSNRTest);
+		algorithm.reset(method);
 	}
 	else if(_settings.useMultiscale)
 	{
-		_cleanAlgorithm.reset(new MultiScaleAlgorithm(*_imageAllocator, beamSize, pixelScaleX, pixelScaleY));
-		MultiScaleAlgorithm *algorithm = static_cast<MultiScaleAlgorithm*>(_cleanAlgorithm.get());
-		algorithm->SetManualScaleList(_settings.multiscaleScaleList);
-		algorithm->SetMultiscaleScaleBias(_settings.multiscaleDeconvolutionScaleBias);
-		algorithm->SetMultiscaleNormalizeResponse(_settings.multiscaleNormalizeResponse);
-		algorithm->SetMultiscaleGain(_settings.multiscaleGain);
-		algorithm->SetShape(_settings.multiscaleShapeFunction);
-		algorithm->SetTrackComponents(_settings.saveSourceList);
-		algorithm->SetConvolutionPadding(_settings.multiscaleConvolutionPadding);
-		algorithm->SetUseFastSubMinorLoop(_settings.multiscaleFastSubMinorLoop);
+		MultiScaleAlgorithm *msAlgorithm = 
+			new MultiScaleAlgorithm(*_imageAllocator, _parallelDeconvolution.GetFFTWManager(), beamSize, _pixelScaleX, _pixelScaleY);
+		msAlgorithm->SetManualScaleList(_settings.multiscaleScaleList);
+		msAlgorithm->SetMultiscaleScaleBias(_settings.multiscaleDeconvolutionScaleBias);
+		msAlgorithm->SetMultiscaleNormalizeResponse(_settings.multiscaleNormalizeResponse);
+		msAlgorithm->SetMultiscaleGain(_settings.multiscaleGain);
+		msAlgorithm->SetShape(_settings.multiscaleShapeFunction);
+		msAlgorithm->SetTrackComponents(_settings.saveSourceList);
+		msAlgorithm->SetConvolutionPadding(_settings.multiscaleConvolutionPadding);
+		msAlgorithm->SetUseFastSubMinorLoop(_settings.multiscaleFastSubMinorLoop);
+		algorithm.reset(msAlgorithm);
 	}
 	else
 	{
-		_cleanAlgorithm.reset(new GenericClean(*_imageAllocator, _settings.useClarkOptimization));
+		algorithm.reset(new GenericClean(*_imageAllocator, _parallelDeconvolution.GetFFTWManager(), _settings.useSubMinorOptimization));
 	}
 	
-	_cleanAlgorithm->SetMaxNIter(_settings.deconvolutionIterationCount);
-	_cleanAlgorithm->SetThreshold(_settings.deconvolutionThreshold);
-	_cleanAlgorithm->SetGain(_settings.deconvolutionGain);
-	_cleanAlgorithm->SetMGain(_settings.deconvolutionMGain);
-	_cleanAlgorithm->SetCleanBorderRatio(_settings.deconvolutionBorderRatio);
-	_cleanAlgorithm->SetAllowNegativeComponents(_settings.allowNegativeComponents);
-	_cleanAlgorithm->SetStopOnNegativeComponents(_settings.stopOnNegativeComponents);
-	_cleanAlgorithm->SetThreadCount(threadCount);
-	_cleanAlgorithm->SetSpectralFittingMode(_settings.spectralFittingMode, _settings.spectralFittingTerms);
+	algorithm->SetMaxNIter(_settings.deconvolutionIterationCount);
+	algorithm->SetThreshold(_settings.deconvolutionThreshold);
+	algorithm->SetGain(_settings.deconvolutionGain);
+	algorithm->SetMGain(_settings.deconvolutionMGain);
+	algorithm->SetCleanBorderRatio(_settings.deconvolutionBorderRatio);
+	algorithm->SetAllowNegativeComponents(_settings.allowNegativeComponents);
+	algorithm->SetStopOnNegativeComponents(_settings.stopOnNegativeComponents);
+	algorithm->SetThreadCount(threadCount);
+	algorithm->SetSpectralFittingMode(_settings.spectralFittingMode, _settings.spectralFittingTerms);
 	
-	ao::uvector<double> frequencies, weights;
-	calculateDeconvolutionFrequencies(groupTable, frequencies, weights);
-	_cleanAlgorithm->InitializeFrequencies(frequencies, weights);
+	ImageSet::CalculateDeconvolutionFrequencies(groupTable, _channelFrequencies, _channelWeights, _settings.deconvolutionChannelCount);
+	algorithm->InitializeFrequencies(_channelFrequencies, _channelWeights);
+	_parallelDeconvolution.SetAlgorithm(std::move(algorithm));
 	
+	readMask(groupTable);
+}
+
+void Deconvolution::readMask(const ImagingTable& groupTable)
+{
+	bool hasMask = false;
 	if(!_settings.fitsDeconvolutionMask.empty())
 	{
 		FitsReader maskReader(_settings.fitsDeconvolutionMask, true, true);
@@ -251,7 +258,7 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 		}
 		else if(maskReader.NFrequencies()==_settings.channelsOut) {
 			Logger::Debug << "Reading mask '" << _settings.fitsDeconvolutionMask << "' (" << (groupTable.Front().outputChannelIndex+1) << ")...\n";
-			maskReader.ReadFrequency(maskData.data(), groupTable.Front().outputChannelIndex);
+			maskReader.ReadIndex(maskData.data(), groupTable.Front().outputChannelIndex);
 		}
 		else {
 			std::stringstream msg;
@@ -261,7 +268,8 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 		_cleanMask.assign(_imgWidth*_imgHeight, false);
 		for(size_t i=0; i!=_imgWidth*_imgHeight; ++i)
 			_cleanMask[i] = (maskData[i]!=0.0);
-		_cleanAlgorithm->SetCleanMask(_cleanMask.data());
+		
+		hasMask = true;
 	} else if(!_settings.casaDeconvolutionMask.empty())
 	{
 		if(_cleanMask.empty())
@@ -273,133 +281,49 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 				throw std::runtime_error("Specified CASA mask did not have same dimensions as output image!");
 			maskReader.Read(_cleanMask.data());
 		}
-		_cleanAlgorithm->SetCleanMask(_cleanMask.data());
+		
+		hasMask = true;
 	}
-}
-
-void Deconvolution::calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights)
-{
-	size_t deconvolutionChannels = _settings.deconvolutionChannelCount;
-	if(deconvolutionChannels == 0) deconvolutionChannels = _summedCount;
-	frequencies.assign(deconvolutionChannels, 0.0);
-	weights.assign(deconvolutionChannels, 0.0);
-	ao::uvector<size_t> counts(deconvolutionChannels, 0);
-	for(size_t i=0; i!=_summedCount; ++i)
-	{
-		const ImagingTableEntry& entry = groupTable.GetSquaredGroup(i)[0];
-		double freq = entry.CentralFrequency();
-		size_t deconvolutionChannel = i * deconvolutionChannels / _summedCount;
-		frequencies[deconvolutionChannel] += freq;
-		Logger::Debug << "Weight: " << entry.imageWeight << '\n';
-		weights[deconvolutionChannel] += entry.imageWeight;
-		counts[deconvolutionChannel]++;
-	}
-	for(size_t i=0; i!=deconvolutionChannels; ++i)
-		frequencies[i] /= counts[i];
-}
-
-void Deconvolution::SaveSourceList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const
-{
-	std::string filename = _settings.prefixName + "-sources.txt";
-	if(_settings.useMultiscale)
-	{
-		MultiScaleAlgorithm& algorithm = static_cast<MultiScaleAlgorithm&>(*_cleanAlgorithm);
-		algorithm.GetComponentList().Write(filename, algorithm, _pixelScaleX, _pixelScaleY, phaseCentreRA, phaseCentreDec);
-	}
-	else {
-		_imageAllocator->FreeUnused();
-		ImageSet modelSet(&table, *_imageAllocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _imgWidth, _imgHeight);
-		modelSet.LoadAndAverage(*_modelImages);
-		ComponentList componentList(_imgWidth, _imgHeight, modelSet);
-		componentList.WriteSingleScale(filename, *_cleanAlgorithm, _pixelScaleX, _pixelScaleY, phaseCentreRA, phaseCentreDec);
-	}
-}
-
-void Deconvolution::correctChannelForPB(ComponentList& list, const ImagingTableEntry& entry) const
-{
-	Logger::Debug << "Correcting source list of channel " << entry.outputChannelIndex << " for beam\n";
-	ImageFilename filename(entry.outputChannelIndex, entry.outputIntervalIndex);
-	filename.SetPolarization(entry.polarization);
-	PrimaryBeam pb(_settings);
-	PrimaryBeamImageSet beam(_imgWidth, _imgHeight, *_imageAllocator);
-	pb.Load(beam, filename);
-	list.CorrectForBeam(beam, entry.outputChannelIndex);
-}
-
-void Deconvolution::loadAveragePrimaryBeam(PrimaryBeamImageSet& beamImages, size_t imageIndex, const ImagingTable& table) const
-{
-	Logger::Debug << "Averaging beam for deconvolution channel " << imageIndex << "\n";
 	
-	beamImages.SetToZero();
-	
-	ImageBufferAllocator::Ptr scratch;
-	_imageAllocator->Allocate(_imgWidth*_imgHeight, scratch);
-	size_t deconvolutionChannels = _settings.deconvolutionChannelCount;
-	
-	/// TODO : use real weights of images
-	size_t count = 0;
-	PrimaryBeam pb(_settings);
-	for(size_t sqIndex=0; sqIndex!=table.SquaredGroupCount(); ++sqIndex)
+	if(_settings.horizonMask)
 	{
-		size_t curImageIndex = (sqIndex*deconvolutionChannels)/table.SquaredGroupCount();
-		if(curImageIndex == imageIndex)
+		if(!hasMask)
 		{
-			const ImagingTableEntry e = table.GetSquaredGroup(sqIndex).Front();
-			Logger::Debug << "Adding beam at " << e.CentralFrequency()*1e-6 << " MHz\n";
-			ImageFilename filename(e.outputChannelIndex, e.outputIntervalIndex);
-			
-			PrimaryBeamImageSet scratch(_settings.trimmedImageWidth, _settings.trimmedImageHeight, *_imageAllocator);
-			pb.Load(scratch, filename);
-			beamImages += scratch;
-			
-			count++;
+			_cleanMask.assign(_imgWidth*_imgHeight, true);
+			hasMask = true;
 		}
-	}
-	beamImages *= (1.0 / double(count));
-}
 
-void Deconvolution::SavePBSourceList(const class ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec) const
-{
-	std::unique_ptr<ComponentList> list;
-	if(_settings.useMultiscale)
-	{
-		MultiScaleAlgorithm& algorithm = static_cast<MultiScaleAlgorithm&>(*_cleanAlgorithm);
-		list.reset(new ComponentList(algorithm.GetComponentList()));
-	}
-	else {
-		_imageAllocator->FreeUnused();
-		ImageSet modelSet(&table, *_imageAllocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _imgWidth, _imgHeight);
-		modelSet.LoadAndAverage(*_modelImages);
-		list.reset(new ComponentList(_imgWidth, _imgHeight, modelSet));
+		double fovSq = M_PI*0.5 - _settings.horizonMaskDistance;
+		if(fovSq < 0.0) fovSq = 0.0;
+		if(fovSq <= M_PI*0.5)
+			fovSq = std::sin(fovSq);
+		else // a negative horizon distance was given
+			fovSq = 1.0 - _settings.horizonMaskDistance;
+		fovSq = fovSq * fovSq;
+		bool* ptr = _cleanMask.data();
+		
+		for(size_t y=0; y!=_imgHeight; ++y)
+		{
+			for(size_t x=0; x!=_imgWidth; ++x)
+			{
+				double l, m;
+				ImageCoordinates::XYToLM(x, y, _pixelScaleX, _pixelScaleY, _imgWidth, _imgHeight, l, m);
+				if(l*l + m*m >= fovSq)
+					*ptr = false;
+				++ptr;
+			}
+		}
+		
+		Logger::Info << "Saving horizon mask...\n";
+		Image image(_imgWidth, _imgHeight, *_imageAllocator);
+		for(size_t i=0; i!=_imgWidth*_imgHeight; ++i)
+			image[i] = _cleanMask[i] ? 1.0 : 0.0;
+		
+		FitsWriter writer;
+		writer.SetImageDimensions(_imgWidth, _imgHeight,  _settings.pixelScaleX, _settings.pixelScaleY);
+		writer.Write(_settings.prefixName + "-horizon-mask.fits", image.data());
 	}
 	
-	if(_settings.deconvolutionChannelCount == 0 ||
-		_settings.deconvolutionChannelCount == table.SquaredGroupCount())
-	{
-		// No beam averaging is required
-		for(size_t i=0; i!=table.SquaredGroupCount(); ++i)
-		{
-			const ImagingTableEntry entry = table.GetSquaredGroup(i).Front();
-			correctChannelForPB(*list, entry);
-		}
-	}
-	else {
-		for(size_t ch=0; ch!=_settings.deconvolutionChannelCount; ++ch)
-		{
-			PrimaryBeamImageSet beamImages(_imgWidth, _imgHeight, *_imageAllocator);
-			Logger::Debug << "Correcting source list of channel " << ch << " for averaged beam\n";
-			loadAveragePrimaryBeam(beamImages, ch, table);
-			list->CorrectForBeam(beamImages, ch);
-		}
-	}
-	
-	std::string filename = _settings.prefixName + "-sources-pb.txt";
-	if(_settings.useMultiscale)
-	{
-		MultiScaleAlgorithm& algorithm = static_cast<MultiScaleAlgorithm&>(*_cleanAlgorithm);
-		list->Write(filename, algorithm, _pixelScaleX, _pixelScaleY, phaseCentreRA, phaseCentreDec);
-	}
-	else {
-		list->WriteSingleScale(filename, *_cleanAlgorithm, _pixelScaleX, _pixelScaleY, phaseCentreRA, phaseCentreDec);
-	}
+	if(hasMask)
+		_parallelDeconvolution.SetCleanMask(_cleanMask.data());
 }

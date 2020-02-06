@@ -1,36 +1,59 @@
 #include "wscfitswriter.h"
 
+#include <wscversion.h>
+
 #include "imagefilename.h"
 #include "msgridderbase.h"
 
 #include "../fitsreader.h"
 #include "../modelrenderer.h"
-#include "../wscversion.h"
 
 #include "../deconvolution/deconvolution.h"
 
-WSCFitsWriter::WSCFitsWriter(const ImagingTableEntry& entry, bool isImaginary, const WSCleanSettings& settings, const class Deconvolution& deconvolution, size_t majorIterationNr, const MSGridderBase& gridder, const std::string& commandLine, const OutputChannelInfo& channelInfo)
+WSCFitsWriter::WSCFitsWriter(
+	const ImagingTableEntry& entry,
+	bool isImaginary,
+	const WSCleanSettings& settings,
+	const class Deconvolution& deconvolution,
+	const ObservationInfo& observationInfo,
+	size_t majorIterationNr,
+	const std::string& commandLine,
+	const OutputChannelInfo& channelInfo,
+	bool isModel
+)
 {
 	_filenamePrefix = ImageFilename::GetPrefix(settings, entry.polarization, entry.outputChannelIndex, entry.outputIntervalIndex, isImaginary);
-	setGridderConfiguration(settings, gridder);
+	setGridderConfiguration(settings, observationInfo);
 	setSettingsKeywords(settings, commandLine);
-	setGridderKeywords(gridder);
 	setChannelKeywords(entry, entry.polarization, channelInfo);
 	setDeconvolutionKeywords(settings);
 	if(deconvolution.IsInitialized())
 		setDeconvolutionResultKeywords(deconvolution.GetAlgorithm().IterationNumber(), majorIterationNr);
+	if(isModel)
+		_writer.SetUnit(FitsWriter::JanskyPerPixel);
 }
 
-WSCFitsWriter::WSCFitsWriter(const ImagingTableEntry& entry, PolarizationEnum polarization, bool isImaginary, const WSCleanSettings& settings, const Deconvolution& deconvolution, size_t majorIterationNr, const MSGridderBase& gridder, const std::string& commandLine, const OutputChannelInfo& channelInfo)
+WSCFitsWriter::WSCFitsWriter(
+	const ImagingTableEntry& entry,
+	PolarizationEnum polarization,
+	bool isImaginary,
+	const WSCleanSettings& settings,
+	const Deconvolution& deconvolution,
+	const ObservationInfo& observationInfo,
+	size_t majorIterationNr,
+	const std::string& commandLine,
+	const OutputChannelInfo& channelInfo,
+	bool isModel)
 {
 	_filenamePrefix = ImageFilename::GetPrefix(settings, polarization, entry.outputChannelIndex, entry.outputIntervalIndex, isImaginary);
-	setGridderConfiguration(settings, gridder);
+	setGridderConfiguration(settings, observationInfo);
 	setSettingsKeywords(settings, commandLine);
-	setGridderKeywords(gridder);
 	setChannelKeywords(entry, polarization, channelInfo);
 	setDeconvolutionKeywords(settings);
 	if(deconvolution.IsInitialized())
 		setDeconvolutionResultKeywords(deconvolution.GetAlgorithm().IterationNumber(), majorIterationNr);
+	if(isModel)
+		_writer.SetUnit(FitsWriter::JanskyPerPixel);
 }
 
 WSCFitsWriter::WSCFitsWriter(FitsReader& templateReader) : _writer(templateReader)
@@ -57,33 +80,28 @@ void WSCFitsWriter::setSettingsKeywords(const WSCleanSettings& settings, const s
 	_writer.SetExtraKeyword("WSCFIELD", settings.fieldId);
 }
 
-void WSCFitsWriter::setGridderConfiguration(const WSCleanSettings& settings, const MSGridderBase& gridder)
+void WSCFitsWriter::setGridderConfiguration(const WSCleanSettings& settings, const ObservationInfo& observationInfo)
 {
-	double
-		ra = gridder.PhaseCentreRA(),
-		dec = gridder.PhaseCentreDec(),
-		pixelScaleX = gridder.PixelSizeX(),
-		pixelScaleY = gridder.PixelSizeY(),
-		dateObs = gridder.StartTime();
+	const double
+		ra = observationInfo.phaseCentreRA,
+		dec = observationInfo.phaseCentreDec,
+		pixelScaleX = settings.pixelScaleX,
+		pixelScaleY = settings.pixelScaleY,
+		dateObs = observationInfo.startTime;
 		
 	_writer.SetImageDimensions(settings.trimmedImageWidth, settings.trimmedImageHeight, ra, dec, pixelScaleX, pixelScaleY);
 	_writer.SetDate(dateObs);
-	if(gridder.HasDenormalPhaseCentre())
-		_writer.SetPhaseCentreShift(gridder.PhaseCentreDL(), gridder.PhaseCentreDM());
-	_writer.SetTelescopeName(gridder.TelescopeName());
-	_writer.SetObserver(gridder.Observer());
-	_writer.SetObjectName(gridder.FieldName());
-}
-
-void WSCFitsWriter::setGridderKeywords(const MSGridderBase& gridder)
-{
-	/* This represents the weight of the image when averaging */
-	_writer.SetExtraKeyword("WSCIMGWG", gridder.ImageWeight());
+	if(observationInfo.hasDenormalPhaseCentre)
+		_writer.SetPhaseCentreShift(observationInfo.phaseCentreDL, observationInfo.phaseCentreDM);
+	_writer.SetTelescopeName(observationInfo.telescopeName);
+	_writer.SetObserver(observationInfo.observer);
+	_writer.SetObjectName(observationInfo.fieldName);
+	
 	/* This is the normalization factor that was applied. The factor is useful
 	 * to undo the normalization for e.g. conversion to Kelvins. */ 
-	_writer.SetExtraKeyword("WSCDATAC", gridder.DataColumnName());
-	_writer.SetExtraKeyword("WSCWEIGH", gridder.Weighting().ToString());
-	_writer.SetExtraKeyword("WSCGKRNL", gridder.AntialiasingKernelSize());
+	_writer.SetExtraKeyword("WSCDATAC", settings.dataColumnName);
+	_writer.SetExtraKeyword("WSCWEIGH", settings.weightMode.ToString());
+	_writer.SetExtraKeyword("WSCGKRNL", settings.antialiasingKernelSize);
 }
 
 void WSCFitsWriter::setDeconvolutionKeywords(const WSCleanSettings& settings)

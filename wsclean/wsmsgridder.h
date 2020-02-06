@@ -13,7 +13,7 @@
 #include <casacore/casa/Arrays/Array.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 
-#include <boost/thread/thread.hpp>
+#include <thread>
 
 namespace casacore {
 	class MeasurementSet;
@@ -25,24 +25,24 @@ class WSMSGridder : public MSGridderBase
 	public:
 		WSMSGridder(class ImageBufferAllocator* imageAllocator, size_t threadCount, double memFraction, double absMemLimit);
 	
-		virtual void Invert();
+		virtual void Invert() final override;
 		
-		virtual void Predict(double* image) { Predict(image, 0); }
-		virtual void Predict(double* real, double* imaginary);
+		virtual void Predict(ImageBufferAllocator::Ptr image) final override { Predict(std::move(image), nullptr); }
+		virtual void Predict(ImageBufferAllocator::Ptr real, ImageBufferAllocator::Ptr imaginary) final override;
 		
-		virtual double *ImageRealResult() { return _gridder->RealImage(); }
-		virtual double *ImageImaginaryResult() {
+		virtual ImageBufferAllocator::Ptr ImageRealResult() final override { return _gridder->RealImage(); }
+		virtual ImageBufferAllocator::Ptr ImageImaginaryResult() final override {
 			if(!IsComplex())
 				throw std::runtime_error("No imaginary result available for non-complex inversion");
 			return _gridder->ImaginaryImage();
 		}
-		virtual bool HasGriddingCorrectionImage() const { return GridMode() != NearestNeighbourGridding; }
-		virtual void GetGriddingCorrectionImage(double *image) const { _gridder->GetGriddingCorrectionImage(image); }
+		virtual bool HasGriddingCorrectionImage() const final override { return GridMode() != NearestNeighbourGridding; }
+		virtual void GetGriddingCorrectionImage(double *image) const final override { _gridder->GetGriddingCorrectionImage(image); }
 		
-		virtual size_t ActualInversionWidth() const { return _actualInversionWidth; }
-		virtual size_t ActualInversionHeight() const { return _actualInversionHeight; }
+		virtual size_t ActualInversionWidth() const final override { return _actualInversionWidth; }
+		virtual size_t ActualInversionHeight() const final override { return _actualInversionHeight; }
 		
-		virtual void FreeImagingData()
+		virtual void FreeImagingData() final override
 		{
 			_gridder.reset();
 		}
@@ -60,11 +60,11 @@ class WSMSGridder : public MSGridderBase
 			size_t rowId, dataDescId;
 		};
 		
-		void gridMeasurementSet(MSData &msData);
-		void countSamplesPerLayer(MSData &msData);
-		virtual size_t getSuggestedWGridSize() const  ;
+		void gridMeasurementSet(MSData& msData);
+		void countSamplesPerLayer(MSData& msData);
+		virtual size_t getSuggestedWGridSize() const final override;
 
-		void predictMeasurementSet(MSData &msData);
+		void predictMeasurementSet(MSData& msData);
 
 		void workThread(ao::lane<InversionRow>* workLane)
 		{
@@ -84,8 +84,8 @@ class WSMSGridder : public MSGridderBase
 		void predictWriteThread(ao::lane<PredictionWorkItem>* samplingWorkLane, const MSData* msData);
 
 		std::unique_ptr<WStackingGridder> _gridder;
-		std::unique_ptr<ao::lane<InversionWorkSample>[]> _inversionCPULanes;
-		std::unique_ptr<boost::thread_group> _threadGroup;
+		std::vector<ao::lane<InversionWorkSample>> _inversionCPULanes;
+		std::vector<std::thread> _threadGroup;
 		size_t _cpuCount, _laneBufferSize;
 		int64_t _memSize;
 		ImageBufferAllocator* _imageBufferAllocator;

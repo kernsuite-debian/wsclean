@@ -230,6 +230,40 @@ class lane
 				_reading_possible_condition.notify_all();
 			}
 		}
+
+		/** @brief Write a single element by constructing it.
+		 * @details This method is thread safe, and can be called together with
+		 * other write and read methods from different threads.
+		 * 
+		 * If this call comes after a call to write_end(), the call
+		 * will be ignored. The implementation does not construct the value
+		 * in place, but rather constructs the value and then move assigns it.
+		 * This is because the value that it is moved into has already been
+		 * constructed (in the current implementation).
+		 * @param element Object to be moved into the cyclic buffer.
+		 */
+		template<typename... Args>
+		void emplace(Args&&... args)
+		{
+			std::unique_lock<std::mutex> lock(_mutex);
+			LANE_REGISTER_DEBUG_INFO;
+
+			if(_status == status_normal)
+			{
+				while(_free_write_space == 0)
+				{
+					LANE_REGISTER_DEBUG_WRITE_WAIT;
+					_writing_possible_condition.wait(lock);
+				}
+
+				_buffer[_write_position] = value_type(args...);
+				_write_position = (_write_position+1) % _capacity;
+				--_free_write_space;
+				// Now that there is less free write space, there is more free read
+				// space and thus readers can possibly continue.
+				_reading_possible_condition.notify_all();
+			}
+		}
 		
 		/** @brief Write a single element by moving it in.
 		 * @details This method is thread safe, and can be called together with
@@ -321,6 +355,38 @@ class lane
 			return n - n_left;
 		}
 		
+		/**
+		 * This method does the same thing as read(buffer, n) but discards the data.
+		 * This eliminates the requirement to specify a buffer if the data is not necessary
+		 * anyway, and avoids a copy of the data.
+		 */
+		size_t discard(size_t n)
+		{
+			size_t n_left = n;
+			
+			std::unique_lock<std::mutex> lock(_mutex);
+			LANE_REGISTER_DEBUG_INFO;
+			
+			size_t free_space = free_read_space();
+			size_t read_size = free_space > n ? n : free_space;
+			immediate_discard(read_size);
+			n_left -= read_size;
+			
+			while(n_left != 0 && _status == status_normal)
+			{
+				do {
+					LANE_REGISTER_DEBUG_READ_WAIT;
+					_reading_possible_condition.wait(lock);
+				} while(free_read_space() == 0 && _status == status_normal);
+				
+				free_space = free_read_space();
+				read_size = free_space > n_left ? n_left : free_space;
+				immediate_discard(read_size);
+				n_left -= read_size;
+			}
+			return n - n_left;
+		}
+		
 		void write_end()
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
@@ -359,6 +425,18 @@ class lane
 			_write_position = 0;
 			_free_write_space = new_capacity;
 			_status = status_normal;
+		}
+		
+		/**
+		 * Wait until this lane is empty.
+		 */
+		void wait_for_empty()
+		{
+			std::unique_lock<std::mutex> lock(_mutex);
+			while(_capacity != _free_write_space)
+			{
+				_writing_possible_condition.wait(lock);
+			}
 		}
 		
 #ifdef LANE_DEBUG_MODE
@@ -494,6 +572,18 @@ class lane
 				_writing_possible_condition.notify_all();
 			}
 		}
+		
+		void immediate_discard(size_t n) noexcept
+		{
+			if(n > 0)
+			{
+				_free_write_space += n;
+				
+				// Now that there is more free write space, writers can possibly continue.
+				_writing_possible_condition.notify_all();
+			}
+		}
+		
 #ifdef LANE_DEBUG_MODE
 		void registerDebugInfo() noexcept
 		{

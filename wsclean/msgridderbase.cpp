@@ -28,11 +28,11 @@ MSGridderBase::MSGridderBase() :
 	_theoreticalBeamSize(0.0),
 	_actualInversionWidth(0), _actualInversionHeight(0),
 	_actualPixelSizeX(0), _actualPixelSizeY(0),
+	_metaDataCache(nullptr),
 	_hasFrequencies(false),
 	_freqHigh(0.0), _freqLow(0.0),
 	_bandStart(0.0), _bandEnd(0.0),
 	_startTime(0.0),
-	_metaDataCache(nullptr),
 	_phaseCentreRA(0.0), _phaseCentreDec(0.0),
 	_phaseCentreDL(0.0), _phaseCentreDM(0.0),
 	_denormalPhaseCentre(false),
@@ -50,12 +50,12 @@ void MSGridderBase::GetPhaseCentreInfo(casacore::MeasurementSet& ms, size_t fiel
 	casacore::MSAntenna aTable = ms.antenna();
 	size_t antennaCount = aTable.nrow();
 	if(antennaCount == 0) throw std::runtime_error("No antennae in set");
-	casacore::MPosition::ROScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
+	casacore::MPosition::ScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
 	casacore::MPosition ant1Pos = antPosColumn(0);
 	
-	casacore::MEpoch::ROScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
+	casacore::MEpoch::ScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
 	casacore::MSField fTable(ms.field());
-	casacore::MDirection::ROScalarColumn phaseDirColumn(fTable, fTable.columnName(casacore::MSFieldEnums::PHASE_DIR));
+	casacore::MDirection::ScalarColumn phaseDirColumn(fTable, fTable.columnName(casacore::MSFieldEnums::PHASE_DIR));
 	casacore::MDirection phaseDir = phaseDirColumn(fieldId);
 	casacore::MEpoch curtime = timeColumn(0);
 	casacore::MeasFrame frame(ant1Pos, curtime);
@@ -78,7 +78,7 @@ void MSGridderBase::initializePhaseCentre(casacore::MeasurementSet& ms, size_t f
 	
 	_denormalPhaseCentre = _phaseCentreDL != 0.0 || _phaseCentreDM != 0.0;
 	if(_denormalPhaseCentre)
-		Logger::Info << "Set has denormal phase centre: dl=" << _phaseCentreDL << ", dm=" << _phaseCentreDM << '\n';
+		Logger::Debug << "Set has denormal phase centre: dl=" << _phaseCentreDL << ", dm=" << _phaseCentreDM << '\n';
 }
 
 void MSGridderBase::initializeBandData(casacore::MeasurementSet& ms, MSGridderBase::MSData& msData)
@@ -88,7 +88,7 @@ void MSGridderBase::initializeBandData(casacore::MeasurementSet& ms, MSGridderBa
 	{
 		msData.startChannel = Selection(msData.msIndex).ChannelRangeStart();
 		msData.endChannel = Selection(msData.msIndex).ChannelRangeEnd();
-		Logger::Info << "Selected channels: " << msData.startChannel << '-' << msData.endChannel << '\n';
+		Logger::Debug << "Selected channels: " << msData.startChannel << '-' << msData.endChannel << '\n';
 		const BandData& firstBand = msData.bandData.FirstBand();
 		if(msData.startChannel >= firstBand.ChannelCount() || msData.endChannel > firstBand.ChannelCount()
 			|| msData.startChannel == msData.endChannel)
@@ -142,7 +142,7 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData)
 						uInL = uInM/wavelength, vInL = vInM/wavelength,
 						x = uInL * PixelSizeX() * ImageWidth(),
 						y = vInL * PixelSizeY() * ImageHeight(),
-						imagingWeight = this->PrecalculatedWeightInfo()->GetWeight(uInL, vInL);
+						imagingWeight = PrecalculatedWeightInfo()->GetWeight(uInL, vInL);
 					if(imagingWeight != 0.0)
 					{
 						if(floor(x) > -halfWidth  && ceil(x) < halfWidth &&
@@ -204,13 +204,13 @@ void MSGridderBase::initializeMetaData(casacore::MeasurementSet& ms, size_t fiel
 	casacore::MSObservation oTable = ms.observation();
 	size_t obsCount = oTable.nrow();
 	if(obsCount == 0) throw std::runtime_error("No observations in set");
-	casacore::ROScalarColumn<casacore::String> telescopeNameColumn(oTable, oTable.columnName(casacore::MSObservation::TELESCOPE_NAME));
-	casacore::ROScalarColumn<casacore::String> observerColumn(oTable, oTable.columnName(casacore::MSObservation::OBSERVER));
+	casacore::ScalarColumn<casacore::String> telescopeNameColumn(oTable, oTable.columnName(casacore::MSObservation::TELESCOPE_NAME));
+	casacore::ScalarColumn<casacore::String> observerColumn(oTable, oTable.columnName(casacore::MSObservation::OBSERVER));
 	_telescopeName = telescopeNameColumn(0);
 	_observer = observerColumn(0);
 	
 	casacore::MSField fTable = ms.field();
-	casacore::ROScalarColumn<casacore::String> fieldNameColumn(fTable, fTable.columnName(casacore::MSField::NAME));
+	casacore::ScalarColumn<casacore::String> fieldNameColumn(fTable, fTable.columnName(casacore::MSField::NAME));
 	_fieldName = fieldNameColumn(fieldId);
 }
 
@@ -218,16 +218,16 @@ void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData, Meta
 {
 	MSProvider& msProvider = MeasurementSet(msData.msIndex);
 	msData.msProvider = &msProvider;
-	casacore::MeasurementSet& ms(msProvider.MS());
-	if(ms.nrow() == 0) throw std::runtime_error("Table has no rows (no data)");
+	SynchronizedMS ms(msProvider.MS());
+	if(ms->nrow() == 0) throw std::runtime_error("Table has no rows (no data)");
 	
-	initializeBandData(ms, msData);
+	initializeBandData(*ms, msData);
 	
 	calculateMSLimits(msData.SelectedBand(), msProvider.StartTime());
 	
-	initializePhaseCentre(ms, Selection(msData.msIndex).FieldId());
+	initializePhaseCentre(*ms, Selection(msData.msIndex).FieldId());
 	
-	initializeMetaData(ms, Selection(msData.msIndex).FieldId());
+	initializeMetaData(*ms, Selection(msData.msIndex).FieldId());
 	
 	if(isCacheInitialized)
 	{
@@ -311,8 +311,12 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
 	{
 		size_t suggestedGridSize = getSuggestedWGridSize();
 		if(!HasWGridSize())
-			SetWGridSize(suggestedGridSize);
+			SetActualWGridSize(suggestedGridSize);
+		else
+			SetActualWGridSize(WGridSize());
 	}
+	else 
+		SetActualWGridSize(WGridSize());
 }
 
 template<size_t PolarizationCount>
@@ -320,7 +324,8 @@ void MSGridderBase::readAndWeightVisibilities(MSProvider& msProvider, InversionR
 {
 	if(DoImagePSF())
 	{
-		msProvider.ReadWeights(rowData.data);
+		for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
+			rowData.data[chp] = 1.0;
 		if(HasDenormalPhaseCentre())
 		{
 			double lmsqrt = sqrt(1.0-PhaseCentreDL()*PhaseCentreDL()- PhaseCentreDM()*PhaseCentreDM());
@@ -358,21 +363,19 @@ void MSGridderBase::readAndWeightVisibilities(MSProvider& msProvider, InversionR
 	switch(VisibilityWeightingMode())
 	{
 	case NormalVisibilityWeighting:
-		// The MS provider has already preweighted the
-		// visibilities for their weight, so we do not
-		// have to do anything.
+		// The weight buffer already contains the visibility weights: do nothing
 		break;
 	case SquaredVisibilityWeighting:
+		// Square the visibility weights
 		for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
-			rowData.data[chp] *= weightBuffer[chp];
+			weightBuffer[chp] *= weightBuffer[chp];
 		break;
 	case UnitVisibilityWeighting:
+		// Set the visibility weights to one
 		for(size_t chp=0; chp!=curBand.ChannelCount() * PolarizationCount; ++chp)
 		{
-			if(weightBuffer[chp] == 0.0)
-				rowData.data[chp] = 0.0;
-			else
-				rowData.data[chp] /= weightBuffer[chp];
+			if(weightBuffer[chp] != 0.0)
+				weightBuffer[chp] = 1.0f;
 		}
 		break;
 	}
@@ -386,19 +389,22 @@ void MSGridderBase::readAndWeightVisibilities(MSProvider& msProvider, InversionR
 		double
 			u = rowData.uvw[0] / curBand.ChannelWavelength(ch),
 			v = rowData.uvw[1] / curBand.ChannelWavelength(ch),
-			weight = PrecalculatedWeightInfo()->GetWeight(u, v);
-		_scratchWeights[ch] = weight;
-		double cumWeight = weight * *weightIter;
-		if(cumWeight != 0.0)
-		{
-			_visibilityWeightSum += *weightIter * 0.5;
-			++_griddedVisibilityCount;
-			_maxGriddedWeight = std::max(cumWeight, _maxGriddedWeight);
-			_totalWeight += cumWeight;
-		}
+			imageWeight = PrecalculatedWeightInfo()->GetWeight(u, v);
+		_scratchWeights[ch] = imageWeight;
+		
 		for(size_t p=0; p!=PolarizationCount; ++p)
 		{
-			*dataIter *= weight;
+			double cumWeight = *weightIter * imageWeight;
+			if(p == 0 && cumWeight != 0.0) {
+				// Visibility weight sum is the sum of weights excluding imaging weights
+				_visibilityWeightSum += *weightIter;
+				_maxGriddedWeight = std::max(cumWeight, _maxGriddedWeight);
+				++_griddedVisibilityCount;
+				// Total weight includes imaging weights
+				_totalWeight += cumWeight;
+			}
+			*weightIter = cumWeight;
+			*dataIter *= *weightIter;
 			++dataIter;
 			++weightIter;
 		}

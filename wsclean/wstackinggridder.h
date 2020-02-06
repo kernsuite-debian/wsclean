@@ -11,18 +11,15 @@
 #endif
 
 #include "gridmodeenum.h"
-
-// Forward declare boost::mutex to avoid header inclusion
-namespace boost
-{
-	class mutex;
-}
+#include "imagebufferallocator.h"
 
 #include <cmath>
 #include <cstring>
 #include <complex>
+#include <mutex>
 #include <vector>
 #include <stack>
+#include <thread>
 
 class ImageBufferAllocator;
 
@@ -66,8 +63,8 @@ class ImageBufferAllocator;
  * - Construct an instance with @ref WStackingGridder()
  * - Set settings if necessary
  * - Call @ref PrepareWLayers();
+   - Call @ref InitializePrediction();
  * - For each pass if multiple passes are necessary (or once otherwise) :
- *   - Call @ref InitializePrediction();
  *   - Call @ref StartPredictionPass();
  *   - Get the predicted visibilities with @ref SampleDataSample();
  * 
@@ -319,15 +316,16 @@ class WStackingGridder
 		 * each pass, i.e., before each call to @ref StartPredictionPass().
 		 * 
 		 * This method is used for prediction of non-complex (IsComplex()==false)
-		 * images. Use @ref InitializePrediction(const double*, const double*) for
-		 * complex prediction -- see @ref SetIsComplex() for more info.
+		 * images. Use
+		 * @ref InitializePrediction(ImageBufferAllocator::Ptr, ImageBufferAllocator::Ptr)
+		 * for complex prediction -- see @ref SetIsComplex() for more info.
 		 * 
 		 * @param image The model image that is to be predicted for. This is an
 		 * array of width * height size, index by (x + width*y).
 		 */
-		void InitializePrediction(const double *image)
+		void InitializePrediction(ImageBufferAllocator::Ptr image)
 		{
-			initializePrediction(image, _imageData);
+			initializePrediction(std::move(image), _imageData);
 		}
 		
 		/**
@@ -338,10 +336,10 @@ class WStackingGridder
 		 * @param real Array of width * height giving the real (model) image values.
 		 * @param imaginary Array of width * height giving the imaginary (model) image values.
 		 */
-		void InitializePrediction(const double *real, const double *imaginary)
+		void InitializePrediction(ImageBufferAllocator::Ptr real, ImageBufferAllocator::Ptr imaginary)
 		{
-			initializePrediction(real, _imageData);
-			initializePrediction(imaginary, _imageDataImaginary);
+			initializePrediction(std::move(real), _imageData);
+			initializePrediction(std::move(imaginary), _imageDataImaginary);
 		}
 
 		/**
@@ -411,13 +409,13 @@ class WStackingGridder
 		 * If a complex image is produced, this image returns the real part. The imaginary part can
 		 * be acquired with @ref ImaginaryImage().
 		 */
-		double *RealImage() { return _imageData[0]; }
+		ImageBufferAllocator::Ptr RealImage() { return std::move(_imageData[0]); }
 		
 		/**
 		 * Get the imaginary part of a complex image after inversion. Otherwise similar to
 		 * @ref RealImage().
 		 */
-		double *ImaginaryImage() { return _imageDataImaginary[0]; }
+		ImageBufferAllocator::Ptr ImaginaryImage() { return std::move(_imageDataImaginary[0]); }
 		
 		/**
 		 * Get the number of threads used when performing the FFTs. The w-layers are divided over
@@ -518,7 +516,7 @@ class WStackingGridder
 		 * ImageBufferAllocator.
 		 * @see ReplaceImaginaryImageBuffer().
 		 */
-		void ReplaceRealImageBuffer(double* newBuffer);
+		void ReplaceRealImageBuffer(ImageBufferAllocator::Ptr newBuffer);
 		
 		/**
 		 * Replace the current imaginary result of the imaging with a new image.
@@ -526,7 +524,7 @@ class WStackingGridder
 		 * part.
 		 * @param newBuffer The new imaginary buffer part.
 		 */
-		void ReplaceImaginaryImageBuffer(double* newBuffer);
+		void ReplaceImaginaryImageBuffer(ImageBufferAllocator::Ptr newBuffer);
 		
 		/**
 		 * Retrieve a gridded uv layer. This function can be called after
@@ -542,13 +540,13 @@ class WStackingGridder
 		}
 		
 		/**
-		 * Acquire a Kaiser-Bessel kernel. This is mostly a debugging/example function.
-		 * @param kernel Array of size @p n
-		 * @param n Size of kernel
-		 * @param multiplyWithSinc True to multiply the kernel with the sinc function, as
-		 * is the case during gridding.
+		 * Acquire the antialising gridding kernel. This is mostly a debugging/example function.
+		 * @param gridMode Type of kernel
+		 * @param kernel Array of size @p oversampling * size
+		 * @param n Oversampling factor of kernel
+		 * @param size UV-cell size of the kernel
 		 */
-		void GetKaiserBesselKernel(double* kernel, size_t n, bool multiplyWithSinc);
+		static void GetKernel(enum GridModeEnum gridMode, double* kernel, size_t oversampling, size_t size);
 		
 		/**
 		 * Get width of image as specified during construction. This is the full width, before
@@ -596,10 +594,10 @@ class WStackingGridder
 		void initializeSqrtLMLookupTableForSampling();
 		void initializeLayeredUVData(size_t n);
 		void freeLayeredUVData() { initializeLayeredUVData(0); }
-		void fftToImageThreadFunction(boost::mutex *mutex, std::stack<size_t> *tasks, size_t threadIndex);
-		void fftToUVThreadFunction(boost::mutex *mutex, std::stack<size_t> *tasks);
-		void finalizeImage(double multiplicationFactor, std::vector<double*>& dataArray);
-		void initializePrediction(const double *image, std::vector<double*>& dataArray);
+		void fftToImageThreadFunction(std::mutex *mutex, std::stack<size_t> *tasks, size_t threadIndex);
+		void fftToUVThreadFunction(std::mutex *mutex, std::stack<size_t> *tasks);
+		void finalizeImage(double multiplicationFactor, std::vector<ImageBufferAllocator::Ptr>& dataArray);
+		void initializePrediction(ImageBufferAllocator::Ptr image, std::vector<ImageBufferAllocator::Ptr>& dataArray);
 		
 		void makeKernels();
 		/**
@@ -611,11 +609,16 @@ class WStackingGridder
 		 * - 8.6 ; similar to the Blackmann window
 		 * -  14 ; similar to prolate spheroidal
 		 */
-		void makeKaiserBesselKernel(std::vector<double> &kernel, double alpha, size_t overSamplingFactor, bool withSinc=true);
+		static void makeKaiserBesselKernel(std::vector<double> &kernel, double alpha, size_t overSamplingFactor, bool withSinc=true);
 		
-		void makeRectangularKernel(std::vector<double> &kernel, size_t overSamplingFactor);
+		static void makeRectangularKernel(std::vector<double> &kernel, size_t overSamplingFactor);
 		
-		double bessel0(double x, double precision);
+		static void makeGaussianKernel(std::vector<double> &kernel, size_t overSamplingFactor, bool withSinc=true);
+		
+		static void makeBlackmanNutallKernel(std::vector<double> &kernel, size_t overSamplingFactor, bool withSinc=true);
+		
+		static double bessel0(double x, double precision);
+		
 		template<bool Inverse>
 		void correctImageForKernel(double *image) const;
 		
@@ -634,7 +637,7 @@ class WStackingGridder
 		std::vector<std::vector<double>> _griddingKernels;
 		
 		std::vector<std::complex<double>*> _layeredUVData;
-		std::vector<double*> _imageData, _imageDataImaginary;
+		std::vector<ImageBufferAllocator::Ptr> _imageData, _imageDataImaginary;
 		std::vector<double> _sqrtLMLookupTable;
 		size_t _nFFTThreads;
 		ImageBufferAllocator* _imageBufferAllocator;

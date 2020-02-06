@@ -12,12 +12,6 @@
 class NDPPP
 {
 public:
-	static void ConvertSkyModelToSourceDB(const std::string& destination, const std::string& input)
-	{
-		boost::filesystem::remove_all(destination);
-		Application::Run("makesourcedb in=" + input + " out=" + destination + " format='<'");
-	}
-	
 	static void WriteStandardHeader(std::ostream& stream, double refFrequency)
 	{
 		stream.precision(15);
@@ -132,10 +126,13 @@ public:
 			// A patch is created by not giving a source name
 			if(convertClustersToPatches)
 			{
-				if(patchName != source.ClusterName())
+				std::string sourcePatchName = source.ClusterName();
+				if(sourcePatchName.empty())
+					sourcePatchName = "no_patch";
+				if(patchName != sourcePatchName)
 				{
-					patchName = source.ClusterName();
-					file << ", " << source.ClusterName() << ", POINT, , , , , , , , , , , ,\n";
+					patchName = sourcePatchName;
+					file << ", " << patchName << ", POINT, , , , , , , , , , , ,\n";
 				}
 			}
 			else {
@@ -197,28 +194,9 @@ public:
 						<< c.MinorAxis()*(180*3600.0/M_PI) << ", " 
 						<< c.PositionAngle()*(180.0/M_PI) << '\n';
 				}
-				else file << ", , ,\n";
+				else file << ", ,\n";
 			}
 		}
-	}
-	
-	static void Predict(const std::string& msName, bool predictWithBeam)
-	{
-		std::ofstream ndpppParset("wsclean-prediction.parset");
-		ndpppParset <<
-			"msin = " << msName << "\n"
-			"msin.datacolumn = DATA\n"
-			"msout = .\n"
-			"msout.datacolumn = MODEL_DATA\n"
-			"steps = [predict]\n"
-			"predict.sourcedb=wsclean-prediction.sourcedb\n"
-			"predict.usebeammodel=";
-		if(predictWithBeam)
-			ndpppParset << "true\n";
-		else
-			ndpppParset << "false\n";
-		ndpppParset.close();
-		Application::Run("NDPPP wsclean-prediction.parset");
 	}
 };
 

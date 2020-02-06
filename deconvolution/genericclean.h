@@ -17,14 +17,19 @@
 class GenericClean : public DeconvolutionAlgorithm
 {
 public:
-	explicit GenericClean(class ImageBufferAllocator& allocator, bool useClarkOptimization);
+	explicit GenericClean(class ImageBufferAllocator& allocator, class FFTWManager& fftwManager, bool useSubMinorOptimization);
 	
-	virtual void ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const ao::uvector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold) final override;
+	virtual double ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const ao::uvector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold) final override;
+	
+	virtual std::unique_ptr<DeconvolutionAlgorithm> Clone() const final override
+	{
+		return std::unique_ptr<DeconvolutionAlgorithm>(new GenericClean(*this));
+	}
 	
 private:
 	size_t _width, _height, _convolutionWidth, _convolutionHeight;
 	double _convolutionPadding;
-	bool _useClarkOptimization;
+	bool _useSubMinorOptimization;
 	
 	boost::optional<double> findPeak(const double *image, double* scratch, size_t &x, size_t &y);
 	
@@ -36,6 +41,7 @@ private:
 	}
 	
 	class ImageBufferAllocator& _allocator;
+	class FFTWManager& _fftwManager;
 };
 
 #endif

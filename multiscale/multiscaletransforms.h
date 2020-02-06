@@ -11,7 +11,8 @@ class MultiScaleTransforms
 public:
 	enum Shape { TaperedQuadraticShape, GaussianShape };
 	
-	MultiScaleTransforms(size_t width, size_t height, Shape shape) :
+	MultiScaleTransforms(class FFTWManager& fftwManager, size_t width, size_t height, Shape shape) :
+	_fftwManager(fftwManager),
 	_width(width), _height(height), _shape(shape)
 	{ }
 	
@@ -103,6 +104,7 @@ public:
 		return scaleSizeInPixels * (3.0 / 16.0);
 	}
 private:
+	class FFTWManager& _fftwManager;
 	size_t _width, _height;
 	enum Shape _shape;
 	
@@ -121,7 +123,11 @@ private:
 	static void makeGaussianFunction(double scaleSizeInPixels, ao::uvector<double>& output, size_t& n, size_t maxN)
 	{
 		double sigma = GaussianSigma(scaleSizeInPixels);
-		n = int(ceil(sigma * 5.0 / 2.0)) * 2 + 1;
+		
+		//n = maxN;
+		//if((n%2) == 0 && n > 0) --n;
+		
+		n = int(ceil(sigma * 12.0 / 2.0)) * 2 + 1; // bounding box of 12 sigma
 		if(n > maxN)
 		{
 			n = maxN;
@@ -139,12 +145,17 @@ private:
 		const double twoSigmaSquared = 2.0 * sigma * sigma;
 		double sum = 0.0;
 		double* outputPtr = output.data();
+		ao::uvector<double> gaus(n);
+		for(int i=0; i!=int(n) ;++i)
+		{
+			double vI = double(i) - mu;
+			gaus[i] = exp(-vI*vI / twoSigmaSquared);
+		}
 		for(int y=0; y!=int(n); ++y)
 		{
 			for(int x=0; x!=int(n) ;++x)
 			{
-				double vX = double(x) - mu, vY = double(y) - mu;
-				*outputPtr = exp(-(vX*vX + vY*vY) / twoSigmaSquared);
+				*outputPtr = gaus[x] * gaus[y];
 				sum += *outputPtr;
 				++outputPtr;
 			}

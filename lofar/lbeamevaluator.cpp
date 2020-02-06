@@ -4,6 +4,9 @@
 
 #include "../banddata.h"
 
+#include "../wsclean/logger.h"
+#include "../units/radeccoord.h"
+
 #include <casacore/measures/TableMeasures/ArrayMeasColumn.h>
 
 #include <StationResponse/LofarMetaDataUtil.h>
@@ -15,10 +18,6 @@ LBeamEvaluator::LBeamEvaluator(casacore::MeasurementSet& ms) : _ms(ms)
 	BandData band(_ms.spectralWindow());
 	_subbandFrequency = band.CentreFrequency();
 	
-	casacore::MSAntenna aTable(ms.antenna());
-	casacore::MPosition::ROScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
-	_arrayPos = antPosColumn(0);
-	
 	casacore::MSField fieldTable(ms.field());
 	casacore::ROScalarMeasColumn<casacore::MDirection> delayDirColumn(fieldTable, casacore::MSField::columnName(casacore::MSFieldEnums::DELAY_DIR));
 	if(fieldTable.nrow() != 1)
@@ -29,10 +28,12 @@ LBeamEvaluator::LBeamEvaluator(casacore::MeasurementSet& ms) : _ms(ms)
 		casacore::ROArrayMeasColumn<casacore::MDirection> tileBeamDirColumn(fieldTable, "LOFAR_TILE_BEAM_DIR");
 		_tileBeamDir = *(tileBeamDirColumn(0).data());
 	} else {
-		throw std::runtime_error("LOFAR_TILE_BEAM_DIR column not found");
+		_tileBeamDir = _delayDir;
 	}
 	
-	_stations.resize(aTable.nrow());
+	Logger::Debug << "Using delay direction: " << RaDecCoord::RaDecToString(_tileBeamDir.getValue().getVector()[0], _tileBeamDir.getValue().getVector()[1]) << '\n';
+	
+	_stations.resize(ms.antenna().nrow());
 	readStations(ms, _stations.begin());
 }
 
@@ -44,10 +45,10 @@ void LBeamEvaluator::SetTime(const casacore::MEpoch& time)
 	_time = time;
 	_timeAsDouble = _time.getValue().get()*86400.0;
 	
-	_frame = casacore::MeasFrame(_arrayPos, _time);
-	_j2000Ref = casacore::MDirection::Ref(casacore::MDirection::J2000, _frame);
-	_itrfRef = casacore::MDirection::Ref(casacore::MDirection::ITRF, _frame);
-	_j2000ToITRFRef = casacore::MDirection::Convert(_j2000Ref, _itrfRef);
+	if(_itrfConverter)
+		_itrfConverter->setTime(_timeAsDouble);
+	else
+		_itrfConverter.reset(new ITRFConverter(_timeAsDouble));
 	dirToITRF(_delayDir, _station0);
 	dirToITRF(_tileBeamDir, _tile0);
 }
@@ -58,7 +59,7 @@ void LBeamEvaluator::Evaluate(double ra, double dec, double frequency, size_t an
 	casacore::MDirection imageDir(casacore::MVDirection(
 		casacore::Quantity(ra, radUnit),
 		casacore::Quantity(dec,radUnit)),
-		_j2000Ref);
+		casacore::MDirection::J2000);
 
 	vector3r_t itrfDirection;
 	dirToITRF(imageDir, itrfDirection);
@@ -85,10 +86,10 @@ void LBeamEvaluator::EvaluateFullArray(const LBeamEvaluator::PrecalcPosInfo& pos
 	for(Station::Ptr s : _stations)
 	{
 		matrix22c_t gainMatrix = s->response(_timeAsDouble, frequency, posInfo.itrfDirection, _subbandFrequency, _station0, _tile0);
-		beamValues[0] += gainMatrix[0][0];
-		beamValues[1] += gainMatrix[0][1];
-		beamValues[2] += gainMatrix[1][0];
-		beamValues[3] += gainMatrix[1][1];
+		beamValues[0] = beamValues[0] + gainMatrix[0][0];
+		beamValues[1] = beamValues[1] + gainMatrix[0][1];
+		beamValues[2] = beamValues[2] + gainMatrix[1][0];
+		beamValues[3] = beamValues[3] + gainMatrix[1][1];
 	}
 	beamValues /= double(_stations.size());
 }
@@ -99,7 +100,7 @@ void LBeamEvaluator::PrecalculatePositionInfo(LBeamEvaluator::PrecalcPosInfo& po
 	casacore::MDirection imageDir(casacore::MVDirection(
 		casacore::Quantity(raRad, radUnit),
 		casacore::Quantity(decRad,radUnit)),
-		_j2000Ref);
+		casacore::MDirection::J2000);
 
 	dirToITRF(imageDir, posInfo.itrfDirection);
 }
