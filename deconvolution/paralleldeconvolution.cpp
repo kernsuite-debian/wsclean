@@ -10,9 +10,23 @@
 
 #include "../image.h"
 
+#include "componentlist.h"
 #include "subdivision.h"
 
-#include "../aocommon/parallel_for.h"
+#include "../aocommon/parallelfor.h"
+
+ParallelDeconvolution::ParallelDeconvolution(const class WSCleanSettings& settings) :
+	_horImages(0),
+	_verImages(0),
+	_settings(settings),
+	_allocator(nullptr),
+	_mask(nullptr),
+	_trackPerScaleMasks(false),
+	_usePerScaleMasks(false)
+{ }
+
+ParallelDeconvolution::~ParallelDeconvolution()
+{ }
 
 void ParallelDeconvolution::SetAlgorithm(std::unique_ptr<class DeconvolutionAlgorithm> algorithm)
 {
@@ -42,8 +56,10 @@ void ParallelDeconvolution::SetAlgorithm(std::unique_ptr<class DeconvolutionAlgo
 
 void ParallelDeconvolution::SetRMSFactorImage(Image&& image)
 {
-	_algorithms.front()->SetRMSFactorImage(std::move(image));
-	// TODO cut in pieces
+	if(_settings.parallelDeconvolutionMaxSize == 0)
+		_algorithms.front()->SetRMSFactorImage(std::move(image));
+	else
+		_rmsImage = std::move(image);
 }
 
 void ParallelDeconvolution::SetThreshold(double threshold)
@@ -79,7 +95,7 @@ void ParallelDeconvolution::runSubImage(SubImage& subImg, ImageSet& dataImage, I
 	
 	std::unique_ptr<ImageSet> subModel, subData;
 	{
-		std::unique_lock<std::mutex> lock(*mutex);
+		std::lock_guard<std::mutex> lock(*mutex);
 		subModel = modelImage.Trim(
 			subImg.x, subImg.y, subImg.x+subImg.width, subImg.y+subImg.height, width);
 		subData = dataImage.Trim(
@@ -97,6 +113,14 @@ void ParallelDeconvolution::runSubImage(SubImage& subImg, ImageSet& dataImage, I
 	}
 	_algorithms[subImg.index]->SetCleanMask(subImg.mask.data());
 	
+	// Construct smaller RMS image if necessary
+	if(!_rmsImage.empty())
+	{
+		Image subRmsImage =
+			_rmsImage.TrimBox(subImg.x, subImg.y, subImg.width, subImg.height);
+		_algorithms[subImg.index]->SetRMSFactorImage(std::move(subRmsImage));
+	}
+	
 	size_t maxNIter = _algorithms[subImg.index]->MaxNIter();
 	if(findPeakOnly)
 		_algorithms[subImg.index]->SetMaxNIter(0);
@@ -107,14 +131,18 @@ void ParallelDeconvolution::runSubImage(SubImage& subImg, ImageSet& dataImage, I
 	{
 		std::lock_guard<std::mutex> lock(*mutex);
 		MultiScaleAlgorithm& msAlg = static_cast<class MultiScaleAlgorithm&>(*_algorithms[subImg.index]);
+		// During the first iteration, msAlg will not have scales/masks yet and the nr scales has also not
+		// been determined yet.
 		if(!_scaleMasks.empty())
 		{
-			// During the first iteration, msAlg will not have scales/masks yet and the nr scales has also not
-			// been determined yet.
-			for(size_t i=0; i!=msAlg.ScaleCount(); ++i)
+			// Here we set the scale mask for the multiscale algorithm.
+			// The maximum number of scales in the previous iteration can be found by _scaleMasks.size()
+			// Not all msAlgs might have used that many scales, so we have to take this into account
+			msAlg.SetScaleMaskCount(std::max(msAlg.GetScaleMaskCount(), _scaleMasks.size()));
+			for(size_t i=0; i!=msAlg.GetScaleMaskCount(); ++i)
 			{
 				ao::uvector<bool>& output = msAlg.GetScaleMask(i);
-				output.resize(subImg.width * subImg.height);
+				output.assign(subImg.width * subImg.height, false);
 				if(i < _scaleMasks.size())
 					Image::TrimBox(output.data(), subImg.x, subImg.y, subImg.width, subImg.height, _scaleMasks[i].data(), width, height);
 			}
@@ -125,6 +153,9 @@ void ParallelDeconvolution::runSubImage(SubImage& subImg, ImageSet& dataImage, I
 		*subData, *subModel, subPsfVector,
 		subImg.width, subImg.height, subImg.reachedMajorThreshold);
 	
+	// Since this was an RMS image specifically for this subimage size, we free it immediately
+	_algorithms[subImg.index]->SetRMSFactorImage(Image());
+		
 	if(_trackPerScaleMasks)
 	{
 		std::lock_guard<std::mutex> lock(*mutex);
@@ -141,6 +172,17 @@ void ParallelDeconvolution::runSubImage(SubImage& subImg, ImageSet& dataImage, I
 			if(i < _scaleMasks.size())
 				Image::CopyMasked(_scaleMasks[i].data(), subImg.x, subImg.y, width, msMask.data(), subImg.width, subImg.height, subImg.mask.data());
 		}
+	}
+	
+	if(_settings.saveSourceList && _settings.useMultiscale)
+	{
+		std::lock_guard<std::mutex> lock(*mutex);
+		MultiScaleAlgorithm& algorithm =
+			static_cast<MultiScaleAlgorithm&>(*_algorithms[subImg.index]);
+		if(!_componentList)
+			_componentList.reset(new ComponentList(width, height, algorithm.ScaleCount(), dataImage.size(), *_allocator));
+		_componentList->Add(algorithm.GetComponentList(), subImg.x, subImg.y);
+		algorithm.ClearComponentList();
 	}
 	
 	if(findPeakOnly)
@@ -164,126 +206,153 @@ void ParallelDeconvolution::ExecuteMajorIteration(class ImageSet& dataImage, cla
 		_algorithms.front()->ExecuteMajorIteration(dataImage, modelImage, psfImages, width, height, reachedMajorThreshold);
 	}
 	else {
-		const size_t
-			avgHSubImageSize = width / _horImages,
-			avgVSubImageSize = height / _verImages;
-		
-		Image
-			image(width, height, *_allocator),
-			scratch(width, height, *_allocator),
-			dividingLines(width, height, 0.0, *_allocator);
-		dataImage.GetLinearIntegrated(image.data());
-		
-		Subdivision divisor(width, height);
-				
-		// Make the horizontal subdivisions (i.e. the vertical lines)
-		for(size_t divNr=1; divNr!=_horImages; ++divNr)
-		{
-			Logger::Debug << "Vertical division " << divNr << '\n';
-			size_t
-				splitStart = width * divNr / _horImages - avgHSubImageSize/4,
-				splitEnd = width * divNr / _horImages + avgHSubImageSize/4;
-			divisor.DivideVertically(image.data(), scratch.data(), splitStart, splitEnd);
-			dividingLines += scratch;
-		}
-		
-		// Make the vertical subdivisions (horizontal lines)
-		for(size_t divNr=1; divNr!=_verImages; ++divNr)
-		{
-			Logger::Debug << "Horizontal division " << divNr << '\n';
-			size_t
-				splitStart = height * divNr / _verImages - avgVSubImageSize/4,
-				splitEnd = height * divNr / _verImages + avgVSubImageSize/4;
-			divisor.DivideHorizontally(image.data(), scratch.data(), splitStart, splitEnd);
-			dividingLines += scratch;
-		}
-		
-		// Find the bounding boxes and clean masks for each subimage
-		ao::uvector<bool>
-			mask(width * height),
-			visited(width * height,  false);
-		std::vector<SubImage> subImages;
-		for(size_t y=0; y!=_verImages; ++y)
-		{
-			for(size_t x=0; x!=_horImages; ++x)
-			{
-				size_t
-					midX = x * width / _horImages + avgHSubImageSize/2,
-					midY = y * height / _verImages + avgVSubImageSize/2;
-				subImages.emplace_back();
-				SubImage& subImage = subImages.back();
-				subImage.index = subImages.size()-1;
-				divisor.GetBoundingMask(dividingLines.data(), midX, midY, mask.data(), visited.data(), subImage.x, subImage.y, subImage.width, subImage.height);
-				Logger::Debug << "Subimage " << subImages.size() << " at (" << subImage.x << "," << subImage.y << ") - (" << subImage.x+subImage.width << "," << subImage.y+subImage.height << ")\n";
-				subImage.mask.resize(subImage.width * subImage.height);
-				Image::TrimBox(subImage.mask.data(), subImage.x, subImage.y, subImage.width, subImage.height, mask.data(), width, height);
-				
-				// If a user mask is active, take the union of that mask with the division mask
-				// (note that 'mask' is reused as a scratch space)
-				if(_mask != nullptr)
-				{
-					Image::TrimBox(mask.data(), subImage.x, subImage.y, subImage.width, subImage.height, _mask, width, height);
-					for(size_t i=0; i!=subImage.mask.size(); ++i)
-						subImage.mask[i] = subImage.mask[i] && mask[i];
-				}
-			}
-		}
-		std::mutex mutex;
-		
-		// Find the starting peak over all subimages
-		ao::parallel_for<size_t>(0, _algorithms.size(),
-			[&](size_t index)
-		{
-			runSubImage(subImages[index], dataImage, modelImage, psfImages, 0.0, true, &mutex);
-		});
-		double maxValue = 0.0;
-		size_t indexOfMax = 0;
-		for(SubImage& img : subImages)
-		{
-			if(img.peak > maxValue)
-			{
-				maxValue = img.peak;
-				indexOfMax = img.index;
-			}
-		}
-		Logger::Info << "Subimage " << (indexOfMax+1) << " has maximum peak of " <<
-			FluxDensity::ToNiceString(maxValue) << ".\n";
-		double mIterThreshold = maxValue * (1.0-_settings.deconvolutionMGain);
-		
-		// Run the deconvolution
-		ao::parallel_for<size_t>(0, _algorithms.size(),
-			[&](size_t index)
-		{
-			runSubImage(subImages[index], dataImage, modelImage, psfImages, mIterThreshold, false, &mutex);
-		});
-		
-		reachedMajorThreshold = false;
-		for(SubImage& img : subImages)
-			reachedMajorThreshold = reachedMajorThreshold || img.reachedMajorThreshold;
+		executeParallelRun(dataImage, modelImage, psfImages, reachedMajorThreshold);
 	}
 }
+
+void ParallelDeconvolution::executeParallelRun(class ImageSet& dataImage, class ImageSet& modelImage, const ao::uvector<const double *>& psfImages, bool& reachedMajorThreshold)
+{
+	const size_t
+		width = _settings.trimmedImageWidth,
+		height = _settings.trimmedImageHeight,
+		avgHSubImageSize = width / _horImages,
+		avgVSubImageSize = height / _verImages;
+	
+	Image
+		image(width, height, *_allocator),
+		scratch(width, height, *_allocator),
+		dividingLines(width, height, 0.0, *_allocator);
+	dataImage.GetLinearIntegrated(image.data());
+	
+	Subdivision divisor(width, height);
+			
+	// Make the horizontal subdivisions (i.e. the vertical lines)
+	for(size_t divNr=1; divNr!=_horImages; ++divNr)
+	{
+		Logger::Debug << "Vertical division " << divNr << '\n';
+		size_t
+			splitStart = width * divNr / _horImages - avgHSubImageSize/4,
+			splitEnd = width * divNr / _horImages + avgHSubImageSize/4;
+		divisor.DivideVertically(image.data(), scratch.data(), splitStart, splitEnd);
+		dividingLines += scratch;
+	}
+	
+	// Make the vertical subdivisions (horizontal lines)
+	for(size_t divNr=1; divNr!=_verImages; ++divNr)
+	{
+		Logger::Debug << "Horizontal division " << divNr << '\n';
+		size_t
+			splitStart = height * divNr / _verImages - avgVSubImageSize/4,
+			splitEnd = height * divNr / _verImages + avgVSubImageSize/4;
+		divisor.DivideHorizontally(image.data(), scratch.data(), splitStart, splitEnd);
+		dividingLines += scratch;
+	}
+	
+	// Find the bounding boxes and clean masks for each subimage
+	ao::uvector<bool>
+		mask(width * height),
+		visited(width * height,  false);
+	std::vector<SubImage> subImages;
+	for(size_t y=0; y!=_verImages; ++y)
+	{
+		for(size_t x=0; x!=_horImages; ++x)
+		{
+			size_t
+				midX = x * width / _horImages + avgHSubImageSize/2,
+				midY = y * height / _verImages + avgVSubImageSize/2;
+			subImages.emplace_back();
+			SubImage& subImage = subImages.back();
+			subImage.index = subImages.size()-1;
+			divisor.GetBoundingMask(dividingLines.data(), midX, midY, mask.data(), visited.data(), subImage.x, subImage.y, subImage.width, subImage.height);
+			Logger::Debug << "Subimage " << subImages.size() << " at (" << subImage.x << "," << subImage.y << ") - (" << subImage.x+subImage.width << "," << subImage.y+subImage.height << ")\n";
+			subImage.mask.resize(subImage.width * subImage.height);
+			Image::TrimBox(subImage.mask.data(), subImage.x, subImage.y, subImage.width, subImage.height, mask.data(), width, height);
+			
+			// If a user mask is active, take the union of that mask with the division mask
+			// (note that 'mask' is reused as a scratch space)
+			if(_mask != nullptr)
+			{
+				Image::TrimBox(mask.data(), subImage.x, subImage.y, subImage.width, subImage.height, _mask, width, height);
+				for(size_t i=0; i!=subImage.mask.size(); ++i)
+					subImage.mask[i] = subImage.mask[i] && mask[i];
+			}
+		}
+	}
+	std::mutex mutex;
+	
+	// Find the starting peak over all subimages
+	ao::ParallelFor<size_t> loop(System::ProcessorCount());
+	loop.Run(0, _algorithms.size(), [&](size_t index, size_t)
+	{
+		runSubImage(subImages[index], dataImage, modelImage, psfImages, 0.0, true, &mutex);
+	});
+	double maxValue = 0.0;
+	size_t indexOfMax = 0;
+	for(SubImage& img : subImages)
+	{
+		if(img.peak > maxValue)
+		{
+			maxValue = img.peak;
+			indexOfMax = img.index;
+		}
+	}
+	Logger::Info << "Subimage " << (indexOfMax+1) << " has maximum peak of " <<
+		FluxDensity::ToNiceString(maxValue) << ".\n";
+	double mIterThreshold = maxValue * (1.0-_settings.deconvolutionMGain);
+	
+	// Run the deconvolution
+	loop.Run(0, _algorithms.size(), [&](size_t index, size_t)
+	{
+		runSubImage(subImages[index], dataImage, modelImage, psfImages, mIterThreshold, false, &mutex);
+	});
+	
+	_rmsImage.reset();
+	
+	size_t subImagesFinished = 0;
+	reachedMajorThreshold = false;
+	bool reachedMaxNIter = false;
+	for(SubImage& img : subImages)
+	{
+		if(!img.reachedMajorThreshold)
+			++subImagesFinished;
+		if(_algorithms[img.index]->IterationNumber() >= _algorithms[img.index]->MaxNIter())
+			reachedMaxNIter = true;
+	}
+	Logger::Info << subImagesFinished << " / " << subImages.size() << " sub-images finished";
+	reachedMajorThreshold = (subImagesFinished!=subImages.size());
+	if(reachedMajorThreshold && !reachedMaxNIter)
+		Logger::Info << ": Continue next major iteration.\n";
+	else if(reachedMajorThreshold && reachedMaxNIter)
+	{
+		Logger::Info << ", but nr. of iterations reached at least once: Deconvolution finished.\n";
+		reachedMajorThreshold = false;
+	}
+	else
+		Logger::Info << ": Deconvolution finished.\n";
+}
+
 
 void ParallelDeconvolution::SaveSourceList(CachedImageSet& modelImages, const ImagingTable& table, long double phaseCentreRA, long double phaseCentreDec)
 {
 	std::string filename = _settings.prefixName + "-sources.txt";
 	if(_settings.useMultiscale)
 	{
-		// TODO correct for parallel case
-		MultiScaleAlgorithm& algorithm =
-			static_cast<MultiScaleAlgorithm&>(*_algorithms.front());
-		algorithm.GetComponentList().Write(filename, algorithm, _settings.pixelScaleX, _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
+		ComponentList *list;
+		if(_algorithms.size() == 1)
+			list = & static_cast<MultiScaleAlgorithm*>(_algorithms.front().get())->GetComponentList();
+		else
+			list = _componentList.get();
+		writeSourceList(*list, filename, phaseCentreRA, phaseCentreDec);
 	}
 	else {
-		// TODO correct for parallel case
 		_allocator->FreeUnused();
 		const size_t
 			w = _settings.trimmedImageWidth,
 			h = _settings.trimmedImageHeight;
-		ImageSet modelSet(&table, *_allocator, _settings.deconvolutionChannelCount,
-			_settings.squaredJoins, _settings.linkedPolarizations, w, h);
+		ImageSet modelSet(&table, *_allocator, _settings, w, h);
 		modelSet.LoadAndAverage(modelImages);
 		ComponentList componentList(w, h, modelSet);
-		componentList.WriteSingleScale(filename, *_algorithms.front(), _settings.pixelScaleX, _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
+		writeSourceList(componentList, filename, phaseCentreRA, phaseCentreDec);
 	}
 }
 
@@ -307,13 +376,11 @@ void ParallelDeconvolution::SavePBSourceList(CachedImageSet& modelImages, const 
 		h = _settings.trimmedImageHeight;
 	if(_settings.useMultiscale)
 	{
-		MultiScaleAlgorithm& algorithm =
-			static_cast<MultiScaleAlgorithm&>(*_algorithms.front());
-		list.reset(new ComponentList(algorithm.GetComponentList()));
+		list.reset(new ComponentList(*_componentList));
 	}
 	else {
 		_allocator->FreeUnused();
-		ImageSet modelSet(&table, *_allocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _settings.linkedPolarizations, w, h);
+		ImageSet modelSet(&table, *_allocator, _settings, w, h);
 		modelSet.LoadAndAverage(modelImages);
 		list.reset(new ComponentList(w, h, modelSet));
 	}
@@ -339,14 +406,25 @@ void ParallelDeconvolution::SavePBSourceList(CachedImageSet& modelImages, const 
 	}
 	
 	std::string filename = _settings.prefixName + "-sources-pb.txt";
+	writeSourceList(*list, filename, phaseCentreRA, phaseCentreDec);
+}
+
+void ParallelDeconvolution::writeSourceList(ComponentList& componentList, const std::string& filename, long double phaseCentreRA, long double phaseCentreDec) const
+{
 	if(_settings.useMultiscale)
 	{
-		MultiScaleAlgorithm& algorithm =
-			static_cast<MultiScaleAlgorithm&>(*_algorithms.front());
-		list->Write(filename, algorithm, _settings.pixelScaleX, _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
+		MultiScaleAlgorithm* maxAlgorithm =
+			static_cast<MultiScaleAlgorithm*>(_algorithms.front().get());
+		for(size_t i=1; i!=_algorithms.size(); ++i)
+		{
+			MultiScaleAlgorithm* mAlg = static_cast<MultiScaleAlgorithm*>(_algorithms[i].get());
+			if(mAlg->ScaleCount() > maxAlgorithm->ScaleCount())
+				maxAlgorithm = mAlg;
+		}
+		componentList.Write(filename, *maxAlgorithm, _settings.pixelScaleX, _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
 	}
 	else {
-		list->WriteSingleScale(filename, *_algorithms.front(), _settings.pixelScaleX, _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
+		componentList.WriteSingleScale(filename, *_algorithms.front(), _settings.pixelScaleX, _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
 	}
 }
 

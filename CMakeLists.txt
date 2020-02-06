@@ -19,6 +19,8 @@ endif(PORTABLE)
 # Casacore has a separate CMake file in this directory
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/CMake)
 
+find_package(HDF5 COMPONENTS C CXX REQUIRED)
+
 SET(CASACORE_MAKE_REQUIRED_EXTERNALS_OPTIONAL TRUE)
 find_package(Casacore REQUIRED COMPONENTS casa ms tables measures fits)
 find_package(CFITSIO REQUIRED)
@@ -27,7 +29,7 @@ find_library(FFTW3_LIB fftw3 REQUIRED)
 find_library(FFTW3_THREADS_LIB fftw3_threads REQUIRED)
 #Prevent accidentally finding old BoostConfig.cmake file from casapy
 set(Boost_NO_BOOST_CMAKE ON)
-find_package(Boost COMPONENTS date_time filesystem thread system program_options REQUIRED)
+find_package(Boost COMPONENTS date_time filesystem system program_options REQUIRED)
 find_library(PTHREAD_LIB pthread REQUIRED)
 find_library(DL_LIB dl REQUIRED)
 find_path(FFTW3_INCLUDE_DIR NAMES fftw3.h)
@@ -35,9 +37,7 @@ find_library(GSL_LIB NAMES gsl)
 find_path(GSL_INCLUDE_DIR NAMES gsl/gsl_version.h)
 find_library(GSL_CBLAS_LIB NAMES gslcblas)
 
-set(CASA_LIBS ${CASA_MS_LIB} ${CASA_TABLES_LIB} ${CASA_MEASURES_LIB} ${CASA_CASA_LIB} ${CASA_FITS_LIB} ${DL_LIB})
-
-find_path(LOFAR_STATION_RESPONSE_DIR NAMES StationResponse/Station.h)
+find_path(LOFAR_STATION_RESPONSE_DIR NAMES StationResponse/ITRFConverter.h)
 find_library(LOFAR_STATION_RESPONSE_LIB stationresponse)
 if(LOFAR_STATION_RESPONSE_DIR AND LOFAR_STATION_RESPONSE_LIB)
   include_directories(${LOFAR_STATION_RESPONSE_DIR})
@@ -71,6 +71,7 @@ include_directories(${Boost_INCLUDE_DIR})
 include_directories(${CFITSIO_INCLUDE_DIR})
 include_directories(${FFTW3_INCLUDE_DIR})
 include_directories(${GSL_INCLUDE_DIR})
+include_directories(${HDF5_INCLUDE_DIRS})
 
 include(CheckCXXSourceCompiles)
 
@@ -99,17 +100,21 @@ configure_file("${PROJECT_SOURCE_DIR}/wscversion.h.in" "${PROJECT_BINARY_DIR}/ws
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 add_library(wsclean-object OBJECT
-  casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmanager.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp polynomialchannelfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp
-  deconvolution/clarkloop.cpp deconvolution/componentlist.cpp deconvolution/deconvolution.cpp deconvolution/deconvolutionalgorithm.cpp deconvolution/genericclean.cpp deconvolution/imageset.cpp deconvolution/paralleldeconvolution.cpp deconvolution/moresane.cpp deconvolution/simpleclean.cpp deconvolution/spectralfitter.cpp
+  casamaskreader.cpp dftpredictionalgorithm.cpp fftconvolver.cpp fftresampler.cpp fftwmanager.cpp fitsiochecker.cpp fitsreader.cpp fitswriter.cpp gaussianfitter.cpp image.cpp imageweights.cpp modelrenderer.cpp multibanddata.cpp nlplfitter.cpp parsetreader.cpp polynomialchannelfitter.cpp polynomialfitter.cpp progressbar.cpp rmsimage.cpp stopwatch.cpp system.cpp
+  atca/atcabeam.cpp
+  aterms/atermbase.cpp aterms/cache.cpp aterms/fitsaterm.cpp aterms/mwabeamterm.cpp
+  deconvolution/componentlist.cpp deconvolution/deconvolution.cpp deconvolution/deconvolutionalgorithm.cpp deconvolution/genericclean.cpp deconvolution/imageset.cpp deconvolution/paralleldeconvolution.cpp deconvolution/moresane.cpp deconvolution/simpleclean.cpp deconvolution/spectralfitter.cpp deconvolution/subminorloop.cpp
   interface/wscleaninterface.cpp
   iuwt/imageanalysis.cpp iuwt/iuwtdecomposition.cpp iuwt/iuwtdeconvolutionalgorithm.cpp iuwt/iuwtmask.cpp
   lofar/lbeamimagemaker.cpp
   model/model.cpp
-  msproviders/averagingmsrowprovider.cpp msproviders/contiguousms.cpp msproviders/directmsrowprovider.cpp msproviders/msprovider.cpp msproviders/msrowprovider.cpp msproviders/partitionedms.cpp
+  msproviders/averagingmsrowprovider.cpp msproviders/contiguousms.cpp msproviders/directmsrowprovider.cpp msproviders/msprovider.cpp msproviders/msrowprovider.cpp msproviders/partitionedms.cpp msproviders/synchronizedms.cpp
   multiscale/multiscalealgorithm.cpp multiscale/multiscaletransforms.cpp multiscale/threadeddeconvolutiontools.cpp
-  wsclean/commandline.cpp wsclean/imagingtable.cpp wsclean/logger.cpp wsclean/msgridderbase.cpp wsclean/wscfitswriter.cpp wsclean/wsclean.cpp
-  wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/lofarcentroidgridding.cpp wsclean/wstackinggridder.cpp
-	${LBEAM_FILES} ${IDG_FILES})
+  mwa/beam2016implementation.cpp mwa/mwabeam.cpp mwa/tilebeam2016.cpp mwa/tilebeambase.cpp
+  wsclean/commandline.cpp wsclean/directmsgridder.cpp wsclean/griddingtaskmanager.cpp wsclean/imageoperations.cpp wsclean/imagingtable.cpp
+  wsclean/logger.cpp wsclean/primarybeam.cpp wsclean/msgridderbase.cpp wsclean/wscfitswriter.cpp
+  wsclean/wsclean.cpp wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/wstackinggridder.cpp
+  ${LBEAM_FILES} ${IDG_FILES})
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
 
@@ -124,13 +129,13 @@ target_link_libraries(wsclean-shared)
 set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 
 add_executable(wsclean wscleanmain.cpp)
-target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
+target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
 
 #add_executable(interfaceexample EXCLUDE_FROM_ALL interface/interfaceexample.c)
 #target_link_libraries(interfaceexample wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
 
 add_executable(wsuvbinning EXCLUDE_FROM_ALL wsclean/examples/wsuvbinning.cpp ${WSCLEANFILES})
-target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
+target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
 
 install(TARGETS wsclean DESTINATION bin)
 install(TARGETS wsclean-lib DESTINATION lib)
@@ -162,11 +167,12 @@ if(Boost_FOUND)
 		tests/testimagebufferallocator.cpp
 		tests/testimageset.cpp
 		tests/testmatrix2x2.cpp
+		tests/testparsetreader.cpp
 		tests/testpolynomialchannelfitter.cpp
 		tests/testpolynomialfitter.cpp
 		tests/testradeccoord.cpp
 		${WSCLEANFILES})
-  target_link_libraries(runtest ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
+  target_link_libraries(runtest ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
   add_test(runtest runtest)
   add_custom_target(check COMMAND runtest DEPENDS runtest)
 else()

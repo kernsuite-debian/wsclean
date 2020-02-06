@@ -32,6 +32,7 @@ public:
 	 */
 	double lowestFrequency, highestFrequency;
 	double bandStartFrequency, bandEndFrequency;
+	double siCorrection;
 	size_t inputChannelCount;
 	
 	PolarizationEnum polarization;
@@ -82,6 +83,7 @@ public:
 	 * It is set after the first inversion.
 	 */
 	double imageWeight;
+	double normalizationFactor;
 };
 
 class ImagingTable

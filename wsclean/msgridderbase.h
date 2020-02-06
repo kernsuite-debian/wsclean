@@ -6,6 +6,8 @@
 #include "../multibanddata.h"
 #include "../uvector.h"
 
+#include <mutex>
+
 class MSGridderBase : public MeasurementSetGridder
 {
 public:
@@ -21,6 +23,20 @@ public:
 	virtual double ImageWeight() const final override { return _totalWeight; }
 	virtual double NormalizationFactor() const final override { return _totalWeight; }
 	virtual double BeamSize() const final override { return _theoreticalBeamSize; }
+	
+	struct ObservationInfo ObservationInfo() const {
+		struct ObservationInfo info;
+		info.phaseCentreRA = PhaseCentreRA();
+		info.phaseCentreDec = PhaseCentreDec();
+		info.startTime = StartTime();
+		info.hasDenormalPhaseCentre = HasDenormalPhaseCentre();
+		info.phaseCentreDL = PhaseCentreDL();
+		info.phaseCentreDM = PhaseCentreDM();
+		info.telescopeName = TelescopeName();
+		info.fieldName = FieldName();
+		info.observer = Observer();
+		return info;
+	}
 	
 	/**
 	 * This is the sum of the weights as given by the measurement set, before the
@@ -52,12 +68,19 @@ public:
 	
 	const std::string& FieldName() const { return _fieldName; }
 	
+	class AverageBeamBase
+	{
+	public:
+			virtual ~AverageBeamBase() {}
+	};
+
 	struct MetaDataCache
 	{
 		struct Entry {
 			double minW, maxW, maxWWithFlags, maxBaselineUVW, maxBaselineInM;
 		};
 		std::vector<Entry> msDataVector;
+		std::unique_ptr<AverageBeamBase> averageBeam;
 	};
 	
 	void SetMetaDataCache(MetaDataCache* cache) { _metaDataCache = cache; }
@@ -160,6 +183,9 @@ protected:
 	double totalWeight() const { return _totalWeight; }
 	
 	void initializeMSDataVector(std::vector<MSData>& msDataVector);
+
+	struct MetaDataCache* _metaDataCache;
+
 	
 private:
 	template<size_t PolarizationCount>
@@ -175,7 +201,6 @@ private:
 	double _freqHigh, _freqLow;
 	double _bandStart, _bandEnd;
 	double _startTime;
-	struct MetaDataCache* _metaDataCache;
 	
 	double _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
 	bool _denormalPhaseCentre;
