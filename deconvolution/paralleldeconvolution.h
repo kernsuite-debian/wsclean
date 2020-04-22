@@ -2,6 +2,7 @@
 #define PARALLEL_DECONVOLUTION_H
 
 #include "../fftwmanager.h"
+#include "../image.h"
 #include "../uvector.h"
 
 #include <memory>
@@ -11,15 +12,9 @@
 class ParallelDeconvolution
 {
 public:
-	ParallelDeconvolution(const class WSCleanSettings& settings) :
-		_horImages(0),
-		_verImages(0),
-		_settings(settings),
-		_allocator(nullptr),
-		_mask(nullptr),
-		_trackPerScaleMasks(false),
-		_usePerScaleMasks(false)
-	{ }
+	ParallelDeconvolution(const class WSCleanSettings& settings);
+	
+	~ParallelDeconvolution();
 	
 	class DeconvolutionAlgorithm& FirstAlgorithm()
 	{
@@ -33,12 +28,6 @@ public:
 	void SetAllocator(class ImageBufferAllocator* allocator)
 	{
 		_allocator = allocator;
-	}
-	
-	[[ deprecated("Use the unique_ptr version") ]]
-	void SetAlgorithm(class DeconvolutionAlgorithm* algorithm)
-	{
-		SetAlgorithm(std::unique_ptr<class DeconvolutionAlgorithm>(algorithm));
 	}
 	
 	void SetAlgorithm(std::unique_ptr<class DeconvolutionAlgorithm> algorithm);
@@ -71,6 +60,8 @@ public:
 	class FFTWManager& GetFFTWManager() { return _fftwManager; }
 	
 private:
+	void executeParallelRun(class ImageSet& dataImage, class ImageSet& modelImage, const ao::uvector<const double*>& psfImages, bool& reachedMajorThreshold);
+	
 	struct SubImage {
 		size_t index, x, y, width, height;
 		ao::uvector<bool> mask;
@@ -84,6 +75,8 @@ private:
 	
 	void loadAveragePrimaryBeam(class PrimaryBeamImageSet& beamImages, size_t imageIndex, const class ImagingTable& table) const;
 	
+	void writeSourceList(ComponentList& componentList, const std::string& filename, long double phaseCentreRA, long double phaseCentreDec) const;
+	
 	FFTWManager _fftwManager;
 	std::vector<std::unique_ptr<class DeconvolutionAlgorithm>> _algorithms;
 	size_t _horImages, _verImages;
@@ -92,6 +85,8 @@ private:
 	const bool* _mask;
 	bool _trackPerScaleMasks, _usePerScaleMasks;
 	std::vector<ao::uvector<bool>> _scaleMasks;
+	std::unique_ptr<class ComponentList> _componentList;
+	Image _rmsImage;
 };
 
 #endif

@@ -67,6 +67,10 @@ public:
 	{
 		return _scaleInfos.size();
 	}
+	void ClearComponentList() 
+	{
+		_componentList.reset();
+	}
 	ComponentList& GetComponentList() 
 	{
 		return *_componentList;
@@ -79,6 +83,14 @@ public:
 	{
 		return _scaleInfos[scaleIndex].scale; 
 	}
+	size_t GetScaleMaskCount() const
+	{
+		return _scaleMasks.size();
+	}
+	void SetScaleMaskCount(size_t n)
+	{
+		_scaleMasks.resize(n);
+	}
 	ao::uvector<bool>& GetScaleMask(size_t index)
 	{
 		return _scaleMasks[index];
@@ -86,7 +98,7 @@ public:
 private:
 	class ImageBufferAllocator& _allocator;
 	FFTWManager& _fftwManager;
-	size_t _width, _height, _convolutionWidth, _convolutionHeight;
+	size_t _width, _height;
 	double _convolutionPadding;
 	double _beamSizeInPixels;
 	double _multiscaleScaleBias;
@@ -141,8 +153,8 @@ private:
 	
 	void findPeakDirect(const double *image, double* scratch, size_t scaleIndex);
 	
-	double* getConvolvedPSF(size_t psfIndex, size_t scaleIndex, const ao::uvector<const double*>& psfs, double* scratch, const std::unique_ptr<std::unique_ptr<ImageBufferAllocator::Ptr[]>[]>& convolvedPSFs);
-	
+	double* getConvolvedPSF(size_t psfIndex, size_t scaleIndex, const std::unique_ptr<std::unique_ptr<ImageBufferAllocator::Ptr[]>[]>& convolvedPSFs);
+	void getConvolutionDimensions(size_t scaleIndex, size_t& width, size_t& height) const;
 };
 
 #endif

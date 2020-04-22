@@ -28,11 +28,11 @@ MSGridderBase::MSGridderBase() :
 	_theoreticalBeamSize(0.0),
 	_actualInversionWidth(0), _actualInversionHeight(0),
 	_actualPixelSizeX(0), _actualPixelSizeY(0),
+	_metaDataCache(nullptr),
 	_hasFrequencies(false),
 	_freqHigh(0.0), _freqLow(0.0),
 	_bandStart(0.0), _bandEnd(0.0),
 	_startTime(0.0),
-	_metaDataCache(nullptr),
 	_phaseCentreRA(0.0), _phaseCentreDec(0.0),
 	_phaseCentreDL(0.0), _phaseCentreDM(0.0),
 	_denormalPhaseCentre(false),
@@ -50,12 +50,12 @@ void MSGridderBase::GetPhaseCentreInfo(casacore::MeasurementSet& ms, size_t fiel
 	casacore::MSAntenna aTable = ms.antenna();
 	size_t antennaCount = aTable.nrow();
 	if(antennaCount == 0) throw std::runtime_error("No antennae in set");
-	casacore::MPosition::ROScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
+	casacore::MPosition::ScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
 	casacore::MPosition ant1Pos = antPosColumn(0);
 	
-	casacore::MEpoch::ROScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
+	casacore::MEpoch::ScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
 	casacore::MSField fTable(ms.field());
-	casacore::MDirection::ROScalarColumn phaseDirColumn(fTable, fTable.columnName(casacore::MSFieldEnums::PHASE_DIR));
+	casacore::MDirection::ScalarColumn phaseDirColumn(fTable, fTable.columnName(casacore::MSFieldEnums::PHASE_DIR));
 	casacore::MDirection phaseDir = phaseDirColumn(fieldId);
 	casacore::MEpoch curtime = timeColumn(0);
 	casacore::MeasFrame frame(ant1Pos, curtime);
@@ -142,7 +142,7 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData)
 						uInL = uInM/wavelength, vInL = vInM/wavelength,
 						x = uInL * PixelSizeX() * ImageWidth(),
 						y = vInL * PixelSizeY() * ImageHeight(),
-						imagingWeight = this->PrecalculatedWeightInfo()->GetWeight(uInL, vInL);
+						imagingWeight = PrecalculatedWeightInfo()->GetWeight(uInL, vInL);
 					if(imagingWeight != 0.0)
 					{
 						if(floor(x) > -halfWidth  && ceil(x) < halfWidth &&
@@ -204,13 +204,13 @@ void MSGridderBase::initializeMetaData(casacore::MeasurementSet& ms, size_t fiel
 	casacore::MSObservation oTable = ms.observation();
 	size_t obsCount = oTable.nrow();
 	if(obsCount == 0) throw std::runtime_error("No observations in set");
-	casacore::ROScalarColumn<casacore::String> telescopeNameColumn(oTable, oTable.columnName(casacore::MSObservation::TELESCOPE_NAME));
-	casacore::ROScalarColumn<casacore::String> observerColumn(oTable, oTable.columnName(casacore::MSObservation::OBSERVER));
+	casacore::ScalarColumn<casacore::String> telescopeNameColumn(oTable, oTable.columnName(casacore::MSObservation::TELESCOPE_NAME));
+	casacore::ScalarColumn<casacore::String> observerColumn(oTable, oTable.columnName(casacore::MSObservation::OBSERVER));
 	_telescopeName = telescopeNameColumn(0);
 	_observer = observerColumn(0);
 	
 	casacore::MSField fTable = ms.field();
-	casacore::ROScalarColumn<casacore::String> fieldNameColumn(fTable, fTable.columnName(casacore::MSField::NAME));
+	casacore::ScalarColumn<casacore::String> fieldNameColumn(fTable, fTable.columnName(casacore::MSField::NAME));
 	_fieldName = fieldNameColumn(fieldId);
 }
 
@@ -218,16 +218,16 @@ void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData, Meta
 {
 	MSProvider& msProvider = MeasurementSet(msData.msIndex);
 	msData.msProvider = &msProvider;
-	casacore::MeasurementSet& ms(msProvider.MS());
-	if(ms.nrow() == 0) throw std::runtime_error("Table has no rows (no data)");
+	SynchronizedMS ms(msProvider.MS());
+	if(ms->nrow() == 0) throw std::runtime_error("Table has no rows (no data)");
 	
-	initializeBandData(ms, msData);
+	initializeBandData(*ms, msData);
 	
 	calculateMSLimits(msData.SelectedBand(), msProvider.StartTime());
 	
-	initializePhaseCentre(ms, Selection(msData.msIndex).FieldId());
+	initializePhaseCentre(*ms, Selection(msData.msIndex).FieldId());
 	
-	initializeMetaData(ms, Selection(msData.msIndex).FieldId());
+	initializeMetaData(*ms, Selection(msData.msIndex).FieldId());
 	
 	if(isCacheInitialized)
 	{
@@ -311,8 +311,12 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector)
 	{
 		size_t suggestedGridSize = getSuggestedWGridSize();
 		if(!HasWGridSize())
-			SetWGridSize(suggestedGridSize);
+			SetActualWGridSize(suggestedGridSize);
+		else
+			SetActualWGridSize(WGridSize());
 	}
+	else 
+		SetActualWGridSize(WGridSize());
 }
 
 template<size_t PolarizationCount>

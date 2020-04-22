@@ -1,5 +1,6 @@
 #include "deconvolution.h"
 
+#include "imageset.h"
 #include "simpleclean.h"
 #include "moresane.h"
 #include "iuwtdeconvolution.h"
@@ -39,9 +40,9 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	
 	_imageAllocator->FreeUnused();
 	ImageSet
-		residualSet(&groupTable, *_imageAllocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _settings.linkedPolarizations, _imgWidth, _imgHeight),
-		modelSet(&groupTable, *_imageAllocator, _settings.deconvolutionChannelCount, _settings.squaredJoins, _settings.linkedPolarizations, _imgWidth, _imgHeight);
-		
+		residualSet(&groupTable, *_imageAllocator, _settings, _imgWidth, _imgHeight),
+		modelSet(&groupTable, *_imageAllocator, _settings, _imgWidth, _imgHeight);
+	
 	residualSet.LoadAndAverage(*_residualImages);
 	modelSet.LoadAndAverage(*_modelImages);
 	
@@ -103,10 +104,10 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 		_parallelDeconvolution.SetThreshold(std::max(stddev * _settings.autoDeconvolutionThresholdSigma, _settings.deconvolutionThreshold));
 	integrated.reset();
 	
-	std::vector<ao::uvector<double>> psfVecs(groupTable.SquaredGroupCount());
+	std::vector<ao::uvector<double>> psfVecs(residualSet.PSFCount());
 	residualSet.LoadAndAveragePSFs(*_psfImages, psfVecs, _psfPolarization);
 	
-	ao::uvector<const double*> psfs(groupTable.SquaredGroupCount());
+	ao::uvector<const double*> psfs(residualSet.PSFCount());
 	for(size_t i=0; i!=psfVecs.size(); ++i)
 		psfs[i] = psfVecs[i].data();
 	
@@ -169,10 +170,10 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	_psfPolarization = psfPolarization;
 	_beamSize = beamSize;
 	_autoMaskIsFinished = false;
+	_autoMask.clear();
 	FreeDeconvolutionAlgorithms();
 	_parallelDeconvolution.SetAllocator(imageAllocator);
-	_summedCount = groupTable.SquaredGroupCount();
-	if(_summedCount == 0)
+	if(groupTable.SquaredGroupCount() == 0)
 		throw std::runtime_error("Nothing to clean");
 	
 	if(!std::isfinite(_beamSize))
@@ -182,9 +183,9 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	}
 	
 	ImagingTable firstSquaredGroup = groupTable.GetSquaredGroup(0);
-	_squaredCount = firstSquaredGroup.EntryCount();
+	size_t squaredCount = firstSquaredGroup.EntryCount();
 	_polarizations.clear();
-	for(size_t p=0; p!=_squaredCount; ++p)
+	for(size_t p=0; p!=squaredCount; ++p)
 	{
 		if(_polarizations.count(firstSquaredGroup[p].polarization) != 0)
 			throw std::runtime_error("Two equal polarizations were given to the deconvolution algorithm within a single polarized group");
@@ -221,7 +222,7 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	}
 	else
 	{
-		algorithm.reset(new GenericClean(*_imageAllocator, _parallelDeconvolution.GetFFTWManager(), _settings.useClarkOptimization));
+		algorithm.reset(new GenericClean(*_imageAllocator, _parallelDeconvolution.GetFFTWManager(), _settings.useSubMinorOptimization));
 	}
 	
 	algorithm->SetMaxNIter(_settings.deconvolutionIterationCount);
@@ -234,9 +235,8 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	algorithm->SetThreadCount(threadCount);
 	algorithm->SetSpectralFittingMode(_settings.spectralFittingMode, _settings.spectralFittingTerms);
 	
-	ao::uvector<double> frequencies, weights;
-	calculateDeconvolutionFrequencies(groupTable, frequencies, weights);
-	algorithm->InitializeFrequencies(frequencies, weights);
+	ImageSet::CalculateDeconvolutionFrequencies(groupTable, _channelFrequencies, _channelWeights, _settings.deconvolutionChannelCount);
+	algorithm->InitializeFrequencies(_channelFrequencies, _channelWeights);
 	_parallelDeconvolution.SetAlgorithm(std::move(algorithm));
 	
 	readMask(groupTable);
@@ -244,6 +244,7 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 
 void Deconvolution::readMask(const ImagingTable& groupTable)
 {
+	bool hasMask = false;
 	if(!_settings.fitsDeconvolutionMask.empty())
 	{
 		FitsReader maskReader(_settings.fitsDeconvolutionMask, true, true);
@@ -257,7 +258,7 @@ void Deconvolution::readMask(const ImagingTable& groupTable)
 		}
 		else if(maskReader.NFrequencies()==_settings.channelsOut) {
 			Logger::Debug << "Reading mask '" << _settings.fitsDeconvolutionMask << "' (" << (groupTable.Front().outputChannelIndex+1) << ")...\n";
-			maskReader.ReadFrequency(maskData.data(), groupTable.Front().outputChannelIndex);
+			maskReader.ReadIndex(maskData.data(), groupTable.Front().outputChannelIndex);
 		}
 		else {
 			std::stringstream msg;
@@ -267,7 +268,8 @@ void Deconvolution::readMask(const ImagingTable& groupTable)
 		_cleanMask.assign(_imgWidth*_imgHeight, false);
 		for(size_t i=0; i!=_imgWidth*_imgHeight; ++i)
 			_cleanMask[i] = (maskData[i]!=0.0);
-		_parallelDeconvolution.SetCleanMask(_cleanMask.data());
+		
+		hasMask = true;
 	} else if(!_settings.casaDeconvolutionMask.empty())
 	{
 		if(_cleanMask.empty())
@@ -279,28 +281,49 @@ void Deconvolution::readMask(const ImagingTable& groupTable)
 				throw std::runtime_error("Specified CASA mask did not have same dimensions as output image!");
 			maskReader.Read(_cleanMask.data());
 		}
-		_parallelDeconvolution.SetCleanMask(_cleanMask.data());
+		
+		hasMask = true;
 	}
-}
-
-void Deconvolution::calculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights)
-{
-	size_t deconvolutionChannels = _settings.deconvolutionChannelCount;
-	if(deconvolutionChannels == 0) deconvolutionChannels = _summedCount;
-	frequencies.assign(deconvolutionChannels, 0.0);
-	weights.assign(deconvolutionChannels, 0.0);
-	ao::uvector<size_t> counts(deconvolutionChannels, 0);
-	for(size_t i=0; i!=_summedCount; ++i)
+	
+	if(_settings.horizonMask)
 	{
-		const ImagingTableEntry& entry = groupTable.GetSquaredGroup(i)[0];
-		double freq = entry.CentralFrequency();
-		size_t deconvolutionChannel = i * deconvolutionChannels / _summedCount;
-		frequencies[deconvolutionChannel] += freq;
-		Logger::Debug << "Weight: " << entry.imageWeight << '\n';
-		weights[deconvolutionChannel] += entry.imageWeight;
-		counts[deconvolutionChannel]++;
-	}
-	for(size_t i=0; i!=deconvolutionChannels; ++i)
-		frequencies[i] /= counts[i];
-}
+		if(!hasMask)
+		{
+			_cleanMask.assign(_imgWidth*_imgHeight, true);
+			hasMask = true;
+		}
 
+		double fovSq = M_PI*0.5 - _settings.horizonMaskDistance;
+		if(fovSq < 0.0) fovSq = 0.0;
+		if(fovSq <= M_PI*0.5)
+			fovSq = std::sin(fovSq);
+		else // a negative horizon distance was given
+			fovSq = 1.0 - _settings.horizonMaskDistance;
+		fovSq = fovSq * fovSq;
+		bool* ptr = _cleanMask.data();
+		
+		for(size_t y=0; y!=_imgHeight; ++y)
+		{
+			for(size_t x=0; x!=_imgWidth; ++x)
+			{
+				double l, m;
+				ImageCoordinates::XYToLM(x, y, _pixelScaleX, _pixelScaleY, _imgWidth, _imgHeight, l, m);
+				if(l*l + m*m >= fovSq)
+					*ptr = false;
+				++ptr;
+			}
+		}
+		
+		Logger::Info << "Saving horizon mask...\n";
+		Image image(_imgWidth, _imgHeight, *_imageAllocator);
+		for(size_t i=0; i!=_imgWidth*_imgHeight; ++i)
+			image[i] = _cleanMask[i] ? 1.0 : 0.0;
+		
+		FitsWriter writer;
+		writer.SetImageDimensions(_imgWidth, _imgHeight,  _settings.pixelScaleX, _settings.pixelScaleY);
+		writer.Write(_settings.prefixName + "-horizon-mask.fits", image.data());
+	}
+	
+	if(hasMask)
+		_parallelDeconvolution.SetCleanMask(_cleanMask.data());
+}

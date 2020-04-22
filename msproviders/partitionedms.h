@@ -41,7 +41,12 @@ public:
 	PartitionedMS(const PartitionedMS&) = delete;
 	PartitionedMS& operator=(const PartitionedMS&) = delete;
 	
-	casacore::MeasurementSet &MS() final override { openMS(); return *_ms; }
+	SynchronizedMS MS() final override
+	{
+		return SynchronizedMS(_msPath.data());
+	}
+	
+	const std::string& DataColumnName() final override { return _handle._data->_dataColumnName; }
 	
 	size_t RowId() const final override { return _currentRow; }
 	
@@ -79,6 +84,8 @@ public:
 	
 	class Handle {
 	public:
+		Handle() = default;
+		
 		friend class PartitionedMS;
 	private:
 		struct HandleData
@@ -120,14 +127,11 @@ public:
 private:
 	static void unpartition(const Handle::HandleData& handle);
 	
-	static void getDataDescIdMap(std::map<size_t,size_t>& dataDescIds, const vector<PartitionedMS::ChannelRange>& channels);
-	
-	void openMS();
+	static void getDataDescIdMap(std::map<size_t,size_t>& dataDescIds, const std::vector<PartitionedMS::ChannelRange>& channels);
 	
 	Handle _handle;
 	std::string _msPath;
 	size_t _partIndex;
-	std::unique_ptr<casacore::MeasurementSet> _ms;
 	std::ifstream _metaFile, _weightFile, _dataFile;
 	char *_modelFileMap;
 	size_t _currentRow;
@@ -180,6 +184,7 @@ private:
 		bool hasModel;
 	} _partHeader;
 	
+	static std::string getFilenamePrefix(const std::string& msPath, const std::string& tempDir);
 	static std::string getPartPrefix(const std::string& msPath, size_t partIndex, PolarizationEnum pol, size_t dataDescId, const std::string& tempDir);
 	static std::string getMetaFilename(const std::string& msPath, const std::string& tempDir, size_t dataDescId);
 };

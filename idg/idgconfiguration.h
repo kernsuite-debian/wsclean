@@ -23,7 +23,7 @@ public:
 
 		po::variables_map vm;
 		Logger::Debug << "trying to open config file\n";
-			std::ifstream ifs("idg.conf");
+		std::ifstream ifs("idg.conf");
 		if (ifs.fail())
 		{
 			Logger::Debug << "could not open config file\n";
@@ -42,7 +42,6 @@ public:
 		{
 			std::string proxy(vm["proxy"].as<std::string>());
 			boost::to_lower(proxy);
-			std::cout << "proxy = " << proxy << std::endl;
 			if (proxy == "cpu-optimized") proxyType = idg::api::Type::CPU_OPTIMIZED;
 			if (proxy == "cpu-reference") proxyType = idg::api::Type::CPU_REFERENCE;
 			if (proxy == "cuda-generic") proxyType = idg::api::Type::CUDA_GENERIC;
