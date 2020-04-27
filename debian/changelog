@@ -1,3 +1,10 @@
+wsclean (2.9-1) unstable; urgency=low
+
+  * New upstream version 2.9. Rediff patches
+  * Push Standards-Version to 4.5.0. No changes needed.
+
+ -- Ole Streicher <olebole@debian.org>  Mon, 27 Apr 2020 13:57:26 +0200
+
 wsclean (2.8-1) unstable; urgency=low
 
   * New upstream version 2.8. Rediff patches
