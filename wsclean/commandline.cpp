@@ -69,6 +69,10 @@ void CommandLine::printHelp()
 		"-save-uv\n"
 		"   Save the gridded uv plane, i.e., the FFT of the residual image. The UV plane is complex, hence\n"
 		"   two images will be output: <prefix>-uv-real.fits and <prefix>-uv-imag.fits.\n"
+		"-reuse-psf <prefix>\n"
+		"   Load the psf(s) from the given prefix and skip the inversion for the psf image.\n"
+		"-reuse-dirty <prefix>\n"
+		"   Load the dirty from the given prefix and skip the inversion for the dirty image.\n"
 		"-apply-primary-beam\n"
 		"   Calculate and apply the primary beam and save images for the Jones components, with weighting identical to the\n"
 		"   weighting as used by the imager. Only available for LOFAR, AARTFAAC, MWA and ATCA.\n"
@@ -84,6 +88,8 @@ void CommandLine::printHelp()
 		"   Normally, the primary beam is calculated at a lower resolution and interpolated, because calculating the beam is\n"
 		"   computationally expensive. The amount of undersampling can be controlled by this parameter, or set to '1' for no\n"
 		"   undersampling. Default: 8.\n"
+		"-dry-run\n"
+		"   Parses the command line and quits afterwards. No imaging is done.\n"
 		"\n"
 		"  ** WEIGHTING OPTIONS **\n"
 		"-weight <weightmode>\n"
@@ -182,8 +188,6 @@ void CommandLine::printHelp()
 		"   Always make the psf, even when no cleaning is performed.\n"
 		"-make-psf-only\n"
 		"   Only make the psf, no images are made.\n"
-		"-save-gridding\n"
-		"   Save the gridding correction image. This shows the effect of the antialiasing filter. Default: not saved.\n"
 		"-visibility-weighting-mode [normal/squared/unit]\n"
 		"   Specify visibility weighting modi. Affects how the weights (normally) stored in\n"
 		"   WEIGHT_SPECTRUM column are applied. Useful for estimating e.g. EoR power spectra errors.\n"
@@ -202,6 +206,8 @@ void CommandLine::printHelp()
 		"   Use the 'image-domain gridder' (Van der Tol et al.) to do the inversions and predictions.\n"
 		"-idg-mode [cpu/gpu/hybrid]\n"
 		"   Sets the IDG mode. Default: cpu. Hybrid is recommended when a GPU is available.\n"
+		"-use-wgridder\n"
+		"   Use the w-gridding gridder developed by Martin Reinecke.\n"
 		"\n"
 		"  ** A-TERM GRIDDING **\n"
 		"-aterm-config <filename>\n"
@@ -211,6 +217,8 @@ void CommandLine::printHelp()
 		"   Apply a-terms to correct for the primary beam. This is only possible when IDG is enabled.\n"
 		"-beam-aterm-update <seconds>\n"
 		"   Set the ATerm update time in seconds. The default is every 300 seconds.\n"
+		"   It also sets the interval over which to calculate the primary beam when using\n"
+		"   -apply-primary-beam when not gridding with the beam.\n"
 		"-aterm-kernel-size\n"
 		"   Kernel size reserved for aterms by IDG.\n"
 		"-save-aterms\n"
@@ -462,7 +470,7 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 	
 	WSCleanSettings& settings = wsclean.Settings();
 	int argi = 1;
-	bool mfWeighting = false, noMFWeighting = false;
+	bool mfWeighting = false, noMFWeighting = false, dryRun = false;
 	while(argi < argc && argv[argi][0] == '-')
 	{
 		const std::string param = argv[argi][1]=='-' ? (&argv[argi][2]) : (&argv[argi][1]);
@@ -513,6 +521,18 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 			settings.isUVImageSaved = true;
 			if(param == "saveuv")
 				deprecated(param, "save-uv");
+		}
+		else if(param == "reuse-psf")
+		{
+			++argi;
+			settings.reusePsf = true;
+			settings.reusePsfPrefix = argv[argi];
+		}
+		else if(param == "reuse-dirty")
+		{
+			++argi;
+			settings.reuseDirty = true;
+			settings.reuseDirtyPrefix = argv[argi];
 		}
 		else if(param == "predict")
 		{
@@ -672,6 +692,10 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 			++argi;
 			settings.mwaPath = argv[argi];
 		}
+		else if(param == "dry-run")
+		{
+			dryRun = true;
+		}
 		else if(param == "save-psf-pb")
 		{
 			settings.savePsfPb = true;
@@ -736,12 +760,6 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		else if(param == "make-psf-only")
 		{
 			settings.makePSFOnly = true;
-		}
-		else if(param == "save-gridding" || param == "savegridding")
-		{
-			settings.isGriddingImageSaved = true;
-			if(param == "savegridding")
-				deprecated(param, "save-gridding");
 		}
 		else if(param == "name")
 		{
@@ -1226,7 +1244,9 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 		else if(param == "beam-aterm-update")
 		{
 			++argi;
-			settings.beamAtermUpdateTime = parse_double(argv[argi], "beam-aterm-update");
+			double val = parse_double(argv[argi], 0.0, "beam-aterm-update");
+			settings.beamAtermUpdateTime = val;
+			settings.primaryBeamUpdateTime = std::max<size_t>(val, 1.0);
 		}
 		else if(param == "aterm-kernel-size")
 		{
@@ -1292,6 +1312,10 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 				settings.idgMode = WSCleanSettings::IDG_HYBRID;
 			else throw std::runtime_error("Unknown IDG mode: " + mode);
 		}
+		else if(param == "use-wgridder")
+		{
+			settings.useWGridder = true;
+		}
 		else if(param == "no-dirty")
 		{
 			settings.isDirtySaved = false;
@@ -1335,7 +1359,7 @@ bool CommandLine::Parse(WSClean& wsclean, int argc, char* argv[])
 	
 	settings.Validate();
 	
-	return true;
+	return !dryRun;
 }
 
 void CommandLine::Run(class WSClean& wsclean)
