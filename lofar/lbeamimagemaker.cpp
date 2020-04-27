@@ -2,7 +2,7 @@
 
 #ifndef HAVE_LOFAR_BEAM
 #include <stdexcept>
-void LBeamImageMaker::Make(PrimaryBeamImageSet&)
+PrimaryBeamImageSet LBeamImageMaker::Make()
 {
 	throw std::runtime_error("LOFAR beam imager maker called, but the software has been compiled without the LOFAR beam. Recompile your software and make sure that cmake finds the LOFAR station response library.");
 }
@@ -50,16 +50,16 @@ using namespace LOFAR::StationResponse;
 
 static void dirToITRFVector(const casacore::MDirection& dir, ITRFConverter& convert, vector3r_t& itrf);
 
-void LBeamImageMaker::Make(PrimaryBeamImageSet& beamImages)
+PrimaryBeamImageSet LBeamImageMaker::Make()
 {
 	_sampledWidth = _width / _undersample;
 	_sampledHeight = _width / _undersample;
 	_sPixelSizeX = _pixelSizeX * _undersample;
 	_sPixelSizeY = _pixelSizeX * _undersample;
-
-	beamImages.SetToZero();
 	
 	_totalWeightSum = 0.0;
+	
+	std::vector<HMC4x4> matrices(_sampledWidth * _sampledHeight, HMC4x4::Zero());
 	
 	Logger::Debug << "Making beam for " << _msProviders.size() << " parts (" << _tableEntry->msData.size() << " ms)\n";
 	for(const MSProviderInfo& msProviderInfo : _msProviders)
@@ -78,31 +78,36 @@ void LBeamImageMaker::Make(PrimaryBeamImageSet& beamImages)
 			centralFrequency += subBand.CentreFrequency();
 		}
 		centralFrequency /= msInfo.bands.size();
-		makeBeamForMS(beamImages, *msProviderInfo.provider, selection, centralFrequency);
+		makeBeamForMS(matrices, *msProviderInfo.provider, selection, centralFrequency);
 	}
 
-	for(size_t i=0; i!=8; ++i)
+	for(size_t j=0; j!=_sampledWidth*_sampledHeight; ++j)
 	{
-		for(size_t j=0; j!=_sampledWidth*_sampledHeight; ++j)
-		{
-			beamImages[i][j] /= _totalWeightSum;
-		}
+		matrices[j] *= 1.0/_totalWeightSum;
 	}
+	
+	PrimaryBeamImageSet beamImages(_width, _height, *_allocator, 16);
+	beamImages.SetToZero();
 	
 	if(_width!=_sampledWidth || _height!=_sampledHeight)
 	{
 		FFTResampler resampler(_sampledWidth, _sampledHeight, _width, _height, 1);
-		ImageBufferAllocator::Ptr scratch;
-		_allocator->Allocate(_width*_height, scratch);
-		for(size_t p=0; p!=8; ++p)
+		ImageBufferAllocator::Ptr
+			scratchA = _allocator->AllocatePtr(_sampledWidth*_sampledHeight),
+			scratchB = _allocator->AllocatePtr(_width*_height);
+		for(size_t p=0; p!=16; ++p)
 		{
-			resampler.Resample(&beamImages[p][0], scratch.data());
-			memcpy(&beamImages[p][0], scratch.data(), sizeof(double)*_width*_height);
+			for(size_t i=0; i!=_sampledWidth*_sampledHeight; ++i)
+				scratchA[i] = matrices[i].Data(p);
+			resampler.Resample(scratchA.data(), scratchB.data());
+			std::copy_n(scratchB.data(), _width*_height, &beamImages[p][0]);
 		}
 	}
+	
+	return beamImages;
 }
 
-void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider& msProvider, const MSSelection& selection, double centralFrequency)
+void LBeamImageMaker::makeBeamForMS(std::vector<HMC4x4>& matrices, MSProvider& msProvider, const MSSelection& selection, double centralFrequency)
 {
 	/**
 		* Read some meta data from the measurement set
@@ -111,27 +116,27 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 	
 	casacore::MSAntenna aTable = ms->antenna();
 	if(aTable.nrow() == 0) throw std::runtime_error("No antennae in set");
-	casacore::MPosition::ROScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
+	casacore::MPosition::ScalarColumn antPosColumn(aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
 	casacore::MPosition arrayPos = antPosColumn(0);
 	
 	Logger::Debug << "Making beam for frequency " << centralFrequency * 1e-6 << " MHz.\n";
 	
 	casacore::MSField fieldTable(ms->field());
-	casacore::ROScalarMeasColumn<casacore::MDirection> delayDirColumn(fieldTable, casacore::MSField::columnName(casacore::MSFieldEnums::DELAY_DIR));
+	casacore::ScalarMeasColumn<casacore::MDirection> delayDirColumn(fieldTable, casacore::MSField::columnName(casacore::MSFieldEnums::DELAY_DIR));
 	if(fieldTable.nrow() != 1)
 		throw std::runtime_error("Set has multiple fields");
 	_delayDir = delayDirColumn(0);
-	//Logger::Debug << "Using delay direction: " << RaDecCoord::RaDecToString(_delayDir.getAngle().getValue()[0], _delayDir.getAngle().getValue()[1]) << '\n';
 
-	LOFARBeamKeywords::GetPreappliedBeamDirection(*ms, msProvider.DataColumnName(), _useDifferentialBeam, _preappliedDir);
+	_useDifferentialBeam = LOFARBeamKeywords::GetPreappliedBeamDirection(*ms, msProvider.DataColumnName(), _useDifferentialBeam, _preappliedDir);
 	
 	if(fieldTable.tableDesc().isColumn("LOFAR_TILE_BEAM_DIR")) {
-		casacore::ROArrayMeasColumn<casacore::MDirection> tileBeamDirColumn(fieldTable, "LOFAR_TILE_BEAM_DIR");
+		casacore::ArrayMeasColumn<casacore::MDirection> tileBeamDirColumn(fieldTable, "LOFAR_TILE_BEAM_DIR");
 		_tileBeamDir = *(tileBeamDirColumn(0).data());
 	} else {
 		_tileBeamDir = _delayDir;
 	}
 	
+	Logger::Debug << "Using delay direction: " << RaDecCoord::RaDecToString(_delayDir.getAngle().getValue()[0], _delayDir.getAngle().getValue()[1]) << '\n';
 	Logger::Debug << "Using tile direction: " << RaDecCoord::RaDecToString(_tileBeamDir.getAngle().getValue()[0], _tileBeamDir.getAngle().getValue()[1]) << '\n';
 	
 	std::vector<Station::Ptr> stations(aTable.nrow());
@@ -160,8 +165,13 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 			msProvider.NextRow();
 		}
 	}
+	if(startTime == endTime)
+	{
+		++endTime;
+		--startTime;
+	}
 	const double totalSeconds = endTime - startTime;
-	size_t intervalCount = (totalSeconds + _secondsBeforeBeamUpdate - 1) / _secondsBeforeBeamUpdate;
+	size_t intervalCount = std::max<size_t>(1, (totalSeconds + _secondsBeforeBeamUpdate - 1) / _secondsBeforeBeamUpdate);
 	if(intervalCount > timestepCount)
 		intervalCount = timestepCount;
 	Logger::Debug << "MS spans " << totalSeconds << " seconds, dividing in " << intervalCount << " intervals.\n";
@@ -193,9 +203,8 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 			Logger::Debug << "Making snapshot beam for " << timeEpoch << "\n";
 		
 		double intervalWeight = 0.0;
-		ao::uvector<double> stationWeights(stations.size(), 0.0);
 		WeightMatrix baselineWeights(stations.size());
-		calculateStationWeights(*_imageWeights, intervalWeight, stationWeights, baselineWeights, ms, msProvider, selection, lastTime);
+		calculateStationWeights(*_imageWeights, intervalWeight, baselineWeights, ms, msProvider, selection, lastTime);
 		
 		if(refIntervalWeight == 0.0)
 			refIntervalWeight = intervalWeight;
@@ -203,24 +212,32 @@ void LBeamImageMaker::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider&
 		
 		if(intervalWeight != 0.0)
 		{
-			ao::uvector<double> singleImages[8];
-			double *imgPtr[8];
-			for(size_t i=0; i!=8; ++i)
-			{
-				singleImages[i].assign(_sampledWidth*_sampledHeight, 0.0);
-				imgPtr[i] = &singleImages[i][0];
-			}
+			std::vector<HMC4x4> singleMatrices(_sampledWidth*_sampledHeight);
 		
-			makeBeamSnapshot(stations, stationWeights, imgPtr, timeEpoch.getValue().get()*86400.0, centralFrequency, centralFrequency, frame);
+			makeBeamSnapshot(stations, baselineWeights, singleMatrices.data(), timeEpoch.getValue().get()*86400.0, centralFrequency, centralFrequency, frame);
 		
 			_totalWeightSum += intervalWeight;
-			for(size_t i=0; i!=8; ++i)
+			for(size_t j=0; j!=_sampledWidth*_sampledHeight; ++j)
 			{
-				for(size_t j=0; j!=_sampledWidth*_sampledHeight; ++j)
+				matrices[j] += singleMatrices[j] * intervalWeight;
+			}
+			if(_saveIntermediateImages)
+			{
+				static size_t index = 0;
+				std::ostringstream str;
+				str << "beam-intermediate-" << index << ".fits";
+				ao::uvector<double> img(_sampledWidth*_sampledHeight);
+				for(size_t px=0; px!=_sampledWidth*_sampledHeight; ++px)
 				{
-					double val = singleImages[i][j];
-					beamImages[i][j] += val * intervalWeight;
+					double norm = singleMatrices[px].Norm();
+					img[px] = norm;
+					if(px == _sampledWidth/2 + (_sampledHeight/2)*_sampledWidth)
+						Logger::Debug << "Central pixel: " << img[px] << '\n';
 				}
+				FitsWriter writer;
+				writer.SetImageDimensions(_sampledWidth, _sampledHeight);
+				writer.Write(str.str(), img.data());
+				++index;
 			}
 		}
 	}
@@ -235,10 +252,9 @@ static void dirToITRFVector(const casacore::MDirection& dir, ITRFConverter& conv
 	itrf[2] = itrfVal[2];
 }
 
-void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations, const ao::uvector<double>& weights, double** imgPtr, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame)
+void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations, const WeightMatrix& weights, HMC4x4* matrices, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame)
 {
 	static const casacore::Unit radUnit("rad");
-	const casacore::MDirection::Ref itrfRef(casacore::MDirection::ITRF, frame);
 	const casacore::MDirection::Ref j2000Ref(casacore::MDirection::J2000, frame);
 	ITRFConverter converter(time);
 		
@@ -312,22 +328,20 @@ void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations
 				}
 			}
 			
-			MC2x2 gain = MC2x2::Zero();
+			HMC4x4 gain = HMC4x4::Zero();
 			double totalWeight = 0.0;
-			for(size_t a=0; a!=stations.size(); ++a)
+			for(size_t a1=0; a1!=stations.size(); ++a1)
 			{
-				double w = sqrt(weights[a]);
-				gain.AddWithFactorAndAssign(stationGains[a], w);
-				totalWeight += w;
-			}
-			gain *= (1.0/totalWeight);
-		
-			for(size_t i=0; i!=4; ++i)
-			{
-				*imgPtr[i*2] = gain[i].real();
-				*imgPtr[i*2 + 1] = gain[i].imag();
-				++imgPtr[i*2];
-				++imgPtr[i*2 + 1];
+				for(size_t a2=a1; a2!=stations.size(); ++a2)
+				{
+					MC4x4 baselineBeam =
+						MC4x4::KroneckerProduct(stationGains[a2].HermTranspose().Transpose(), stationGains[a1]) +
+						MC4x4::KroneckerProduct(stationGains[a1].HermTranspose().Transpose(), stationGains[a2]);
+					double w = weights.Value(a1, a2);
+					gain += HMC4x4(baselineBeam) * (0.5 * w);
+					totalWeight += w;
+				}
+				matrices[y*_sampledWidth + x] = gain * (1.0/totalWeight);
 			}
 		}
 		progressBar.SetProgress(y, _sampledHeight);
@@ -335,11 +349,11 @@ void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations
 	progressBar.SetProgress(_sampledHeight, _sampledHeight);
 }
 
-void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, SynchronizedMS& ms, MSProvider& msProvider, const MSSelection& selection, double endTime)
+void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, double& totalWeight, WeightMatrix& baselineWeights, SynchronizedMS& ms, MSProvider& msProvider, const MSSelection& selection, double endTime)
 {
 	casacore::MSAntenna antTable(ms->antenna());
 	totalWeight = 0.0;
-	weights.assign(antTable.nrow(), 0.0);
+	ao::uvector<double> perAntennaWeights(antTable.nrow(), 0.0);
 	
 	MultiBandData multiband(ms->spectralWindow(), ms->dataDescription());
 	size_t channelCount = selection.ChannelRangeEnd() - selection.ChannelRangeStart();
@@ -363,21 +377,21 @@ void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, 
 			double iw = imageWeights.GetWeight(u, v);
 			double w = weightArr[ch*polarizationCount] * iw;
 			totalWeight += w;
-			weights[metaData.antenna1] += w;
-			weights[metaData.antenna2] += w;
+			perAntennaWeights[metaData.antenna1] += w;
+			perAntennaWeights[metaData.antenna2] += w;
 			baselineWeights.Value(metaData.antenna1, metaData.antenna2) += w;
 		}
 		msProvider.NextRow();
 	}
 	if(Logger::IsVerbose())
-		logWeights(*ms, weights);
+		logWeights(*ms, perAntennaWeights);
 }
 
 void LBeamImageMaker::logWeights(casacore::MeasurementSet& ms, const ao::uvector<double>& weights)
 {
 	casacore::MSAntenna antTable(ms.antenna());
 	Logger::Debug << "Weights:";
-	casacore::ROScalarColumn<casacore::String> antNameCol(antTable, casacore::MSAntenna::columnName(casacore::MSAntenna::NAME));
+	casacore::ScalarColumn<casacore::String> antNameCol(antTable, casacore::MSAntenna::columnName(casacore::MSAntenna::NAME));
 	double maxWeight = 0.0;
 	for(size_t a=0; a!=antTable.nrow(); ++a)
 		maxWeight=std::max(weights[a], maxWeight);

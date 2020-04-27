@@ -13,7 +13,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -O3 -Wall -DNDEBUG")
 if(PORTABLE)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
 else()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native") 
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
 endif(PORTABLE)
 
 # Casacore has a separate CMake file in this directory
@@ -27,20 +27,23 @@ find_package(CFITSIO REQUIRED)
 
 find_library(FFTW3_LIB fftw3 REQUIRED)
 find_library(FFTW3_THREADS_LIB fftw3_threads REQUIRED)
+find_library(FFTW3F_LIB fftw3f REQUIRED)
+find_library(FFTW3F_THREADS_LIB fftw3f_threads REQUIRED)
+find_path(FFTW3_INCLUDE_DIR NAMES fftw3.h)
+
 #Prevent accidentally finding old BoostConfig.cmake file from casapy
 set(Boost_NO_BOOST_CMAKE ON)
 find_package(Boost COMPONENTS date_time filesystem system program_options REQUIRED)
 find_library(PTHREAD_LIB pthread REQUIRED)
 find_library(DL_LIB dl REQUIRED)
-find_path(FFTW3_INCLUDE_DIR NAMES fftw3.h)
 find_library(GSL_LIB NAMES gsl)
 find_path(GSL_INCLUDE_DIR NAMES gsl/gsl_version.h)
 find_library(GSL_CBLAS_LIB NAMES gslcblas)
 
-find_path(LOFAR_STATION_RESPONSE_DIR NAMES StationResponse/ITRFConverter.h)
+find_path(LOFAR_STATION_RESPONSE_INCLUDE_DIR NAMES StationResponse/ITRFConverter.h)
 find_library(LOFAR_STATION_RESPONSE_LIB stationresponse)
-if(LOFAR_STATION_RESPONSE_DIR AND LOFAR_STATION_RESPONSE_LIB)
-  include_directories(${LOFAR_STATION_RESPONSE_DIR})
+if(LOFAR_STATION_RESPONSE_INCLUDE_DIR AND LOFAR_STATION_RESPONSE_LIB)
+  include_directories(${LOFAR_STATION_RESPONSE_INCLUDE_DIR})
   set(LBEAM_LIBS ${LOFAR_STATION_RESPONSE_LIB})
   set(LBEAM_FILES lofar/lbeamevaluator.cpp lofar/lmspredicter.cpp aterms/lofarbeamterm.cpp)
   # Some versions of the LOFAR code require "HAVE_BOOST" to be set explicitly
@@ -51,7 +54,7 @@ else()
   set(LBEAM_LIBS "")
   set(LBEAM_FILES lofar/lmspredicter.cpp)
   message("LOFAR beam library not found: LOFAR beam will not be available in WSClean. This is not an error, it means that LOFAR beam correction and the 'lofar-dft' mode will be unavailable.")
-endif(LOFAR_STATION_RESPONSE_DIR AND LOFAR_STATION_RESPONSE_LIB)
+endif(LOFAR_STATION_RESPONSE_INCLUDE_DIR AND LOFAR_STATION_RESPONSE_LIB)
 
 find_package(IDGAPI NO_MODULE QUIET)
 
@@ -85,7 +88,7 @@ add_definitions(-DHAVE_GSL)
 SET(CMAKE_SKIP_BUILD_RPATH  FALSE)
 # when building, don't use the install RPATH already
 # (but later on when installing)
-SET(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE) 
+SET(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 # add the automatically determined parts of the RPATH
 # which point to directories outside the build tree to the install RPATH
@@ -111,10 +114,28 @@ add_library(wsclean-object OBJECT
   msproviders/averagingmsrowprovider.cpp msproviders/contiguousms.cpp msproviders/directmsrowprovider.cpp msproviders/msprovider.cpp msproviders/msrowprovider.cpp msproviders/partitionedms.cpp msproviders/synchronizedms.cpp
   multiscale/multiscalealgorithm.cpp multiscale/multiscaletransforms.cpp multiscale/threadeddeconvolutiontools.cpp
   mwa/beam2016implementation.cpp mwa/mwabeam.cpp mwa/tilebeam2016.cpp mwa/tilebeambase.cpp
+  wgridder/bufferedmsgridder.cpp wgridder/wgriddinggridder_simple.cpp
   wsclean/commandline.cpp wsclean/directmsgridder.cpp wsclean/griddingtaskmanager.cpp wsclean/imageoperations.cpp wsclean/imagingtable.cpp
   wsclean/logger.cpp wsclean/primarybeam.cpp wsclean/msgridderbase.cpp wsclean/wscfitswriter.cpp
   wsclean/wsclean.cpp wsclean/wscleansettings.cpp wsclean/wsmsgridder.cpp wsclean/wstackinggridder.cpp
   ${LBEAM_FILES} ${IDG_FILES})
+
+# A number of files perform the 'core' high-performance floating point
+# operations. In these files, NaNs are avoided and thus -ffast-math is
+# allowed. Note that visibilities can be NaN hence this can not be turned
+# on for all files.
+set_source_files_properties(
+	deconvolution/subminorloop.cpp
+	deconvolution/genericclean.cpp
+	deconvolution/imageset.cpp
+	deconvolution/simpleclean.cpp
+	deconvolution/spectralfitter.cpp
+	multiscale/multiscalealgorithm.cpp
+	multiscale/multiscaletransforms.cpp
+	multiscale/threadeddeconvolutiontools.cpp
+	wsclean/wstackinggridder.cpp
+	wgridder/wgriddinggridder_simple.cpp
+	PROPERTIES COMPILE_FLAGS -ffast-math)
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
 
@@ -129,13 +150,13 @@ target_link_libraries(wsclean-shared)
 set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 
 add_executable(wsclean wscleanmain.cpp)
-target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
+target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
 
 #add_executable(interfaceexample EXCLUDE_FROM_ALL interface/interfaceexample.c)
 #target_link_libraries(interfaceexample wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
 
 add_executable(wsuvbinning EXCLUDE_FROM_ALL wsclean/examples/wsuvbinning.cpp ${WSCLEANFILES})
-target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
+target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
 
 install(TARGETS wsclean DESTINATION bin)
 install(TARGETS wsclean-lib DESTINATION lib)
@@ -158,7 +179,7 @@ if(Boost_FOUND)
 		tests/test.cpp
 		tests/testbanddata.cpp
 		tests/testbaselinedependentaveraging.cpp
-		tests/testclean.cpp 
+		tests/testclean.cpp
 		tests/testcomponentlist.cpp
 		tests/testfitsdateobstime.cpp
 		tests/testfluxdensity.cpp
@@ -172,7 +193,7 @@ if(Boost_FOUND)
 		tests/testpolynomialfitter.cpp
 		tests/testradeccoord.cpp
 		${WSCLEANFILES})
-  target_link_libraries(runtest ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
+  target_link_libraries(runtest ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY} ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
   add_test(runtest runtest)
   add_custom_target(check COMMAND runtest DEPENDS runtest)
 else()

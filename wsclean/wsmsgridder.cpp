@@ -12,7 +12,8 @@
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
-#include <iostream>
+#include <fftw3.h>
+
 #include <stdexcept>
 
 WSMSGridder::WSMSGridder(ImageBufferAllocator* imageAllocator, size_t threadCount, double memFraction, double absMemLimit) :
@@ -21,28 +22,14 @@ WSMSGridder::WSMSGridder(ImageBufferAllocator* imageAllocator, size_t threadCoun
 	_laneBufferSize(std::max<size_t>(_cpuCount*2,1024)),
 	_imageBufferAllocator(imageAllocator)
 {
-	long int pageCount = sysconf(_SC_PHYS_PAGES), pageSize = sysconf(_SC_PAGE_SIZE);
-	_memSize = (int64_t) pageCount * (int64_t) pageSize;
-	double memSizeInGB = (double) _memSize / (1024.0*1024.0*1024.0);
-	if(memFraction == 1.0 && absMemLimit == 0.0) {
-		Logger::Info << "Detected " << round(memSizeInGB*10.0)/10.0 << " GB of system memory, usage not limited.\n";
-	}
-	else {
-		double limitInGB = memSizeInGB*memFraction;
-		if(absMemLimit!=0.0 && limitInGB > absMemLimit)
-			limitInGB = absMemLimit;
-		Logger::Info << "Detected " << round(memSizeInGB*10.0)/10.0 << " GB of system memory, usage limited to " << round(limitInGB*10.0)/10.0 << " GB (frac=" << round(memFraction*1000.0)/10.0 << "%, ";
-		if(absMemLimit == 0.0)
-			Logger::Info << "no limit)\n";
-		else
-			Logger::Info << "limit=" << round(absMemLimit*10.0)/10.0 << "GB)\n";
-		
-		_memSize = int64_t((double) pageCount * (double) pageSize * memFraction);
-		if(absMemLimit!=0.0 && double(_memSize) > double(1024.0*1024.0*1024.0) * absMemLimit)
-			_memSize = int64_t(double(absMemLimit) * double(1024.0*1024.0*1024.0));
-	}
+	_memSize = getAvailableMemory(memFraction, absMemLimit);
+	
+	// We do this once here. WStackingGridder does this too, but by default only for the float
+	// variant of fftw. FFTResampler does double fft's multithreaded, hence this needs to be done
+	// here too.
+	fftw_make_planner_thread_safe();
 }
-		
+
 void WSMSGridder::countSamplesPerLayer(MSData& msData)
 {
 	ao::uvector<size_t> sampleCount(ActualWGridSize(), 0);
@@ -69,9 +56,9 @@ void WSMSGridder::countSamplesPerLayer(MSData& msData)
 		msData.msProvider->NextRow();
 	}
 	Logger::Debug << "Visibility count per layer: ";
-	for(ao::uvector<size_t>::const_iterator i=sampleCount.begin(); i!=sampleCount.end(); ++i)
+	for(size_t& count : sampleCount)
 	{
-		Logger::Debug << *i << ' ';
+		Logger::Debug << count << ' ';
 	}
 	Logger::Debug << "\nTotal nr. of visibilities to be gridded: " << total << '\n';
 }
@@ -101,7 +88,7 @@ size_t WSMSGridder::getSuggestedWGridSize() const
 	{
 		// When nwlayers is lower than the nr of cores, we cannot parallellize well. 
 		// However, we don't want extra w-layers if we are low on mem, as that might slow down the process
-		double memoryRequired = double(_cpuCount) * double(sizeof(double))*double(_actualInversionWidth*_actualInversionHeight);
+		double memoryRequired = double(_cpuCount) * double(sizeof(GridderType::num_t))*double(_actualInversionWidth*_actualInversionHeight);
 		if(4.0 * memoryRequired < double(_memSize))
 		{
 			Logger::Info <<
@@ -330,13 +317,13 @@ void WSMSGridder::Invert()
 	std::vector<MSData> msDataVector;
 	initializeMSDataVector(msDataVector);
 	
-	_gridder.reset(new WStackingGridder(_actualInversionWidth, _actualInversionHeight, _actualPixelSizeX, _actualPixelSizeY, _cpuCount, _imageBufferAllocator, AntialiasingKernelSize(), OverSamplingFactor()));
+	_gridder.reset(new GridderType(_actualInversionWidth, _actualInversionHeight, _actualPixelSizeX, _actualPixelSizeY, _cpuCount, _imageBufferAllocator, AntialiasingKernelSize(), OverSamplingFactor()));
 	_gridder->SetGridMode(GridMode());
 	if(HasDenormalPhaseCentre())
 		_gridder->SetDenormalPhaseCentre(PhaseCentreDL(), PhaseCentreDM());
 	_gridder->SetIsComplex(IsComplex());
 	//_imager->SetImageConjugatePart(Polarization() == Polarization::YX && IsComplex());
-	_gridder->PrepareWLayers(ActualWGridSize(), double(_memSize)*(7.0/10.0), _minW, _maxW);
+	_gridder->PrepareWLayers(ActualWGridSize(), double(_memSize)*(6.0/10.0), _minW, _maxW);
 	
 	if(Verbose() && Logger::IsVerbose())
 	{
@@ -391,6 +378,12 @@ void WSMSGridder::Invert()
 		Logger::Info << ", effective count after weighting: " << EffectiveGriddedVisibilityCount();
 	Logger::Info << '\n';
 	
+	_realImage = _gridder->RealImageDouble();
+	if(IsComplex())
+		_imaginaryImage = _gridder->ImaginaryImageDouble();
+	else
+		_imaginaryImage = nullptr;
+	
 	if(ImageWidth()!=_actualInversionWidth || ImageHeight()!=_actualInversionHeight)
 	{
 		// Interpolate the image
@@ -402,20 +395,16 @@ void WSMSGridder::Invert()
 			ImageBufferAllocator::Ptr resizedReal = _imageBufferAllocator->AllocatePtr(ImageWidth() * ImageHeight());
 			ImageBufferAllocator::Ptr resizedImag = _imageBufferAllocator->AllocatePtr(ImageWidth() * ImageHeight());
 			resampler.Start();
-			ImageBufferAllocator::Ptr
-				real = _gridder->RealImage(),
-				imaginary = _gridder->ImaginaryImage();
-			resampler.AddTask(real.data(), resizedReal.data());
-			resampler.AddTask(imaginary.data(), resizedImag.data());
+			resampler.AddTask(_realImage.data(), resizedReal.data());
+			resampler.AddTask(_imaginaryImage.data(), resizedImag.data());
 			resampler.Finish();
-			_gridder->ReplaceRealImageBuffer(std::move(resizedReal));
-			_gridder->ReplaceImaginaryImageBuffer(std::move(resizedImag));
+			_realImage = std::move(resizedReal);
+			_imaginaryImage = std::move(resizedImag);
 		}
 		else {
 			ImageBufferAllocator::Ptr resized = _imageBufferAllocator->AllocatePtr(ImageWidth() * ImageHeight());
-			ImageBufferAllocator::Ptr real = _gridder->RealImage();
-			resampler.Resample(real.data(), resized.data());
-			_gridder->ReplaceRealImageBuffer(std::move(resized));
+			resampler.Resample(_realImage.data(), resized.data());
+			_realImage = std::move(resized);
 		}
 	}
 	
@@ -425,18 +414,16 @@ void WSMSGridder::Invert()
 		// Perform trimming
 		
 		ImageBufferAllocator::Ptr
-			trimmed = _imageBufferAllocator->AllocatePtr(TrimWidth() * TrimHeight()),
-			real = _gridder->RealImage();
-		Image::Trim(trimmed.data(), TrimWidth(), TrimHeight(), real.data(), ImageWidth(), ImageHeight());
-		_gridder->ReplaceRealImageBuffer(std::move(trimmed));
+			trimmed = _imageBufferAllocator->AllocatePtr(TrimWidth() * TrimHeight());
+		Image::Trim(trimmed.data(), TrimWidth(), TrimHeight(), _realImage.data(), ImageWidth(), ImageHeight());
+		_realImage = std::move(trimmed);
 		
 		if(IsComplex())
 		{
 			ImageBufferAllocator::Ptr
-				trimmedImag = _imageBufferAllocator->AllocatePtr(TrimWidth() * TrimHeight()),
-				imag = _gridder->ImaginaryImage();
-			Image::Trim(trimmedImag.data(), TrimWidth(), TrimHeight(), imag.data(), ImageWidth(), ImageHeight());
-			_gridder->ReplaceImaginaryImageBuffer(std::move(trimmedImag));
+				trimmedImag = _imageBufferAllocator->AllocatePtr(TrimWidth() * TrimHeight());
+			Image::Trim(trimmedImag.data(), TrimWidth(), TrimHeight(), _imaginaryImage.data(), ImageWidth(), ImageHeight());
+			_imaginaryImage = std::move(trimmedImag);
 		}
 	}
 }
@@ -451,13 +438,13 @@ void WSMSGridder::Predict(ImageBufferAllocator::Ptr real, ImageBufferAllocator::
 	std::vector<MSData> msDataVector;
 	initializeMSDataVector(msDataVector);
 	
-	_gridder = std::unique_ptr<WStackingGridder>(new WStackingGridder(_actualInversionWidth, _actualInversionHeight, _actualPixelSizeX, _actualPixelSizeY, _cpuCount, _imageBufferAllocator, AntialiasingKernelSize(), OverSamplingFactor()));
+	_gridder = std::unique_ptr<GridderType>(new GridderType(_actualInversionWidth, _actualInversionHeight, _actualPixelSizeX, _actualPixelSizeY, _cpuCount, _imageBufferAllocator, AntialiasingKernelSize(), OverSamplingFactor()));
 	_gridder->SetGridMode(GridMode());
 	if(HasDenormalPhaseCentre())
 		_gridder->SetDenormalPhaseCentre(PhaseCentreDL(), PhaseCentreDM());
 	_gridder->SetIsComplex(IsComplex());
 	//_imager->SetImageConjugatePart(Polarization() == Polarization::YX && IsComplex());
-	_gridder->PrepareWLayers(ActualWGridSize(), double(_memSize)*(7.0/10.0), _minW, _maxW);
+	_gridder->PrepareWLayers(ActualWGridSize(), double(_memSize)*(6.0/10.0), _minW, _maxW);
 	
 	if(Verbose())
 	{
