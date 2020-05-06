@@ -5,6 +5,10 @@
 #include "../image.h"
 #include "../uvector.h"
 
+#include "../wsclean/primarybeamimageset.h"
+
+#include "controllablelog.h"
+
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -73,12 +77,13 @@ private:
 	
 	void correctChannelForPB(class ComponentList& list, const class ImagingTableEntry& entry) const;
 	
-	void loadAveragePrimaryBeam(class PrimaryBeamImageSet& beamImages, size_t imageIndex, const class ImagingTable& table) const;
+	PrimaryBeamImageSet loadAveragePrimaryBeam(size_t imageIndex, const class ImagingTable& table) const;
 	
 	void writeSourceList(ComponentList& componentList, const std::string& filename, long double phaseCentreRA, long double phaseCentreDec) const;
 	
 	FFTWManager _fftwManager;
 	std::vector<std::unique_ptr<class DeconvolutionAlgorithm>> _algorithms;
+	FacetLogSet _logs;
 	size_t _horImages, _verImages;
 	const WSCleanSettings& _settings;
 	ImageBufferAllocator* _allocator;

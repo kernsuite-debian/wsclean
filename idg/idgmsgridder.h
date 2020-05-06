@@ -31,10 +31,6 @@ public:
 	
 	virtual ImageBufferAllocator::Ptr ImageImaginaryResult() final override;
 	
-	virtual void GetGriddingCorrectionImage(double* image) const final override;
-	
-	virtual bool HasGriddingCorrectionImage() const final override;
-	
 	void SavePBCorrectedImages(class FitsWriter& writer, const class ImageFilename& filename, const std::string& filenameKind, class ImageBufferAllocator& allocator) const;
 	
 	void SaveBeamImage(const class ImagingTableEntry& entry, class ImageFilename& filename) const;
@@ -81,6 +77,7 @@ private:
 	void setIdgType();
 	
 	std::unique_ptr<class ATermBase> getATermMaker(MSGridderBase::MSData& msData);
+  bool prepareForMeasurementSet(MSGridderBase::MSData& msData, std::unique_ptr<ATermBase>& aTermMaker, ao::uvector<std::complex<float>>& aTermBuffer, idg::api::BufferSetType);
 	
 	struct IDGInversionRow : public MSGridderBase::InversionRow {
 		size_t antenna1, antenna2, timeIndex;

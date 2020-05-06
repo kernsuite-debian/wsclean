@@ -65,17 +65,19 @@ public:
 	bool joinedPolarizationCleaning, joinedFrequencyCleaning;
 	std::set<PolarizationEnum> linkedPolarizations;
 	size_t parallelDeconvolutionMaxSize;
-	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isFirstResidualSaved, isGriddingImageSaved;
+	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isFirstResidualSaved;
+	bool reusePsf, reuseDirty;
+	std::string reusePsfPrefix, reuseDirtyPrefix;
 	bool writeImagingWeightSpectrumColumn;
 	std::string temporaryDirectory;
 	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfWeighting;
 	size_t fullResOffset, fullResWidth, fullResPad;
 	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, savePsfPb;
 	std::string mwaPath;
-	size_t primaryBeamUndersampling;
+	size_t primaryBeamUndersampling, primaryBeamUpdateTime;
 	bool directFT;
 	DirectFTPrecision directFTPrecision;
-	bool useIDG;
+	bool useIDG, useWGridder;
 	std::string atermConfigFilename;
 	double atermKernelSize;
 	bool gridWithBeam;
@@ -193,7 +195,9 @@ inline WSCleanSettings::WSCleanSettings() :
 	linkedPolarizations(),
 	parallelDeconvolutionMaxSize(0),
 	smallInversion(true), makePSF(false), makePSFOnly(false), isWeightImageSaved(false),
-	isUVImageSaved(false), isDirtySaved(true), isFirstResidualSaved(false), isGriddingImageSaved(false),
+	isUVImageSaved(false), isDirtySaved(true), isFirstResidualSaved(false), 	
+	reusePsf(false), reuseDirty(false),
+	reusePsfPrefix(), reuseDirtyPrefix(),
 	writeImagingWeightSpectrumColumn(false),
 	temporaryDirectory(),
 	forceReorder(false), forceNoReorder(false),
@@ -205,9 +209,11 @@ inline WSCleanSettings::WSCleanSettings() :
 	useDifferentialLofarBeam(false),
 	savePsfPb(false),
 	primaryBeamUndersampling(8),
+	primaryBeamUpdateTime(1800),
 	directFT(false),
 	directFTPrecision(DirectFTPrecision::Double),
 	useIDG(false),
+	useWGridder(false),
 	atermConfigFilename(),
 	atermKernelSize(5.0),
 	gridWithBeam(false),
