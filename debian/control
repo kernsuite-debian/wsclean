@@ -4,11 +4,9 @@ Priority: optional
 Maintainer: Debian Astro Team <debian-astro-maintainers@lists.alioth.debian.org>
 Uploaders: Gijs Molenaar <gijs@pythonic.nl>,
            Ole Streicher <olebole@debian.org>
-Build-Depends: casacore-dev (>= 2.4.0),
+Build-Depends: casacore-dev,
                cmake,
                debhelper (>= 11),
-               doxygen,
-               graphviz,
                libboost-dev,
                libboost-filesystem-dev,
                libboost-program-options-dev,
@@ -17,17 +15,15 @@ Build-Depends: casacore-dev (>= 2.4.0),
                libcfitsio-dev | libcfitsio3-dev,
                libfftw3-dev,
                libgsl0-dev,
-               libhdf5-dev,
-               libidg,
-               lofarbeam-dev
-Standards-Version: 4.2.0
+               libhdf5-dev
+Standards-Version: 4.5.0
 Vcs-Git: https://salsa.debian.org/debian-astro-team/wsclean.git
 Vcs-Browser: https://salsa.debian.org/debian-astro-team/wsclean
 Homepage: https://sourceforge.net/projects/wsclean/
 
 Package: wsclean
 Architecture: any
-Depends: libidg, libwsclean2 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Depends: ${misc:Depends}, ${shlibs:Depends}
 Suggests: wsclean-dev
 Description: Fast generic widefield interferometric imager
  WSClean (w-stacking clean) is a fast generic widefield imager. It uses the

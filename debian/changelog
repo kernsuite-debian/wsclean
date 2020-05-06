@@ -1,24 +1,35 @@
-wsclean (2.8-1kern2) bionic; urgency=medium
+wsclean (2.9-2) unstable; urgency=low
 
-  [ Athanaseus Javas Ramaila ]
-  * New upstream version 2.8
+  * No-change source-only re-upload
 
- -- KERN packaging <packaging@kernsuite.info>  Thu, 06 Feb 2020 11:25:10 +0200
+ -- Ole Streicher <olebole@debian.org>  Tue, 28 Apr 2020 08:37:25 +0200
 
-wsclean (2.6-1kern2) bionic; urgency=medium
+wsclean (2.9-1) unstable; urgency=low
 
-  [ Gijs Molenaar ]
-  * switch to lofarbeam package
+  * New upstream version 2.9. Rediff patches
+  * Push Standards-Version to 4.5.0. No changes needed.
 
- -- KERN packaging <packaging@kernsuite.info>  Thu, 10 Jan 2019 11:26:34 +0200
+ -- Ole Streicher <olebole@debian.org>  Mon, 27 Apr 2020 13:57:26 +0200
 
-wsclean (2.6-1kern1) bionic; urgency=medium
+wsclean (2.8-1) unstable; urgency=low
 
-  [ Gijs Molenaar ]
-  * include lofar beam model
-  * rebuild for KERN
+  * New upstream version 2.8. Rediff patches
+  * Add gitlab-ci.yml for salsa
 
- -- KERN packaging <packaging@kernsuite.info>  Thu, 27 Sep 2018 14:57:17 +0200
+ -- Ole Streicher <olebole@debian.org>  Fri, 20 Sep 2019 11:20:08 +0200
+
+wsclean (2.7-1) unstable; urgency=low
+
+  [ Helmut Grohne ]
+  * Fix FTCBFS: Fix build/host confusion. (Closes: #929757)
+
+  [ Ole Streicher ]
+  * New upstream version 2.7. Rediff patches
+  * Push Standards-Version to 4.4.0. No changes required.
+  * Push compat to 12; switch to debhelper-compat
+  * Add HDF5 dependency
+
+ -- Ole Streicher <olebole@debian.org>  Thu, 25 Jul 2019 13:12:28 +0200
 
 wsclean (2.6-1) unstable; urgency=low
 
@@ -52,19 +63,6 @@ wsclean (2.4-1) unstable; urgency=low
   * Push Standards-Version to 4.0.0. No changes
 
  -- Ole Streicher <olebole@debian.org>  Sat, 24 Jun 2017 13:46:06 +0200
-
-wsclean (2.3-1) xenial; urgency=medium
-
-  *  new upstream release
-  * rediff patches
-
- -- Gijs Molenaar (launchpad ppa build key) <gijs@pythonic.nl>  Tue, 28 Mar 2017 11:32:17 +0200
-
-wsclean (2.2.1-1kern1) xenial; urgency=medium
-
-  * include lofar beam model
-
- -- Gijs Molenaar (launchpad ppa build key) <gijs@pythonic.nl>  Fri, 03 Feb 2017 10:23:35 +0000
 
 wsclean (2.2.1-1) unstable; urgency=medium
 
