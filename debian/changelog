@@ -1,3 +1,10 @@
+wsclean (2.9-2kern1) bionic; urgency=medium
+
+  [ Gijs Molenaar ]
+  * backport from debian
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 06 May 2020 15:23:34 +0200
+
 wsclean (2.9-2) unstable; urgency=low
 
   * No-change source-only re-upload
