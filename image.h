@@ -44,6 +44,9 @@ public:
 	const double& operator[](size_t index) const { return _data[index]; }
 	double& operator[](size_t index) { return _data[index]; }
 	
+	Image& operator+=(const Image& other);
+	Image& operator-=(const Image& other);
+	
 	Image& operator*=(double factor);
 	Image& operator*=(const Image& other);
 	
@@ -55,13 +58,38 @@ public:
 	 */
 	static void Trim(double* output, size_t outWidth, size_t outHeight, const double* input, size_t inWidth, size_t inHeight);
 	
-	static void TrimBox(bool* output, size_t x1, size_t y1, size_t boxWidth, size_t boxHeight, const bool* input, size_t inWidth, size_t inHeight);
+	Image Trim(size_t outWidth, size_t outHeight) const
+	{
+		Image image(outWidth, outHeight, *_allocator);
+		Trim(image.data(), outWidth, outHeight, data(), Width(), Height());
+		return image;
+	}
+	
+	Image TrimBox(size_t x1, size_t y1, size_t boxWidth, size_t boxHeight) const
+	{
+		Image image(boxWidth, boxHeight, *_allocator);
+		TrimBox(image.data(), x1, y1, boxWidth, boxHeight, data(), Width(), Height());
+		return image;
+	}
+	
+	template<typename T>
+	static void TrimBox(T* output, size_t x1, size_t y1, size_t boxWidth, size_t boxHeight, const T* input, size_t inWidth, size_t inHeight);
+	
+	template<typename T>
+	static void CopyMasked(T* to, size_t toX, size_t toY, size_t toWidth, const T* from, size_t fromWidth, size_t fromHeight, const bool* fromMask);
 	
 	/** Extend an image with zeros, complement of Trim.
 	 * @param outWidth Should be &gt;= inWidth.
 	 * @param outHeight Should be &gt;= inHeight.
 	 */
 	static void Untrim(double* output, size_t outWidth, size_t outHeight, const double* input, size_t inWidth, size_t inHeight);
+	
+	Image Untrim(size_t outWidth, size_t outHeight) const
+	{
+		Image image(outWidth, outHeight, *_allocator);
+		Untrim(image.data(), outWidth, outHeight, data(), Width(), Height());
+		return image;
+	}
 	
 	static double Median(const double* data, size_t size)
 	{
@@ -84,6 +112,7 @@ public:
 		return 1.48260221850560 * MAD(data, size);
 	}
 	
+	double RMS() const { return RMS(_data, _width*_height); }
 	static double RMS(const double* data, size_t size)
 	{
 		double sum = 0.0;
@@ -104,5 +133,28 @@ private:
 	
 	static double median_with_copy(const double* data, size_t size, ao::uvector<double>& copy);
 };
+
+template<typename T>
+void Image::TrimBox(T* output, size_t x1, size_t y1, size_t boxWidth, size_t boxHeight, const T* input, size_t inWidth, size_t /*inHeight*/)
+{
+	size_t endY = y1 + boxHeight;
+	for(size_t y=y1; y!=endY; ++y)
+	{
+		std::copy_n(&input[y*inWidth + x1], boxWidth, &output[(y-y1)*boxWidth]);
+	}
+}
+
+template<typename T>
+void Image::CopyMasked(T* to, size_t toX, size_t toY, size_t toWidth, const T* from, size_t fromWidth, size_t fromHeight, const bool* fromMask)
+{
+	for(size_t y=0; y!=fromHeight; ++y)
+	{
+		for(size_t x=0; x!=fromWidth; ++x)
+		{
+			if(fromMask[y*fromWidth + x])
+				to[toX + (toY+y) * toWidth + x] = from[y*fromWidth + x];
+		}
+	}
+}
 
 #endif

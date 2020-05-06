@@ -1,6 +1,6 @@
 #include "genericclean.h"
 
-#include "clarkloop.h"
+#include "subminorloop.h"
 
 #include "../lane.h"
 
@@ -10,14 +10,15 @@
 
 #include <boost/thread/thread.hpp>
 
-GenericClean::GenericClean(ImageBufferAllocator& allocator, bool clarkOptimization) :
+GenericClean::GenericClean(ImageBufferAllocator& allocator, class FFTWManager& fftwManager, bool useSubMinorOptimization) :
 	_convolutionPadding(1.1),
-	_useClarkOptimization(clarkOptimization),
-	_allocator(allocator)
+	_useSubMinorOptimization(useSubMinorOptimization),
+	_allocator(allocator),
+	_fftwManager(fftwManager)
 {
 }
 
-void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const ao::uvector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold)
+double GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const ao::uvector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold)
 {
 	const size_t iterationCounterAtStart = _iterationNumber;
 	if(_stopOnNegativeComponent)
@@ -40,54 +41,56 @@ void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet,
 	boost::optional<double> maxValue = findPeak(integrated.data(), scratchA.data(), componentX, componentY);
 	if(!maxValue)
 	{
-		Logger::Info << "No peak found.\n";
+		_logReceiver->Info << "No peak found.\n";
 		reachedMajorThreshold = false;
-		return;
+		return 0.0;
 	}
-	Logger::Info << "Initial peak: " << peakDescription(integrated.data(), componentX, componentY) << '\n';
+	_logReceiver->Info << "Initial peak: " << peakDescription(integrated.data(), componentX, componentY) << '\n';
 	double firstThreshold = this->_threshold;
-	double stopGainThreshold = std::fabs(*maxValue)*(1.0-this->_mGain);
-	if(stopGainThreshold > firstThreshold)
+	double majorIterThreshold = std::max(
+		MajorIterThreshold(),
+		std::fabs(*maxValue)*(1.0-this->_mGain));
+	if(majorIterThreshold > firstThreshold)
 	{
-		firstThreshold = stopGainThreshold;
-		Logger::Info << "Next major iteration at: " << FluxDensity::ToNiceString(stopGainThreshold) << '\n';
+		firstThreshold = majorIterThreshold;
+		_logReceiver->Info << "Next major iteration at: " << FluxDensity::ToNiceString(majorIterThreshold) << '\n';
 	}
 	else if(this->_mGain != 1.0) {
-		Logger::Info << "Major iteration threshold reached global threshold of " << FluxDensity::ToNiceString(this->_threshold) << ": final major iteration.\n";
+		_logReceiver->Info << "Major iteration threshold reached global threshold of " << FluxDensity::ToNiceString(this->_threshold) << ": final major iteration.\n";
 	}
 	
-	if(_useClarkOptimization)
+	if(_useSubMinorOptimization)
 	{
 		size_t startIteration = _iterationNumber;
-		ClarkLoop clarkLoop(_width, _height, _convolutionWidth, _convolutionHeight);
-		clarkLoop.SetIterationInfo(_iterationNumber, MaxNIter());
-		clarkLoop.SetThreshold(firstThreshold, firstThreshold*0.99);
-		clarkLoop.SetGain(Gain());
-		clarkLoop.SetAllowNegativeComponents(AllowNegativeComponents());
-		clarkLoop.SetStopOnNegativeComponent(StopOnNegativeComponents());
-		clarkLoop.SetSpectralFitter(&Fitter());
+		SubMinorLoop subMinorLoop(_width, _height, _convolutionWidth, _convolutionHeight, *_logReceiver);
+		subMinorLoop.SetIterationInfo(_iterationNumber, MaxNIter());
+		subMinorLoop.SetThreshold(firstThreshold, firstThreshold*0.99);
+		subMinorLoop.SetGain(Gain());
+		subMinorLoop.SetAllowNegativeComponents(AllowNegativeComponents());
+		subMinorLoop.SetStopOnNegativeComponent(StopOnNegativeComponents());
+		subMinorLoop.SetSpectralFitter(&Fitter());
 		if(!_rmsFactorImage.empty())
-			clarkLoop.SetRMSFactorImage(_rmsFactorImage);
+			subMinorLoop.SetRMSFactorImage(_rmsFactorImage);
 		if(_cleanMask)
-			clarkLoop.SetMask(_cleanMask);
+			subMinorLoop.SetMask(_cleanMask);
 		const size_t
 			horBorderSize = round(_width * CleanBorderRatio()),
 			vertBorderSize = round(_height * CleanBorderRatio());
-		clarkLoop.SetCleanBorders(horBorderSize, vertBorderSize);
+		subMinorLoop.SetCleanBorders(horBorderSize, vertBorderSize);
 		
-		maxValue = clarkLoop.Run(dirtySet, psfs);
+		maxValue = subMinorLoop.Run(dirtySet, psfs);
 		
-		_iterationNumber = clarkLoop.CurrentIteration();
+		_iterationNumber = subMinorLoop.CurrentIteration();
 		
-		Logger::Info << "Performed " << _iterationNumber << " iterations in total, " << (_iterationNumber - startIteration) << " in this major iteration with Clark optimization.\n";
+		_logReceiver->Info << "Performed " << _iterationNumber << " iterations in total, " << (_iterationNumber - startIteration) << " in this major iteration with sub-minor optimization.\n";
 		
 		for(size_t imageIndex=0; imageIndex!=dirtySet.size(); ++imageIndex)
 		{
 			// TODO this can be multi-threaded if each thread has its own temporaries
 			const double *psf = psfs[dirtySet.PSFIndex(imageIndex)];
-			clarkLoop.CorrectResidualDirty(scratchA.data(), scratchB.data(), integrated.data(), imageIndex, dirtySet[imageIndex],  psf);
+			subMinorLoop.CorrectResidualDirty(_fftwManager, scratchA.data(), scratchB.data(), integrated.data(), imageIndex, dirtySet[imageIndex],  psf);
 			
-			clarkLoop.GetFullIndividualModel(imageIndex, scratchA.data());
+			subMinorLoop.GetFullIndividualModel(imageIndex, scratchA.data());
 			double* model = modelSet[imageIndex];
 			for(size_t i=0; i!=_width*_height; ++i)
 				model[i] += scratchA.data()[i];
@@ -105,7 +108,7 @@ void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet,
 				(this->_iterationNumber <= 100 && this->_iterationNumber % 10 == 0) ||
 				(this->_iterationNumber <= 1000 && this->_iterationNumber % 100 == 0) ||
 				this->_iterationNumber % 1000 == 0)
-				Logger::Info << "Iteration " << this->_iterationNumber << ": " << peakDescription(integrated.data(), componentX, componentY) << '\n';
+				_logReceiver->Info << "Iteration " << this->_iterationNumber << ": " << peakDescription(integrated.data(), componentX, componentY) << '\n';
 			
 			for(size_t i=0; i!=dirtySet.size(); ++i)
 				peakValues[i] = dirtySet[i][peakIndex];
@@ -132,29 +135,31 @@ void GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet,
 	}
 	if(maxValue)
 	{
-		Logger::Info << "Stopped on peak " << FluxDensity::ToNiceString(*maxValue) << ", because ";
+		_logReceiver->Info << "Stopped on peak " << FluxDensity::ToNiceString(*maxValue) << ", because ";
 		bool
 			maxIterReached = _iterationNumber >= MaxNIter(),
 			finalThresholdReached = std::fabs(*maxValue) <= _threshold || maxValue == 0.0,
 			negativeReached = maxValue<0.0 && this->_stopOnNegativeComponent,
-			mgainReached = std::fabs(*maxValue) <= stopGainThreshold,
+			mgainReached = std::fabs(*maxValue) <= majorIterThreshold,
 			didWork = (_iterationNumber-iterationCounterAtStart)!=0;
 		
 		if(maxIterReached)
-			Logger::Info << "maximum number of iterations was reached.\n";
+			_logReceiver->Info << "maximum number of iterations was reached.\n";
 		else if(finalThresholdReached)
-			Logger::Info << "the threshold was reached.\n";
+			_logReceiver->Info << "the threshold was reached.\n";
 		else if(negativeReached)
-			Logger::Info << "a negative component was found.\n";
+			_logReceiver->Info << "a negative component was found.\n";
 		else if(!didWork)
-			Logger::Info << "no iterations could be performed.\n";
+			_logReceiver->Info << "no iterations could be performed.\n";
 		else
-			Logger::Info << "the minor-loop threshold was reached. Continuing cleaning after inversion/prediction round.\n";
+			_logReceiver->Info << "the minor-loop threshold was reached. Continuing cleaning after inversion/prediction round.\n";
 		reachedMajorThreshold = mgainReached && didWork && !negativeReached && !finalThresholdReached;
+		return *maxValue;
 	}
 	else {
-		Logger::Info << "Deconvolution aborted.\n";
+		_logReceiver->Info << "Deconvolution aborted.\n";
 		reachedMajorThreshold = false;
+		return 0.0;
 	}
 }
 

@@ -94,6 +94,20 @@ void Image::reset()
 	_allocator = nullptr;
 }
 
+Image& Image::operator+=(const Image& other)
+{
+	for(size_t i=0; i!=_width*_height; ++i)
+		_data[i] += other[i];
+	return *this;
+}
+
+Image& Image::operator-=(const Image& other)
+{
+	for(size_t i=0; i!=_width*_height; ++i)
+		_data[i] -= other[i];
+	return *this;
+}
+
 Image& Image::operator*=(double factor)
 {
 	for(size_t i=0; i!=_width*_height; ++i)
@@ -119,15 +133,6 @@ void Image::Trim(double* output, size_t outWidth, size_t outHeight, const double
 	for(size_t y=startY; y!=endY; ++y)
 	{
 		memcpy(&output[(y-startY)*outWidth], &input[y*inWidth + startX], outWidth*sizeof(double));
-	}
-}
-
-void Image::TrimBox(bool* output, size_t x1, size_t y1, size_t boxWidth, size_t boxHeight, const bool* input, size_t inWidth, size_t inHeight)
-{
-	size_t endY = y1 + boxHeight;
-	for(size_t y=y1; y!=endY; ++y)
-	{
-		memcpy(&output[(y-y1)*boxWidth], &input[y*inWidth + x1], boxWidth*sizeof(bool));
 	}
 }
 

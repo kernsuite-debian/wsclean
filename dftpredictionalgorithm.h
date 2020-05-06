@@ -32,8 +32,8 @@ public:
 	size_t ChannelCount() const { return _beamValuesPerChannel.size(); }
 	void InitializeChannelBuffers(size_t channelCount) { _beamValuesPerChannel.resize(channelCount); }
 	void SetUnitaryBeam() {
-		for(std::vector<MC2x2>::iterator i = _beamValuesPerChannel.begin(); i!=_beamValuesPerChannel.end(); ++i)
-			*i = MC2x2::Unity();
+		for(MC2x2& m : _beamValuesPerChannel)
+			m = MC2x2::Unity();
 	}
 private:
 	std::vector<MC2x2> _beamValuesPerChannel;
@@ -42,7 +42,10 @@ private:
 class DFTPredictionComponent
 {
 public:
-	DFTPredictionComponent() : _isGaussian(false) { }
+	DFTPredictionComponent() : 
+		_ra(0.0), _dec(0.0), _l(0.0), _m(0.0), _lmSqrt(0.0),
+		_isGaussian(false)
+	{ }
 	
 	DFTPredictionComponent(double ra, double dec, double l, double m, std::complex<double> fluxLinear[4], size_t channelCount) :
 		_ra(ra), _dec(dec), _l(l), _m(m), _lmSqrt(sqrt(1.0 - l*l - m*m)),
@@ -134,11 +137,11 @@ public:
 	void InitializeFromModel(const class Model& model, long double phaseCentreRA, long double phaseCentreDec, const BandData& band);
 	void AddComponent(const DFTPredictionComponent& component)
 	{
-		_components.push_back(component);
+		_components.emplace_back(component);
 	}
 	DFTPredictionComponent& AddComponent()
 	{
-		_components.push_back(DFTPredictionComponent());
+		_components.emplace_back();
 		return _components.back();
 	}
 	size_t ComponentCount() const { return _components.size(); }
@@ -184,7 +187,7 @@ public:
 	
 	void Predict(MC2x2& dest, double u, double v, double w, size_t channelIndex, size_t a1, size_t a2);
 
-	void UpdateBeam(LBeamEvaluator& beamEvaluator);
+	void UpdateBeam(LBeamEvaluator& beamEvaluator, size_t startChannel, size_t endChannel);
 	
 private:
 	void predict(MC2x2& dest, double u, double v, double w, size_t channelIndex, size_t a1, size_t a2, const DFTPredictionComponent& component);

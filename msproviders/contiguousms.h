@@ -22,7 +22,9 @@ public:
 	
 	ContiguousMS& operator=(const ContiguousMS&) = delete;
 	
-	casacore::MeasurementSet &MS() final override { return _ms; }
+	SynchronizedMS MS() final override { return _ms; }
+	
+	const std::string& DataColumnName() final override { return _dataColumnName; }
 	
 	size_t RowId() const final override { return _rowId; }
 	
@@ -50,7 +52,7 @@ public:
 	
 	void ReopenRW() final override 
 	{
-		_ms.reopenRW();
+		_ms->reopenRW();
 	}
 	
 	double StartTime() final override;
@@ -59,6 +61,8 @@ public:
 	
 	PolarizationEnum Polarization() final override { return _polOut; }
 private:
+	void open();
+	
 	size_t _row, _rowId;
 	size_t _timestep;
 	double _time;
@@ -66,12 +70,12 @@ private:
 	bool _isMetaRead, _isDataRead, _isModelRead, _isWeightRead;
 	bool _isModelColumnPrepared;
 	size_t _startRow, _endRow;
-	vector<size_t> _idToMSRow;
+	std::vector<size_t> _idToMSRow;
 	std::vector<PolarizationEnum> _inputPolarizations;
 	MSSelection _selection;
 	PolarizationEnum _polOut;
 	std::string _msPath;
-	casacore::MeasurementSet _ms;
+	SynchronizedMS _ms;
 	MultiBandData _bandData;
 	bool _msHasWeightSpectrum;
 
@@ -81,8 +85,8 @@ private:
 	std::unique_ptr<casacore::ArrayColumn<float>> _weightSpectrumColumn;
 	std::unique_ptr<casacore::ArrayColumn<float>> _weightScalarColumn;
 	std::string _dataColumnName;
-	casacore::ROArrayColumn<casacore::Complex> _dataColumn;
-	casacore::ROArrayColumn<bool> _flagColumn;
+	casacore::ArrayColumn<casacore::Complex> _dataColumn;
+	casacore::ArrayColumn<bool> _flagColumn;
 	std::unique_ptr<casacore::ArrayColumn<casacore::Complex>> _modelColumn;
 	std::unique_ptr<casacore::ArrayColumn<float>> _imagingWeightsColumn;
 	

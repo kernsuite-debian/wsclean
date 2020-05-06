@@ -7,6 +7,7 @@
 #include "threadeddeconvolutiontools.h"
 
 #include "../uvector.h"
+#include "../aocommon/cloned_ptr.h"
 
 #include "../deconvolution/componentlist.h"
 #include "../deconvolution/imageset.h"
@@ -19,14 +20,18 @@
 class MultiScaleAlgorithm : public DeconvolutionAlgorithm
 {
 public:
-	MultiScaleAlgorithm(class ImageBufferAllocator& allocator, double beamSize, double pixelScaleX, double pixelScaleY);
+	MultiScaleAlgorithm(class ImageBufferAllocator& allocator, class FFTWManager& fftwManager, double beamSize, double pixelScaleX, double pixelScaleY);
 	~MultiScaleAlgorithm();
 	
-	void SetManualScaleList(const ao::uvector<double>& scaleList) { _manualScaleList = scaleList; }
+	std::unique_ptr<DeconvolutionAlgorithm> Clone() const final override
+	{
+		return std::unique_ptr<DeconvolutionAlgorithm>(new MultiScaleAlgorithm(*this));
+	}
 	
-	//void PerformMajorIteration(size_t& iterCounter, size_t nIter, DynamicSet& modelSet, DynamicSet& dirtySet, const ao::uvector<const double*>& psfs, bool& reachedMajorThreshold);
+	void SetManualScaleList(const ao::uvector<double>& scaleList)
+	{ _manualScaleList = scaleList; }
 	
-	virtual void ExecuteMajorIteration(ImageSet& dataImage, ImageSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold);
+	virtual double ExecuteMajorIteration(ImageSet& dataImage, ImageSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold) final override;
 	
 	void SetAutoMaskMode(bool trackPerScaleMasks, bool usePerScaleMasks) {
 		_trackPerScaleMasks = trackPerScaleMasks;
@@ -62,7 +67,15 @@ public:
 	{
 		return _scaleInfos.size();
 	}
+	void ClearComponentList() 
+	{
+		_componentList.reset();
+	}
 	ComponentList& GetComponentList() 
+	{
+		return *_componentList;
+	}
+	const ComponentList& GetComponentList() const
 	{
 		return *_componentList;
 	}
@@ -70,16 +83,29 @@ public:
 	{
 		return _scaleInfos[scaleIndex].scale; 
 	}
+	size_t GetScaleMaskCount() const
+	{
+		return _scaleMasks.size();
+	}
+	void SetScaleMaskCount(size_t n)
+	{
+		_scaleMasks.resize(n);
+	}
+	ao::uvector<bool>& GetScaleMask(size_t index)
+	{
+		return _scaleMasks[index];
+	}
 private:
 	class ImageBufferAllocator& _allocator;
-	size_t _width, _height, _convolutionWidth, _convolutionHeight;
+	FFTWManager& _fftwManager;
+	size_t _width, _height;
 	double _convolutionPadding;
 	double _beamSizeInPixels;
 	double _multiscaleScaleBias;
 	double _multiscaleGain;
 	bool _multiscaleNormalizeResponse;
 	MultiScaleTransforms::Shape _scaleShape;
-	ThreadedDeconvolutionTools* _tools;
+	//ThreadedDeconvolutionTools* _tools;
 	
 	struct ScaleInfo
 	{
@@ -115,11 +141,11 @@ private:
 	
 	bool _trackPerScaleMasks, _usePerScaleMasks, _fastSubMinorLoop, _trackComponents;
 	std::vector<ao::uvector<bool>> _scaleMasks;
-	std::unique_ptr<ComponentList> _componentList;
+	ao::cloned_ptr<ComponentList> _componentList;
 
 	void initializeScaleInfo();
 	void convolvePSFs(std::unique_ptr<ImageBufferAllocator::Ptr[]>& convolvedPSFs, const double* psf, double* tmp, bool isIntegrated);
-	void findActiveScaleConvolvedMaxima(const ImageSet& imageSet, double* integratedScratch, double* scratch, bool reportRMS);
+	void findActiveScaleConvolvedMaxima(const ImageSet& imageSet, double* integratedScratch, double* scratch, bool reportRMS, ThreadedDeconvolutionTools* tools);
 	bool selectMaximumScale(size_t& scaleWithPeak);
 	void activateScales(size_t scaleWithLastPeak);
 	void measureComponentValues(ao::uvector<double>& componentValues, size_t scaleIndex, ImageSet& imageSet);
@@ -127,8 +153,8 @@ private:
 	
 	void findPeakDirect(const double *image, double* scratch, size_t scaleIndex);
 	
-	double* getConvolvedPSF(size_t psfIndex, size_t scaleIndex, const ao::uvector<const double*>& psfs, double* scratch, const std::unique_ptr<std::unique_ptr<ImageBufferAllocator::Ptr[]>[]>& convolvedPSFs);
-	
+	double* getConvolvedPSF(size_t psfIndex, size_t scaleIndex, const std::unique_ptr<std::unique_ptr<ImageBufferAllocator::Ptr[]>[]>& convolvedPSFs);
+	void getConvolutionDimensions(size_t scaleIndex, size_t& width, size_t& height) const;
 };
 
 #endif

@@ -14,6 +14,8 @@
 #include "../fitsreader.h"
 #include "../fitswriter.h"
 
+#include "../wsclean/wsclean.h"
+
 struct WSCleanUserData
 {
 	std::string msPath;
@@ -21,6 +23,7 @@ struct WSCleanUserData
 	unsigned int height;
 	double pixelScaleX;
 	double pixelScaleY;
+	unsigned int doNormalize;
 	std::string extraParameters;
 	
 	std::string dataColumn;
@@ -39,20 +42,17 @@ std::string str(T i)
 
 void wsclean_main(const std::vector<std::string>& parms)
 {
-	char** argv = new char*[parms.size()];
+	std::vector<char*> argv(parms.size());
 	for(size_t i=0; i!=parms.size(); ++i)
 	{
 		std::cout << parms[i] << ' ';
-		argv[i] = new char[parms[i].size()+1];
-		memcpy(argv[i], parms[i].c_str(), parms[i].size()+1);
+		argv[i] = const_cast<char*>(parms[i].c_str());
 	}
 	std::cout << '\n';
 
-	CommandLine::Run(parms.size(), argv);
-	
-	for(size_t i=0; i!=parms.size(); ++i)
-		delete[] argv[i];
-	delete[] argv;
+	WSClean wsclean;
+	if(CommandLine::Parse(wsclean, parms.size(), argv.data()))
+		CommandLine::Run(wsclean);
 }
 
 void wsclean_initialize(
@@ -72,6 +72,7 @@ void wsclean_initialize(
 	wscUserData->extraParameters = parameters->extraParameters;
 	wscUserData->nACalls = 0;
 	wscUserData->nAtCalls = 0;
+	wscUserData->doNormalize = parameters->doNormalize;
 	(*userData) = static_cast<void*>(wscUserData);
 	
 	// Number of vis is nchannels x selected nrows; calculate both.
@@ -363,6 +364,19 @@ void wsclean_operator_At(void* userData, double* dataOut, const DCOMPLEX* dataIn
 	// Read dirty image and store in dataOut
 	FitsReader reader(prefixName.str() + "-image.fits");
 	reader.Read(dataOut);
+	if(wscUserData->doNormalize == 0)
+	{
+		size_t n = wscUserData->width * wscUserData->height;
+		double normf;
+		if(reader.ReadDoubleKeyIfExists("WSCNORMF", normf))
+		{
+			for(size_t i=0; i!=n; ++i)
+				dataOut[i] *= normf;
+		}
+		else {
+			std::cout << "WSCNORMF keyword not found in fits file.\n";
+		}
+	}
 	// Image 0 is saved until the end to retrieve keywords from...
 	if(wscUserData->nAtCalls != 0)
 		std::remove((prefixName.str() + "-image.fits").c_str());

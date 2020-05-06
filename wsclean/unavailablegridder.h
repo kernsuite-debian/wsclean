@@ -4,30 +4,33 @@
 #include "msgridderbase.h"
 
 #include <stdexcept>
+#include <string>
 
 class UnavailableGridder : public MSGridderBase
 {
 public:
-	UnavailableGridder(const WSCleanSettings&) { doThrow(); }
+	UnavailableGridder(const class WSCleanSettings&, class ImageBufferAllocator&) { doThrow(); }
 	
-	virtual ~UnavailableGridder() { doThrow(); }
+	virtual ~UnavailableGridder() final override { doThrow(); }
 	
-	virtual void Invert() { doThrow(); }
+	virtual void Invert() final override { doThrow(); }
 	
-	virtual void Predict(double* real) { doThrow(); }
+	virtual void Predict(ImageBufferAllocator::Ptr) final override { doThrow(); }
 	
-	virtual void Predict(double* real, double* imaginary) { doThrow(); }
+	virtual void Predict(ImageBufferAllocator::Ptr, ImageBufferAllocator::Ptr) final override { doThrow(); }
 	
-	virtual double* ImageRealResult() { doThrow(); return 0; }
+	virtual ImageBufferAllocator::Ptr ImageRealResult() final override { doThrow(); return 0; }
 	
-	virtual double* ImageImaginaryResult() { doThrow(); return 0; }
+	virtual ImageBufferAllocator::Ptr ImageImaginaryResult() final override { doThrow(); return 0; }
 	
-	virtual void GetGriddingCorrectionImage(double* image) const { doThrow(); }
+	void SavePBCorrectedImages(class FitsWriter& /*writer*/, class ImageFilename& /*filename*/, const std::string& /*filenameKind*/, class ImageBufferAllocator& /*allocator*/) const
+	{ }
 	
-	virtual bool HasGriddingCorrectionImage() const { doThrow(); return false; }
-	
+	void SaveBeamImage(const class ImagingTableEntry& /*entry*/, class ImageFilename& /*filename*/) const
+	{ }
+
 private:
-	virtual size_t getSuggestedWGridSize() const { doThrow(); return 0; }
+	virtual size_t getSuggestedWGridSize() const final override { doThrow(); return 0; }
 	
 	void doThrow() const
 	{

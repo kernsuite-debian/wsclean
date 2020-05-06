@@ -3,6 +3,7 @@
 
 #include <set>
 
+#include "../hmatrix4x4.h"
 #include "../polarization.h"
 #include "../uvector.h"
 #include "../wsclean/imagingtable.h"
@@ -31,9 +32,9 @@ public:
 		_msProviders.push_back(MSProviderInfo(msProvider, selection, msIndex));
 	}
 	
-	void SetImageWeight(const class ImageWeightCache* imageWeightCache)
+	void SetImageWeight(std::shared_ptr<class ImageWeights> imageWeights)
 	{
-		_imageWeightCache = imageWeightCache;
+		_imageWeights = imageWeights;
 	}
 	
 	void SetImageDetails(size_t width, size_t height, double pixelSizeX, double pixelSizeY, double phaseCentreRA, double phaseCentreDec, double phaseCentreDL, double phaseCentreDM)
@@ -48,10 +49,24 @@ public:
 		_phaseCentreDM = phaseCentreDM;
 	}
 	
-	void Make(PrimaryBeamImageSet& beamImages);
+	PrimaryBeamImageSet Make();
 	
 	void SetUseDifferentialBeam(bool useDifferentialBeam) {
 		_useDifferentialBeam = useDifferentialBeam;
+	}
+	
+	void SetUndersampling(size_t undersamplingFactor)
+	{
+		_undersample = undersamplingFactor;
+	}
+	
+	void SetSaveIntermediateImages(bool saveIntermediateImages) {
+		_saveIntermediateImages = saveIntermediateImages;
+	}
+	
+	void SetSecondsBeforeBeamUpdate(size_t seconds)
+	{
+		_secondsBeforeBeamUpdate = seconds;
 	}
 	
 private:
@@ -80,11 +95,11 @@ private:
 		ao::uvector<double> _weights;
 	};
 	
-	void makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider& msProvider, const ImagingTableEntry::MSInfo& msInfo, const MSSelection& selection, double centralFrequency);
+	void makeBeamForMS(std::vector<HMC4x4>& _matrices, MSProvider& msProvider, const MSSelection& selection, double centralFrequency);
 
-	void makeBeamSnapshot(const std::vector<LOFAR::StationResponse::Station::Ptr>& stations, const ao::uvector<double>& weights, const WeightMatrix& baselineWeights, double** imgPtr, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame);
+	void makeBeamSnapshot(const std::vector<LOFAR::StationResponse::Station::Ptr>& stations, const WeightMatrix& weights, HMC4x4* matrices, double time, double frequency, double subbandFrequency, const casacore::MeasFrame& frame);
 	
-	void calculateStationWeights(const class ImageWeights& imageWeights, double& totalWeight, ao::uvector<double>& weights, WeightMatrix& baselineWeights, MSProvider& msProvider, const MSSelection& selection, double endTime);
+	void calculateStationWeights(const class ImageWeights& imageWeights, double& totalWeight, WeightMatrix& baselineWeights, SynchronizedMS& ms, MSProvider& msProvider, const MSSelection& selection, double endTime);
 	
 	void logWeights(casacore::MeasurementSet& ms, const ao::uvector<double>& weights);
 #endif
@@ -102,15 +117,15 @@ private:
 	const ImagingTableEntry* _tableEntry;
 	std::vector<MSProviderInfo> _msProviders;
 	
-	const class ImageWeightCache* _imageWeightCache;
+	std::shared_ptr<class ImageWeights> _imageWeights;
 	class ImageBufferAllocator* _allocator;
 	
 	size_t _width, _height, _sampledWidth, _sampledHeight;
 	size_t _undersample, _secondsBeforeBeamUpdate;
 	double _pixelSizeX, _pixelSizeY, _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
 	double _sPixelSizeX, _sPixelSizeY, _totalWeightSum;
- 	bool _useDifferentialBeam;
-	casacore::MDirection _delayDir, _referenceDir, _tileBeamDir;
+ 	bool _useDifferentialBeam, _saveIntermediateImages;
+	casacore::MDirection _delayDir, _preappliedDir, _tileBeamDir;
 };
 
 #endif

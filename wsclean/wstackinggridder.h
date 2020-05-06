@@ -11,18 +11,15 @@
 #endif
 
 #include "gridmodeenum.h"
-
-// Forward declare boost::mutex to avoid header inclusion
-namespace boost
-{
-	class mutex;
-}
+#include "imagebufferallocator.h"
 
 #include <cmath>
 #include <cstring>
 #include <complex>
+#include <mutex>
 #include <vector>
 #include <stack>
+#include <thread>
 
 class ImageBufferAllocator;
 
@@ -66,8 +63,8 @@ class ImageBufferAllocator;
  * - Construct an instance with @ref WStackingGridder()
  * - Set settings if necessary
  * - Call @ref PrepareWLayers();
+   - Call @ref InitializePrediction();
  * - For each pass if multiple passes are necessary (or once otherwise) :
- *   - Call @ref InitializePrediction();
  *   - Call @ref StartPredictionPass();
  *   - Get the predicted visibilities with @ref SampleDataSample();
  * 
@@ -81,7 +78,8 @@ class ImageBufferAllocator;
  * @date 2013 (first version)
  * @sa [WSClean: an implementation of a fast, generic wide-field imager for radio astronomy](http://arxiv.org/abs/1407.1943)
  */
-class WStackingGridder
+template<typename T>
+class WStackingGridderBase
 {
 	/**
 	* @example wspredictionexample.cpp
@@ -89,6 +87,8 @@ class WStackingGridder
 	* way to predict visibilities.
 	*/
 	public:
+		typedef T num_t;
+		
 		/** Construct a new gridder with given settings.
 		 * @param width The width of the image in pixels
 		 * @param height The height of the image in pixels.
@@ -105,14 +105,14 @@ class WStackingGridder
 		 *   that are precalculated at different rational positions. Larger is more accurate
 		 *   but requires more memory and becomes slower, probably mainly due to cache misses.
 		 */
-		WStackingGridder(size_t width, size_t height, double pixelSizeX, double pixelSizeY, size_t fftThreadCount, ImageBufferAllocator* allocator, size_t kernelSize = 7, size_t overSamplingFactor = 63);
+		WStackingGridderBase(size_t width, size_t height, double pixelSizeX, double pixelSizeY, size_t fftThreadCount, ImageBufferAllocator* allocator, size_t kernelSize = 7, size_t overSamplingFactor = 63);
 		
-		WStackingGridder(const WStackingGridder&) = delete;
+		WStackingGridderBase(const WStackingGridderBase&) = delete;
 		
-		WStackingGridder& operator=(const WStackingGridder&) = delete;
+		WStackingGridderBase<T>& operator=(const WStackingGridderBase&) = delete;
 		
 		/** De-allocate imagebuffers with the allocator and perform other clean-up. */
-		~WStackingGridder();
+		~WStackingGridderBase();
 		
 		/** Initialize the inversion/prediction stage with the given number of w-layers.
 		 * The number of w-layers sets the accuracy of w-term correction and can normally
@@ -319,15 +319,16 @@ class WStackingGridder
 		 * each pass, i.e., before each call to @ref StartPredictionPass().
 		 * 
 		 * This method is used for prediction of non-complex (IsComplex()==false)
-		 * images. Use @ref InitializePrediction(const double*, const double*) for
-		 * complex prediction -- see @ref SetIsComplex() for more info.
+		 * images. Use
+		 * @ref InitializePrediction(ImageBufferAllocator::TPtr<num_t>, ImageBufferAllocator::TPtr<num_t>)
+		 * for complex prediction -- see @ref SetIsComplex() for more info.
 		 * 
 		 * @param image The model image that is to be predicted for. This is an
 		 * array of width * height size, index by (x + width*y).
 		 */
-		void InitializePrediction(const double *image)
+		void InitializePrediction(ImageBufferAllocator::Ptr image)
 		{
-			initializePrediction(image, _imageData);
+			initializePrediction(std::move(image), _imageData);
 		}
 		
 		/**
@@ -338,10 +339,10 @@ class WStackingGridder
 		 * @param real Array of width * height giving the real (model) image values.
 		 * @param imaginary Array of width * height giving the imaginary (model) image values.
 		 */
-		void InitializePrediction(const double *real, const double *imaginary)
+		void InitializePrediction(ImageBufferAllocator::Ptr real, ImageBufferAllocator::Ptr imaginary)
 		{
-			initializePrediction(real, _imageData);
-			initializePrediction(imaginary, _imageDataImaginary);
+			initializePrediction(std::move(real), _imageData);
+			initializePrediction(std::move(imaginary), _imageDataImaginary);
 		}
 
 		/**
@@ -383,24 +384,8 @@ class WStackingGridder
 		 * @param vInLambda V value of UVW coordinate, in number of wavelengths.
 		 * @param wInLambda W value of UVW coordinate, in number of wavelengths.
 		 */
-		void SampleDataSample(std::complex<double>& value, double uInLambda, double vInLambda, double wInLambda);
-		
-		/**
-		 * Predict the value of a single visibility. If the visibility can not be predicted,
-		 * because its w-value belongs to a w-layer that is not processed during this pass,
-		 * it will be given a value of NaN.
-		 * A call to @ref StartPredictionPass() should have been made before calling this method.
-		 * @param value Will be set to the predicted visibility value.
-		 * @param uInLambda U value of UVW coordinate, in number of wavelengths.
-		 * @param vInLambda V value of UVW coordinate, in number of wavelengths.
-		 * @param wInLambda W value of UVW coordinate, in number of wavelengths.
-		 */
-		void SampleDataSample(std::complex<float>& value, double uInLambda, double vInLambda, double wInLambda)
-		{
-			std::complex<double> doubleValue;
-			SampleDataSample(doubleValue, uInLambda, vInLambda, wInLambda);
-			value = doubleValue;
-		}
+		template<typename SampleT>
+		void SampleDataSample(std::complex<SampleT>& value, double uInLambda, double vInLambda, double wInLambda);
 		
 		/**
 		 * Get the image result of inversion. This is an array of size width x height, and can be
@@ -411,13 +396,17 @@ class WStackingGridder
 		 * If a complex image is produced, this image returns the real part. The imaginary part can
 		 * be acquired with @ref ImaginaryImage().
 		 */
-		double *RealImage() { return _imageData[0]; }
+		ImageBufferAllocator::TPtr<num_t> RealImage() { return std::move(_imageData[0]); }
+		
+		ImageBufferAllocator::Ptr RealImageDouble();
 		
 		/**
 		 * Get the imaginary part of a complex image after inversion. Otherwise similar to
 		 * @ref RealImage().
 		 */
-		double *ImaginaryImage() { return _imageDataImaginary[0]; }
+		ImageBufferAllocator::TPtr<num_t> ImaginaryImage() { return std::move(_imageDataImaginary[0]); }
+		
+		ImageBufferAllocator::Ptr ImaginaryImageDouble();
 		
 		/**
 		 * Get the number of threads used when performing the FFTs. The w-layers are divided over
@@ -476,8 +465,6 @@ class WStackingGridder
 		 */
 		void SetIsComplex(bool isComplex) { _isComplex = isComplex; }
 		
-		//void SetImageConjugatePart(bool imageConjugatePart) { _imageConjugatePart = imageConjugatePart; }
-		
 		/**
 		 * Setup the gridder for images with a shifted phase centre. When dl or dm is
 		 * non-zero, the centre of the involved images is shifted by the given amount.
@@ -494,41 +481,6 @@ class WStackingGridder
 		void SetDenormalPhaseCentre(double dl, double dm) { _phaseCentreDL = dl; _phaseCentreDM = dm; }
 		
 		/**
-		 * Make an image that contains the effect of the gridding kernel in image space.
-		 * The gridder already corrects for the kernel internally, so it is not necessary
-		 * to apply this image to the results, but users might be interested in the
-		 * response function of the gridding kernel alone.
-		 * @param image A width*height array that will be set to the kernel image.
-		 */
-		void GetGriddingCorrectionImage(double* image) const;
-		
-		/**
-		 * Replace the current result of the imaging with a new image. This is
-		 * hardly ever really necessary but can save some memory and/or time when the
-		 * WStackingGridder remains in memory with its results, and the results are
-		 * passed on but need to be conditionally changed in some way (e.g. as done in
-		 * the @ref WSMSGridder class to pass a resized buffer to the WSClean class).
-		 * 
-		 * After calling this method, @ref RealImage() will return @p newBuffer. The
-		 * newBuffer will be cleaned up with the earlier provided ImageBufferAllocator.
-		 * The old buffer can no longer be used.
-		 * 
-		 * This method replaces the real part of the imaging.
-		 * @param newBuffer The new buffer that was allocated with the right
-		 * ImageBufferAllocator.
-		 * @see ReplaceImaginaryImageBuffer().
-		 */
-		void ReplaceRealImageBuffer(double* newBuffer);
-		
-		/**
-		 * Replace the current imaginary result of the imaging with a new image.
-		 * Exactly like @ref ReplaceRealImageBuffer(), except it replaces the imaginary
-		 * part.
-		 * @param newBuffer The new imaginary buffer part.
-		 */
-		void ReplaceImaginaryImageBuffer(double* newBuffer);
-		
-		/**
 		 * Retrieve a gridded uv layer. This function can be called after
 		 * @ref StartInversionPass() was called, and before @ref FinishInversionPass()
 		 * is called.
@@ -536,19 +488,19 @@ class WStackingGridder
 		 * layer of the current pass.
 		 * @returns The layer, with the currently gridded samples on it.
 		 */
-		const std::complex<double>* GetGriddedUVLayer(size_t layerIndex) const
+		const std::complex<num_t>* GetGriddedUVLayer(size_t layerIndex) const
 		{
-			return _layeredUVData[layerIndex];
+			return _layeredUVData[layerIndex].data();
 		}
 		
 		/**
-		 * Acquire a Kaiser-Bessel kernel. This is mostly a debugging/example function.
-		 * @param kernel Array of size @p n
-		 * @param n Size of kernel
-		 * @param multiplyWithSinc True to multiply the kernel with the sinc function, as
-		 * is the case during gridding.
+		 * Acquire the antialising gridding kernel. This is mostly a debugging/example function.
+		 * @param gridMode Type of kernel
+		 * @param kernel Array of size @p oversampling * size
+		 * @param n Oversampling factor of kernel
+		 * @param size UV-cell size of the kernel
 		 */
-		void GetKaiserBesselKernel(double* kernel, size_t n, bool multiplyWithSinc);
+		static void GetKernel(enum GridModeEnum gridMode, double* kernel, size_t oversampling, size_t size);
 		
 		/**
 		 * Get width of image as specified during construction. This is the full width, before
@@ -583,23 +535,24 @@ class WStackingGridder
 		 * @returns The image buffer allocator.
 		 */
 		ImageBufferAllocator* Allocator() const { return _imageBufferAllocator; }
+		
 	private:
 		size_t layerRangeStart(size_t layerRangeIndex) const
 		{
 			return (_nWLayers * layerRangeIndex) / _nPasses;
 		}
+		void makeFFTWThreadSafe();
 		template<bool IsComplexImpl>
-		void projectOnImageAndCorrect(const std::complex<double> *source, double w, size_t threadIndex);
+		void projectOnImageAndCorrect(const std::complex<num_t> *source, double w, size_t threadIndex);
 		template<bool IsComplexImpl>
-		void copyImageToLayerAndInverseCorrect(std::complex<double> *dest, double w);
+		void copyImageToLayerAndInverseCorrect(std::complex<num_t> *dest, double w);
 		void initializeSqrtLMLookupTable();
 		void initializeSqrtLMLookupTableForSampling();
 		void initializeLayeredUVData(size_t n);
-		void freeLayeredUVData() { initializeLayeredUVData(0); }
-		void fftToImageThreadFunction(boost::mutex *mutex, std::stack<size_t> *tasks, size_t threadIndex);
-		void fftToUVThreadFunction(boost::mutex *mutex, std::stack<size_t> *tasks);
-		void finalizeImage(double multiplicationFactor, std::vector<double*>& dataArray);
-		void initializePrediction(const double *image, std::vector<double*>& dataArray);
+		void fftToImageThreadFunction(std::mutex *mutex, std::stack<size_t> *tasks, size_t threadIndex);
+		void fftToUVThreadFunction(std::mutex *mutex, std::stack<size_t> *tasks);
+		void finalizeImage(double multiplicationFactor, std::vector<ImageBufferAllocator::TPtr<num_t>>& dataArray);
+		void initializePrediction(ImageBufferAllocator::Ptr image, std::vector<ImageBufferAllocator::TPtr<num_t>>& dataArray);
 		
 		void makeKernels();
 		/**
@@ -611,13 +564,18 @@ class WStackingGridder
 		 * - 8.6 ; similar to the Blackmann window
 		 * -  14 ; similar to prolate spheroidal
 		 */
-		void makeKaiserBesselKernel(std::vector<double> &kernel, double alpha, size_t overSamplingFactor, bool withSinc=true);
+		static void makeKaiserBesselKernel(std::vector<double> &kernel, double alpha, size_t overSamplingFactor, bool withSinc=true);
 		
-		void makeRectangularKernel(std::vector<double> &kernel, size_t overSamplingFactor);
+		static void makeRectangularKernel(std::vector<double> &kernel, size_t overSamplingFactor);
 		
-		double bessel0(double x, double precision);
+		static void makeGaussianKernel(std::vector<double> &kernel, size_t overSamplingFactor, bool withSinc=true);
+		
+		static void makeBlackmanNutallKernel(std::vector<double> &kernel, size_t overSamplingFactor, bool withSinc=true);
+		
+		static double bessel0(double x, double precision);
+		
 		template<bool Inverse>
-		void correctImageForKernel(double *image) const;
+		void correctImageForKernel(num_t *image) const;
 		
 		const size_t _width, _height;
 		const double _pixelSizeX, _pixelSizeY;
@@ -631,13 +589,16 @@ class WStackingGridder
 		enum GridModeEnum _gridMode;
 		size_t _overSamplingFactor, _kernelSize;
 		std::vector<double> _1dKernel;
-		std::vector<std::vector<double>> _griddingKernels;
+		std::vector<std::vector<num_t>> _griddingKernels;
 		
-		std::vector<std::complex<double>*> _layeredUVData;
-		std::vector<double*> _imageData, _imageDataImaginary;
-		std::vector<double> _sqrtLMLookupTable;
+		std::vector<ImageBufferAllocator::CPtr<num_t>> _layeredUVData;
+		std::vector<ImageBufferAllocator::TPtr<num_t>> _imageData, _imageDataImaginary;
+		std::vector<num_t> _sqrtLMLookupTable;
 		size_t _nFFTThreads;
 		ImageBufferAllocator* _imageBufferAllocator;
 };
+
+typedef WStackingGridderBase<double> WStackingGridder;
+typedef WStackingGridderBase<float> WStackingGridderF;
 
 #endif
