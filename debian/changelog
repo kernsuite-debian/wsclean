@@ -1,3 +1,10 @@
+wsclean (2.9-2kern2) bionic; urgency=medium
+
+  [ Gijs Molenaar ]
+  * Add lofar beam and IDG
+
+ -- KERN packaging <packaging@kernsuite.info>  Mon, 08 Jun 2020 13:52:36 +0200
+
 wsclean (2.9-2kern1) bionic; urgency=medium
 
   [ Gijs Molenaar ]
