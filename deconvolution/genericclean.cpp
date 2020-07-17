@@ -2,23 +2,24 @@
 
 #include "subminorloop.h"
 
-#include "../lane.h"
+#include <aocommon/lane.h>
 
 #include "../multiscale/threadeddeconvolutiontools.h"
 
 #include "../units/fluxdensity.h"
 
+#include "../wsclean/logger.h"
+
 #include <boost/thread/thread.hpp>
 
-GenericClean::GenericClean(ImageBufferAllocator& allocator, class FFTWManager& fftwManager, bool useSubMinorOptimization) :
+GenericClean::GenericClean(class FFTWManager& fftwManager, bool useSubMinorOptimization) :
 	_convolutionPadding(1.1),
 	_useSubMinorOptimization(useSubMinorOptimization),
-	_allocator(allocator),
 	_fftwManager(fftwManager)
 {
 }
 
-double GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const ao::uvector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold)
+double GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSet, const aocommon::UVector<const double*>& psfs, size_t width, size_t height, bool& reachedMajorThreshold)
 {
 	const size_t iterationCounterAtStart = _iterationNumber;
 	if(_stopOnNegativeComponent)
@@ -32,10 +33,10 @@ double GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSe
 	if(_convolutionHeight%2 != 0)
 		++_convolutionHeight;
 	
-	ImageBufferAllocator::Ptr integrated, scratchA, scratchB;
-	_allocator.Allocate(width*height, integrated);
-	_allocator.Allocate(_convolutionWidth*_convolutionHeight, scratchA);
-	_allocator.Allocate(_convolutionWidth*_convolutionHeight, scratchB);
+	Image
+		integrated(width, height),
+		scratchA(_convolutionWidth, _convolutionHeight),
+		scratchB(_convolutionWidth, _convolutionHeight);
 	dirtySet.GetLinearIntegrated(integrated.data());
 	size_t componentX=0, componentY=0;
 	boost::optional<double> maxValue = findPeak(integrated.data(), scratchA.data(), componentX, componentY);
@@ -100,7 +101,7 @@ double GenericClean::ExecuteMajorIteration(ImageSet& dirtySet, ImageSet& modelSe
 		ThreadedDeconvolutionTools tools(_threadCount);
 		size_t peakIndex = componentX + componentY*_width;
 
-		ao::uvector<double> peakValues(dirtySet.size());
+		aocommon::UVector<double> peakValues(dirtySet.size());
 		
 		while(maxValue && fabs(*maxValue) > firstThreshold && this->_iterationNumber < this->_maxIter && !(maxValue<0.0 && this->_stopOnNegativeComponent))
 		{

@@ -1,9 +1,9 @@
 #ifndef IMAGE_SET_H
 #define IMAGE_SET_H
 
-#include "../uvector.h"
+#include <aocommon/uvector.h>
+
 #include "../wsclean/imagingtable.h"
-#include "../wsclean/imagebufferallocator.h"
 #include "../wsclean/wscleansettings.h"
 
 #include <vector>
@@ -13,9 +13,10 @@
 class ImageSet
 {
 public:
-	ImageSet(const ImagingTable* table, ImageBufferAllocator& allocator, const WSCleanSettings& settings) :
+	ImageSet(const ImagingTable* table, const WSCleanSettings& settings) :
 		_images(),
-		_imageSize(0),
+		_width(0),
+		_height(0),
 		_channelsInDeconvolution(
 			(settings.deconvolutionChannelCount==0)
 			? table->SquaredGroupCount()
@@ -24,8 +25,7 @@ public:
 		_imagingTable(*table),
 		_imageIndexToPSFIndex(),
 		_linkedPolarizations(settings.linkedPolarizations),
-		_settings(settings),
-		_allocator(allocator)
+		_settings(settings)
 	{
 		size_t nPol = table->GetSquaredGroup(0).EntryCount();
 		size_t nImages = nPol * _channelsInDeconvolution;
@@ -37,9 +37,10 @@ public:
 		CalculateDeconvolutionFrequencies(*table, _frequencies, _weights, _channelsInDeconvolution);
 	}
 	
-	ImageSet(const ImagingTable* table, ImageBufferAllocator& allocator, const WSCleanSettings& settings, size_t width, size_t height) :
+	ImageSet(const ImagingTable* table, const WSCleanSettings& settings, size_t width, size_t height) :
 		_images(),
-		_imageSize(width*height),
+		_width(width),
+		_height(height),
 		_channelsInDeconvolution(
 			(settings.deconvolutionChannelCount==0)
 			? table->SquaredGroupCount()
@@ -48,8 +49,7 @@ public:
 		_imagingTable(*table),
 		_imageIndexToPSFIndex(),
 		_linkedPolarizations(settings.linkedPolarizations),
-		_settings(settings),
-		_allocator(allocator)
+		_settings(settings)
 	{
 		size_t nPol = table->GetSquaredGroup(0).EntryCount();
 		size_t nImages = nPol * _channelsInDeconvolution;
@@ -76,7 +76,8 @@ public:
 	void AllocateImages(size_t width, size_t height)
 	{
 		free();
-		_imageSize = width*height;
+		_width = width;
+		_height = height;
 		allocateImages();
 	}
 	
@@ -89,23 +90,18 @@ public:
 	
 	void Claim(size_t imageIndex, double* data)
 	{
-		_allocator.Free(_images[imageIndex]);
+		delete[] _images[imageIndex];
 		_images[imageIndex] = data;
 	}
 	
 	bool IsAllocated() const
 	{
-		return _imageSize!=0;
-	}
-	
-	ImageBufferAllocator& Allocator() const
-	{
-		return _allocator;
+		return _width * _height!=0;
 	}
 	
 	void LoadAndAverage(class CachedImageSet& imageSet);
 	
-	void LoadAndAveragePSFs(class CachedImageSet& psfSet, std::vector<ao::uvector<double>>& psfImages, PolarizationEnum psfPolarization);
+	void LoadAndAveragePSFs(class CachedImageSet& psfSet, std::vector<aocommon::UVector<double>>& psfImages, aocommon::PolarizationEnum psfPolarization);
 	
 	void InterpolateAndStore(class CachedImageSet& imageSet, const class SpectralFitter& fitter);
 	
@@ -164,9 +160,9 @@ public:
 			getLinearIntegratedWithNormalChannels(dest);
 	}
 
-	void GetIntegratedPSF(double* dest, const ao::uvector<const double*>& psfs)
+	void GetIntegratedPSF(double* dest, const aocommon::UVector<const double*>& psfs)
 	{
-		std::copy_n(psfs[0], _imageSize, dest);
+		std::copy_n(psfs[0], _width * _height, dest);
 		for(size_t i = 1; i!=PSFCount(); ++i)
 		{
 			add(dest, psfs[i]);
@@ -203,7 +199,7 @@ public:
 	
 	std::unique_ptr<ImageSet> Trim(size_t x1, size_t y1, size_t x2, size_t y2, size_t oldWidth) const
 	{
-		std::unique_ptr<ImageSet> p(new ImageSet(&_imagingTable, _allocator, _settings, x2-x1, y2-y1));
+		std::unique_ptr<ImageSet> p(new ImageSet(&_imagingTable, _settings, x2-x1, y2-y1));
 		for(size_t i=0; i!=_images.size(); ++i)
 		{
 			copySmallerPart(_images[i], p->_images[i], x1, y1, x2, y2, oldWidth);
@@ -257,14 +253,14 @@ public:
 		return _squareJoinedChannels; 
 	}
 	
-	const std::set<PolarizationEnum>& LinkedPolarizations() const
+	const std::set<aocommon::PolarizationEnum>& LinkedPolarizations() const
 	{
 		return _linkedPolarizations;
 	}
 	
 	const WSCleanSettings& Settings() const { return _settings; }
 	
-	static void CalculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights, size_t nDeconvolutionChannels);
+	static void CalculateDeconvolutionFrequencies(const ImagingTable& groupTable, aocommon::UVector<double>& frequencies, aocommon::UVector<double>& weights, size_t nDeconvolutionChannels);
 	
 private:
 	ImageSet(const ImageSet&) = delete;
@@ -272,75 +268,75 @@ private:
 		
 	void allocateImages()
 	{
-		for(ao::uvector<double*>::iterator img=_images.begin();
+		for(aocommon::UVector<double*>::iterator img=_images.begin();
 				img!=_images.end(); ++img)
 		{
-			*img = _allocator.Allocate(_imageSize);
+			*img = new double[_width * _height];
 		}
 	}
 	
 	void free()
 	{
-		for(ao::uvector<double*>::iterator img=_images.begin();
+		for(aocommon::UVector<double*>::iterator img=_images.begin();
 				img!=_images.end(); ++img)
-			_allocator.Free(*img);
+			delete[] *img;
 	}
 		
 	void assign(double* lhs, const double* rhs) const
 	{
-		memcpy(lhs, rhs, sizeof(double) * _imageSize);
+		memcpy(lhs, rhs, sizeof(double) * _width * _height);
 	}
 	
-	void assign(double* lhs, const ImageBufferAllocator::Ptr& rhs) const
+	void assign(double* lhs, const Image& rhs) const
 	{
-		memcpy(lhs, rhs.data(), sizeof(double) * _imageSize);
+		memcpy(lhs, rhs.data(), sizeof(double) * _width * _height);
 	}
 	
 	void assignMultiply(double* lhs, const double* rhs, double factor) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			lhs[i] = rhs[i] * factor;
 	}
 	
 	void assign(double* image, double value) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			image[i] = value;
 	}
 	
 	void add(double* lhs, const double* rhs) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			lhs[i] += rhs[i];
 	}
 	
 	void square(double* image) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			image[i] *= image[i];
 	}
 	
 	void squareRoot(double* image) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			image[i] = sqrt(image[i]);
 	}
 	
 	void squareRootMultiply(double* image, double factor) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			image[i] = sqrt(image[i]) * factor;
 	}
 	
 	void addSquared(double* lhs, const double* rhs) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			lhs[i] += rhs[i]*rhs[i];
 	}
 	
 	void addFactor(double* lhs, const double* rhs, double factor) const
 	{
-		for(size_t i=0; i!=_imageSize; ++i)
+		for(size_t i=0; i!=_width * _height; ++i)
 			lhs[i] += rhs[i] * factor;
 	}
 	
@@ -348,7 +344,7 @@ private:
 	{
 		if(fact != 1.0)
 		{
-			for(size_t i=0; i!=_imageSize; ++i)
+			for(size_t i=0; i!=_width * _height; ++i)
 				image[i] *= fact;
 		}
 	}
@@ -358,7 +354,7 @@ private:
 	void initializePolFactor()
 	{
 		ImagingTable firstChannelGroup = _imagingTable.GetSquaredGroup(0);
-		std::set<PolarizationEnum> pols;
+		std::set<aocommon::PolarizationEnum> pols;
 		for(size_t i=0; i!=firstChannelGroup.EntryCount(); ++i)
 		{
 			if(_linkedPolarizations.empty()
@@ -367,10 +363,10 @@ private:
 				pols.insert(firstChannelGroup[i].polarization);
 			}
 		}
-		bool isDual = pols.size()==2 && Polarization::HasDualPolarization(pols);
+		bool isDual = pols.size()==2 && aocommon::Polarization::HasDualPolarization(pols);
 		bool isFull = pols.size()==4 && (
-			Polarization::HasFullLinearPolarization(pols) ||
-			Polarization::HasFullCircularPolarization(pols));
+			aocommon::Polarization::HasFullLinearPolarization(pols) ||
+			aocommon::Polarization::HasFullCircularPolarization(pols));
 		if(isDual || isFull)
 			_polarizationNormalizationFactor = 0.5;
 		else
@@ -431,18 +427,17 @@ private:
 		return fromFloor;
 	}
 	
-	ao::uvector<double*> _images;
-	size_t _imageSize, _channelsInDeconvolution;
+	aocommon::UVector<double*> _images;
+	size_t _width, _height, _channelsInDeconvolution;
 	// These vectors contain the info per deconvolution channel
-	ao::uvector<double> _frequencies, _weights;
+	aocommon::UVector<double> _frequencies, _weights;
 	bool _squareJoinedChannels;
 	const ImagingTable& _imagingTable;
 	std::map<size_t, size_t> _tableIndexToImageIndex;
-	ao::uvector<size_t> _imageIndexToPSFIndex;
+	aocommon::UVector<size_t> _imageIndexToPSFIndex;
 	double _polarizationNormalizationFactor;
-	std::set<PolarizationEnum> _linkedPolarizations;
+	std::set<aocommon::PolarizationEnum> _linkedPolarizations;
 	const WSCleanSettings& _settings;
-	ImageBufferAllocator& _allocator;
 };
 
 #endif

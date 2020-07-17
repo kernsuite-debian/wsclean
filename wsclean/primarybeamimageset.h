@@ -6,11 +6,11 @@
 #include <boost/filesystem/operations.hpp>
 
 #include "../hmatrix4x4.h"
-#include "../matrix2x2.h"
-#include "../polarization.h"
-#include "../fitsreader.h"
+#include <aocommon/matrix2x2.h>
 
-#include "../wsclean/imagebufferallocator.h"
+#include <aocommon/polarization.h>
+#include "../fitsreader.h"
+#include "../image.h"
 
 class PrimaryBeamImageSet
 {
@@ -21,13 +21,13 @@ public:
 		_height(0)
 	{ }
 	
-	PrimaryBeamImageSet(size_t width, size_t height, ImageBufferAllocator& allocator, size_t nImages) :
+	PrimaryBeamImageSet(size_t width, size_t height, size_t nImages) :
 		_beamImages(nImages),
 		_width(width),
 		_height(height)
 	{
 		for(size_t i=0; i!=nImages; ++i)
-			allocator.Allocate(width*height, _beamImages[i]);
+			_beamImages[i] = Image(width, height);
 	}
 	
 	static FitsReader GetAReader(const std::string& beamPrefix, bool stokesIOnly)
@@ -44,11 +44,11 @@ public:
 		}
 	}
 	
-	static PrimaryBeamImageSet Load(const std::string& beamPrefix, size_t width, size_t height, ImageBufferAllocator& allocator, bool stokesIOnly)
+	static PrimaryBeamImageSet Load(const std::string& beamPrefix, size_t width, size_t height, bool stokesIOnly)
 	{
 		if(stokesIOnly)
 		{
-			PrimaryBeamImageSet beamImages(width, height, allocator, 8);
+			PrimaryBeamImageSet beamImages(width, height, 8);
 			// IDG produces only a Stokes I beam, and has already corrected for the rest.
 			// Currently we just load that beam into real component of XX and YY, and set the other 6 images to zero.
 			// This is a bit wasteful so might require a better strategy for big images.
@@ -66,24 +66,24 @@ public:
 		}
 		else {
 			try {
-				PrimaryBeamImageSet beamImages(width, height, allocator, 8);
-				PolarizationEnum
-					linPols[4] = { Polarization::XX, Polarization::XY, Polarization::YX, Polarization::YY };
+				PrimaryBeamImageSet beamImages(width, height, 8);
+				aocommon::PolarizationEnum
+					linPols[4] = { aocommon::Polarization::XX, aocommon::Polarization::XY, aocommon::Polarization::YX, aocommon::Polarization::YY };
 				for(size_t i=0; i!=8; ++i)
 				{
-					PolarizationEnum p = linPols[i/2];
+					aocommon::PolarizationEnum p = linPols[i/2];
 					std::string polStr;
 					if(i%2 == 0) // real?
-						polStr = Polarization::TypeToShortString(p);
+						polStr = aocommon::Polarization::TypeToShortString(p);
 					else
-						polStr = Polarization::TypeToShortString(p) + "i";
+						polStr = aocommon::Polarization::TypeToShortString(p) + "i";
 					FitsReader reader(beamPrefix + "-" + polStr + ".fits");
 					reader.Read(beamImages[i].data());
 				}
 				return beamImages;
 			} catch(std::exception&)
 			{
-				PrimaryBeamImageSet beamImages(width, height, allocator, 16);
+				PrimaryBeamImageSet beamImages(width, height, 16);
 				for(size_t i=0; i!=16; ++i)
 				{
 					FitsReader reader(beamPrefix + "-" + std::to_string(i) + ".fits");
@@ -96,8 +96,8 @@ public:
 	
 	void SetToZero()
 	{
-		for(ImageBufferAllocator::Ptr& ptr : _beamImages)
-			std::fill_n(ptr.data(), _width*_height, 0.0);
+		for(Image& img : _beamImages)
+			std::fill_n(img.data(), _width*_height, 0.0);
 	}
 	
 	double GetUnpolarizedCorrectionFactor(size_t x, size_t y)
@@ -105,12 +105,12 @@ public:
 		if(_beamImages.size() == 8)
 		{
 			size_t index = y * _width + x;
-			MC2x2 val, squared;
+			aocommon::MC2x2 val, squared;
 			val[0] = std::complex<double>(_beamImages[0][index], _beamImages[1][index]);
 			val[1] = std::complex<double>(_beamImages[2][index], _beamImages[3][index]);
 			val[2] = std::complex<double>(_beamImages[4][index], _beamImages[5][index]);
 			val[3] = std::complex<double>(_beamImages[6][index], _beamImages[7][index]);
-			MC2x2::ATimesHermB(squared, val, val);
+			aocommon::MC2x2::ATimesHermB(squared, val, val);
 			double value;
 			if(squared.Invert())
 				value = 0.5 * (squared[0].real() + squared[3].real());
@@ -129,7 +129,7 @@ public:
 			});
 			if(!beam.Invert())
 				beam = HMC4x4::Zero();
-			Vector4 v{0.5, 0.0, 0.0, 0.5};
+			aocommon::Vector4 v{0.5, 0.0, 0.0, 0.5};
 			v = beam * v;
 			return v[0].real() + v[3].real();
 		}
@@ -138,7 +138,11 @@ public:
 		}
 	}
 	
-	const ImageBufferAllocator::Ptr& operator[](size_t index) const
+	const Image& operator[](size_t index) const
+	{
+		return _beamImages[index];
+	}
+	Image& operator[](size_t index)
 	{
 		return _beamImages[index];
 	}
@@ -180,12 +184,12 @@ public:
 			size_t size = _width * _height;
 			for(size_t j=0; j!=size; ++j)
 			{
-				MC2x2 val, squared;
+				aocommon::MC2x2 val, squared;
 				val[0] = std::complex<double>(_beamImages[0][j], _beamImages[1][j]);
 				val[1] = std::complex<double>(_beamImages[2][j], _beamImages[3][j]);
 				val[2] = std::complex<double>(_beamImages[4][j], _beamImages[5][j]);
 				val[3] = std::complex<double>(_beamImages[6][j], _beamImages[7][j]);
-				MC2x2::ATimesHermB(squared, val, val);
+				aocommon::MC2x2::ATimesHermB(squared, val, val);
 				if(squared.Invert())
 					stokesI[j] = stokesI[j] * 0.5 * (squared[0].real() + squared[3].real());
 				else
@@ -205,7 +209,7 @@ public:
 				});
 				if(!beam.Invert())
 					beam = HMC4x4::Zero();
-				Vector4 v{stokesI[j]*0.5, 0.0, 0.0, stokesI[j]*0.5};
+				aocommon::Vector4 v{stokesI[j]*0.5, 0.0, 0.0, stokesI[j]*0.5};
 				v = beam * v;
 				stokesI[j] = v[0].real() + v[3].real();
 			}
@@ -217,12 +221,12 @@ public:
 	
 	void ApplyFullStokes(double* images[4]) const
 	{
+		size_t size = _width * _height;
 		if(_beamImages.size() == 8)
 		{
-			size_t size = _width * _height;
 			for(size_t j=0; j!=size; ++j)
 			{
-				MC2x2 beamVal;
+				aocommon::MC2x2 beamVal;
 				beamVal[0] = std::complex<double>(_beamImages[0][j], _beamImages[1][j]);
 				beamVal[1] = std::complex<double>(_beamImages[2][j], _beamImages[3][j]);
 				beamVal[2] = std::complex<double>(_beamImages[4][j], _beamImages[5][j]);
@@ -230,11 +234,11 @@ public:
 				if(beamVal.Invert())
 				{
 					double stokesVal[4] = { images[0][j], images[1][j], images[2][j], images[3][j] };
-					MC2x2 linearVal, scratch;
-					Polarization::StokesToLinear(stokesVal, linearVal.Data());
-					MC2x2::ATimesB(scratch, beamVal, linearVal);
-					MC2x2::ATimesHermB(linearVal, scratch, beamVal);
-					Polarization::LinearToStokes(linearVal.Data(), stokesVal);
+					aocommon::MC2x2 linearVal, scratch;
+					aocommon::Polarization::StokesToLinear(stokesVal, linearVal.Data());
+					aocommon::MC2x2::ATimesB(scratch, beamVal, linearVal);
+					aocommon::MC2x2::ATimesHermB(linearVal, scratch, beamVal);
+					aocommon::Polarization::LinearToStokes(linearVal.Data(), stokesVal);
 					for(size_t p=0; p!=4; ++p)
 						images[p][j] = stokesVal[p];
 				}
@@ -244,15 +248,38 @@ public:
 				}
 			}
 		}
+		else if(_beamImages.size() == 16)
+		{
+			for(size_t j=0; j!=size; ++j)
+			{
+				HMC4x4 beam = HMC4x4::FromData({
+					_beamImages[0][j], _beamImages[1][j], _beamImages[2][j], _beamImages[3][j],
+					_beamImages[4][j], _beamImages[5][j], _beamImages[6][j], _beamImages[7][j],
+					_beamImages[8][j], _beamImages[9][j], _beamImages[10][j], _beamImages[11][j],
+					_beamImages[12][j], _beamImages[13][j], _beamImages[14][j], _beamImages[15][j]
+				});
+				if(!beam.Invert())
+					beam = HMC4x4::Zero();
+				double stokesVal[4] = { images[0][j], images[1][j], images[2][j], images[3][j] };
+				aocommon::Vector4 v;
+				aocommon::Polarization::StokesToLinear(stokesVal, v.data());
+				v = beam * v;
+				aocommon::Polarization::LinearToStokes(v.data(), stokesVal);
+				for(size_t p=0; p!=4; ++p)
+					images[p][j] = stokesVal[p];
+			}
+		}
 		else {
 			throw std::runtime_error("Not implemented");
 		}
 	}
 	
 	size_t NImages() const { return _beamImages.size(); }
+	size_t Width() const { return _width; }
+	size_t Height() const { return _height; }
 	
 private:
-	std::vector<ImageBufferAllocator::Ptr> _beamImages;
+	std::vector<Image> _beamImages;
 	size_t _width, _height;
 };
 

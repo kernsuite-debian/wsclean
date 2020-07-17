@@ -2,7 +2,7 @@
 
 #ifdef HAVE_LOFAR_BEAM
 
-#include "../banddata.h"
+#include <aocommon/banddata.h>
 
 #include "../wsclean/logger.h"
 #include "../units/radeccoord.h"
@@ -12,10 +12,11 @@
 #include <StationResponse/LofarMetaDataUtil.h>
 
 using namespace LOFAR::StationResponse;
+using aocommon::MC2x2;
 
 LBeamEvaluator::LBeamEvaluator(casacore::MeasurementSet& ms) : _ms(ms)
 {
-	BandData band(_ms.spectralWindow());
+	aocommon::BandData band(_ms.spectralWindow());
 	_subbandFrequency = band.CentreFrequency();
 	
 	casacore::MSField fieldTable(ms.field());
@@ -105,7 +106,7 @@ void LBeamEvaluator::PrecalculatePositionInfo(LBeamEvaluator::PrecalcPosInfo& po
 	dirToITRF(imageDir, posInfo.itrfDirection);
 }
 
-void LBeamEvaluator::EvaluateFullCorrection(casacore::MeasurementSet& ms, double ra, double dec, const class BandData& band, MC2x2* beamValues)
+void LBeamEvaluator::EvaluateFullCorrection(casacore::MeasurementSet& ms, double ra, double dec, const aocommon::BandData& band, MC2x2* beamValues)
 {
 	LBeamEvaluator evaluator(ms);
 	

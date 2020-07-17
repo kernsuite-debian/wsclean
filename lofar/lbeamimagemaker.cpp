@@ -11,15 +11,12 @@ PrimaryBeamImageSet LBeamImageMaker::Make()
 #include "../units/angle.h"
 #include "../units/radeccoord.h"
 
-#include "../banddata.h"
 #include "../fftresampler.h"
 #include "../fitsreader.h"
 #include "../fitswriter.h"
-#include "../units/imagecoordinates.h"
 #include "../imageweights.h"
-#include "../matrix2x2.h"
+
 #include "../progressbar.h"
-#include "../uvector.h"
 
 #include "../wsclean/imageweightcache.h"
 #include "../wsclean/logger.h"
@@ -44,9 +41,16 @@ PrimaryBeamImageSet LBeamImageMaker::Make()
 #include <casacore/measures/TableMeasures/ScalarMeasColumn.h>
 #include <casacore/measures/TableMeasures/ArrayMeasColumn.h>
 
+#include <aocommon/banddata.h>
+#include <aocommon/imagecoordinates.h>
+#include <aocommon/uvector.h>
+#include <aocommon/matrix2x2.h>
+
 #include <stdexcept>
 
 using namespace LOFAR::StationResponse;
+using aocommon::MC2x2;
+using aocommon::MC4x4;
 
 static void dirToITRFVector(const casacore::MDirection& dir, ITRFConverter& convert, vector3r_t& itrf);
 
@@ -86,21 +90,28 @@ PrimaryBeamImageSet LBeamImageMaker::Make()
 		matrices[j] *= 1.0/_totalWeightSum;
 	}
 	
-	PrimaryBeamImageSet beamImages(_width, _height, *_allocator, 16);
+	PrimaryBeamImageSet beamImages(_width, _height, 16);
 	beamImages.SetToZero();
 	
 	if(_width!=_sampledWidth || _height!=_sampledHeight)
 	{
 		FFTResampler resampler(_sampledWidth, _sampledHeight, _width, _height, 1);
-		ImageBufferAllocator::Ptr
-			scratchA = _allocator->AllocatePtr(_sampledWidth*_sampledHeight),
-			scratchB = _allocator->AllocatePtr(_width*_height);
+		Image
+			scratchA(_sampledWidth, _sampledHeight),
+			scratchB(_width, _height);
 		for(size_t p=0; p!=16; ++p)
 		{
 			for(size_t i=0; i!=_sampledWidth*_sampledHeight; ++i)
 				scratchA[i] = matrices[i].Data(p);
 			resampler.Resample(scratchA.data(), scratchB.data());
 			std::copy_n(scratchB.data(), _width*_height, &beamImages[p][0]);
+		}
+	}
+	else {
+		for(size_t p=0; p!=16; ++p)
+		{
+			for(size_t i=0; i!=_sampledWidth*_sampledHeight; ++i)
+				beamImages[p][i] = matrices[i].Data(p);
 		}
 	}
 	
@@ -226,7 +237,7 @@ void LBeamImageMaker::makeBeamForMS(std::vector<HMC4x4>& matrices, MSProvider& m
 				static size_t index = 0;
 				std::ostringstream str;
 				str << "beam-intermediate-" << index << ".fits";
-				ao::uvector<double> img(_sampledWidth*_sampledHeight);
+				aocommon::UVector<double> img(_sampledWidth*_sampledHeight);
 				for(size_t px=0; px!=_sampledWidth*_sampledHeight; ++px)
 				{
 					double norm = singleMatrices[px].Norm();
@@ -289,9 +300,9 @@ void LBeamImageMaker::makeBeamSnapshot(const std::vector<Station::Ptr>& stations
 		for(size_t x=0;x!=_sampledWidth;++x)
 		{
 			double l, m, ra, dec;
-			ImageCoordinates::XYToLM(x, y, _sPixelSizeX, _sPixelSizeY, _sampledWidth, _sampledHeight, l, m);
+			aocommon::ImageCoordinates::XYToLM(x, y, _sPixelSizeX, _sPixelSizeY, _sampledWidth, _sampledHeight, l, m);
 			l += _phaseCentreDL; m += _phaseCentreDM;
-			ImageCoordinates::LMToRaDec(l, m, _phaseCentreRA, _phaseCentreDec, ra, dec);
+			aocommon::ImageCoordinates::LMToRaDec(l, m, _phaseCentreRA, _phaseCentreDec, ra, dec);
 			
 			casacore::MDirection imageDir(casacore::MVDirection(
 							casacore::Quantity(ra, radUnit),
@@ -353,12 +364,12 @@ void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, 
 {
 	casacore::MSAntenna antTable(ms->antenna());
 	totalWeight = 0.0;
-	ao::uvector<double> perAntennaWeights(antTable.nrow(), 0.0);
+	aocommon::UVector<double> perAntennaWeights(antTable.nrow(), 0.0);
 	
 	MultiBandData multiband(ms->spectralWindow(), ms->dataDescription());
 	size_t channelCount = selection.ChannelRangeEnd() - selection.ChannelRangeStart();
-	size_t polarizationCount = (msProvider.Polarization() == Polarization::Instrumental) ? 4 : 1;
-	ao::uvector<float> weightArr(channelCount * polarizationCount);
+	size_t polarizationCount = (msProvider.Polarization() == aocommon::Polarization::Instrumental) ? 4 : 1;
+	aocommon::UVector<float> weightArr(channelCount * polarizationCount);
 	
 	while(msProvider.CurrentRowAvailable())
 	{
@@ -387,7 +398,7 @@ void LBeamImageMaker::calculateStationWeights(const ImageWeights& imageWeights, 
 		logWeights(*ms, perAntennaWeights);
 }
 
-void LBeamImageMaker::logWeights(casacore::MeasurementSet& ms, const ao::uvector<double>& weights)
+void LBeamImageMaker::logWeights(casacore::MeasurementSet& ms, const aocommon::UVector<double>& weights)
 {
 	casacore::MSAntenna antTable(ms.antenna());
 	Logger::Debug << "Weights:";

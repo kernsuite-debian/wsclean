@@ -1,5 +1,5 @@
 #include "fitsreader.h"
-#include "polarization.h"
+#include <aocommon/polarization.h>
 
 #include <stdexcept>
 #include <sstream>
@@ -157,7 +157,7 @@ void FitsReader::initialize()
 	_meta.dateObs = 0.0;
 	_meta.frequency = 0.0;
 	_meta.bandwidth = 0.0;
-	_meta.polarization = Polarization::StokesI;
+	_meta.polarization = aocommon::Polarization::StokesI;
 	_meta.unit = JanskyPerBeam;
 	
 	int status = 0;
@@ -182,8 +182,17 @@ void FitsReader::initialize()
 	_meta.imgWidth = naxes[0];
 	_meta.imgHeight = naxes[1];
 	
+	// There are fits files that say naxis=2 but then still define
+	// the third and fourth axes, so we always continue reading
+	// at least 4 axes:
+	if(naxis < 4)
+	{
+		naxis = 4;
+		while(naxes.size() < 4) naxes.emplace_back(1);
+	}
+		
 	std::string tmp;
-	for(int i=2;i!=naxis;++i)
+	for(int i=2; i!=naxis; ++i)
 	{
 		std::ostringstream name;
 		name << "CTYPE" << (i+1);
@@ -192,7 +201,7 @@ void FitsReader::initialize()
 			std::ostringstream crval, cdelt;
 			crval << "CRVAL" << (i+1);
 			cdelt << "CDELT" << (i+1);
-			if(tmp == "FREQ" || tmp == "VRAD")
+			if(tmp == "FREQ" || tmp == "VRAD" || tmp == "FREQ-OBS")
 			{
 				_meta.nFrequencies = naxes[i];
 				_meta.frequency = ReadDoubleKey(crval.str().c_str());
@@ -212,18 +221,18 @@ void FitsReader::initialize()
 				switch(int(val))
 				{
 					default: throw std::runtime_error("Unknown polarization specified in fits file");
-					case 1: _meta.polarization = Polarization::StokesI; break;
-					case 2: _meta.polarization = Polarization::StokesQ; break;
-					case 3: _meta.polarization = Polarization::StokesU; break;
-					case 4: _meta.polarization = Polarization::StokesV; break;
-					case -1: _meta.polarization = Polarization::RR; break;
-					case -2: _meta.polarization = Polarization::LL; break;
-					case -3: _meta.polarization = Polarization::RL; break;
-					case -4: _meta.polarization = Polarization::LR; break;
-					case -5: _meta.polarization = Polarization::XX; break;
-					case -6: _meta.polarization = Polarization::YY; break;
-					case -7: _meta.polarization = Polarization::XY; break;
-					case -8: _meta.polarization = Polarization::YX; break;
+					case 1: _meta.polarization = aocommon::Polarization::StokesI; break;
+					case 2: _meta.polarization = aocommon::Polarization::StokesQ; break;
+					case 3: _meta.polarization = aocommon::Polarization::StokesU; break;
+					case 4: _meta.polarization = aocommon::Polarization::StokesV; break;
+					case -1: _meta.polarization = aocommon::Polarization::RR; break;
+					case -2: _meta.polarization = aocommon::Polarization::LL; break;
+					case -3: _meta.polarization = aocommon::Polarization::RL; break;
+					case -4: _meta.polarization = aocommon::Polarization::LR; break;
+					case -5: _meta.polarization = aocommon::Polarization::XX; break;
+					case -6: _meta.polarization = aocommon::Polarization::YY; break;
+					case -7: _meta.polarization = aocommon::Polarization::XY; break;
+					case -8: _meta.polarization = aocommon::Polarization::YX; break;
 				}
 				if(naxes[i]!=1 && !_meta.allowMultipleImages)
 					throw std::runtime_error("Multiple polarizations given in fits file");

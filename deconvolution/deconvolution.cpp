@@ -19,6 +19,8 @@
 #include "../wsclean/imagingtable.h"
 #include "../wsclean/wscleansettings.h"
 
+using namespace aocommon;
+
 Deconvolution::Deconvolution(const class WSCleanSettings& settings) :
 	_settings(settings), _parallelDeconvolution(settings),
 	_autoMaskIsFinished(false),
@@ -38,15 +40,14 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	Logger::Info.Flush();
 	Logger::Info << " == Cleaning (" << majorIterationNr << ") ==\n";
 	
-	_imageAllocator->FreeUnused();
 	ImageSet
-		residualSet(&groupTable, *_imageAllocator, _settings, _imgWidth, _imgHeight),
-		modelSet(&groupTable, *_imageAllocator, _settings, _imgWidth, _imgHeight);
+		residualSet(&groupTable, _settings, _imgWidth, _imgHeight),
+		modelSet(&groupTable, _settings, _imgWidth, _imgHeight);
 	
 	residualSet.LoadAndAverage(*_residualImages);
 	modelSet.LoadAndAverage(*_modelImages);
 	
-	Image integrated(_imgWidth, _imgHeight, *_imageAllocator);
+	Image integrated(_imgWidth, _imgHeight);
 	residualSet.GetLinearIntegrated(integrated.data());
 	double stddev = integrated.StdDevFromMAD();
 	Logger::Info << "Estimated standard deviation of background noise: " << FluxDensity::ToNiceString(stddev) << '\n';
@@ -59,7 +60,7 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	else {
 		if(!_settings.localRMSImage.empty())
 		{
-			Image rmsImage(_imgWidth, _imgHeight, *_imageAllocator);
+			Image rmsImage(_imgWidth, _imgHeight);
 			FitsReader reader(_settings.localRMSImage);
 			reader.Read(rmsImage.data());
 			// Normalize the RMS image
@@ -104,10 +105,10 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 		_parallelDeconvolution.SetThreshold(std::max(stddev * _settings.autoDeconvolutionThresholdSigma, _settings.deconvolutionThreshold));
 	integrated.reset();
 	
-	std::vector<ao::uvector<double>> psfVecs(residualSet.PSFCount());
+	std::vector<aocommon::UVector<double>> psfVecs(residualSet.PSFCount());
 	residualSet.LoadAndAveragePSFs(*_psfImages, psfVecs, _psfPolarization);
 	
-	ao::uvector<const double*> psfs(residualSet.PSFCount());
+	aocommon::UVector<const double*> psfs(residualSet.PSFCount());
 	for(size_t i=0; i!=psfVecs.size(); ++i)
 		psfs[i] = psfVecs[i].data();
 	
@@ -159,20 +160,18 @@ void Deconvolution::Perform(const class ImagingTable& groupTable, bool& reachedM
 	modelSet.InterpolateAndStore(*_modelImages, _parallelDeconvolution.FirstAlgorithm().Fitter());
 }
 
-void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, PolarizationEnum psfPolarization, class ImageBufferAllocator* imageAllocator, double beamSize, size_t threadCount)
+void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, aocommon::PolarizationEnum psfPolarization, double beamSize, size_t threadCount)
 {
 	_imgWidth = _settings.trimmedImageWidth;
 	_imgHeight = _settings.trimmedImageHeight;
 	_pixelScaleX = _settings.pixelScaleX;
 	_pixelScaleY = _settings.pixelScaleY;
 	
-	_imageAllocator = imageAllocator;
 	_psfPolarization = psfPolarization;
 	_beamSize = beamSize;
 	_autoMaskIsFinished = false;
 	_autoMask.clear();
 	FreeDeconvolutionAlgorithms();
-	_parallelDeconvolution.SetAllocator(imageAllocator);
 	if(groupTable.SquaredGroupCount() == 0)
 		throw std::runtime_error("Nothing to clean");
 	
@@ -198,7 +197,7 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	if(_settings.useMoreSaneDeconvolution)
 	{
 		algorithm.reset(
-			new MoreSane(_settings.moreSaneLocation, _settings.moreSaneArgs, _settings.moreSaneSigmaLevels, _settings.prefixName, *_imageAllocator, _parallelDeconvolution.GetFFTWManager()));
+			new MoreSane(_settings.moreSaneLocation, _settings.moreSaneArgs, _settings.moreSaneSigmaLevels, _settings.prefixName,  _parallelDeconvolution.GetFFTWManager()));
 	}
 	else if(_settings.useIUWTDeconvolution)
 	{
@@ -209,10 +208,10 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	else if(_settings.useMultiscale)
 	{
 		MultiScaleAlgorithm *msAlgorithm = 
-			new MultiScaleAlgorithm(*_imageAllocator, _parallelDeconvolution.GetFFTWManager(), beamSize, _pixelScaleX, _pixelScaleY);
+			new MultiScaleAlgorithm(_parallelDeconvolution.GetFFTWManager(), beamSize, _pixelScaleX, _pixelScaleY);
 		msAlgorithm->SetManualScaleList(_settings.multiscaleScaleList);
 		msAlgorithm->SetMultiscaleScaleBias(_settings.multiscaleDeconvolutionScaleBias);
-		msAlgorithm->SetMultiscaleNormalizeResponse(_settings.multiscaleNormalizeResponse);
+		msAlgorithm->SetMaxScales(_settings.multiscaleMaxScales);
 		msAlgorithm->SetMultiscaleGain(_settings.multiscaleGain);
 		msAlgorithm->SetShape(_settings.multiscaleShapeFunction);
 		msAlgorithm->SetTrackComponents(_settings.saveSourceList);
@@ -222,7 +221,7 @@ void Deconvolution::InitializeDeconvolutionAlgorithm(const ImagingTable& groupTa
 	}
 	else
 	{
-		algorithm.reset(new GenericClean(*_imageAllocator, _parallelDeconvolution.GetFFTWManager(), _settings.useSubMinorOptimization));
+		algorithm.reset(new GenericClean(_parallelDeconvolution.GetFFTWManager(), _settings.useSubMinorOptimization));
 	}
 	
 	algorithm->SetMaxNIter(_settings.deconvolutionIterationCount);
@@ -250,7 +249,7 @@ void Deconvolution::readMask(const ImagingTable& groupTable)
 		FitsReader maskReader(_settings.fitsDeconvolutionMask, true, true);
 		if(maskReader.ImageWidth() != _imgWidth || maskReader.ImageHeight() != _imgHeight)
 			throw std::runtime_error("Specified Fits file mask did not have same dimensions as output image!");
-		ao::uvector<float> maskData(_imgWidth*_imgHeight);
+		aocommon::UVector<float> maskData(_imgWidth*_imgHeight);
 		if(maskReader.NFrequencies() == 1)
 		{
 			Logger::Debug << "Reading mask '" << _settings.fitsDeconvolutionMask << "'...\n";
@@ -315,7 +314,7 @@ void Deconvolution::readMask(const ImagingTable& groupTable)
 		}
 		
 		Logger::Info << "Saving horizon mask...\n";
-		Image image(_imgWidth, _imgHeight, *_imageAllocator);
+		Image image(_imgWidth, _imgHeight);
 		for(size_t i=0; i!=_imgWidth*_imgHeight; ++i)
 			image[i] = _cleanMask[i] ? 1.0 : 0.0;
 		

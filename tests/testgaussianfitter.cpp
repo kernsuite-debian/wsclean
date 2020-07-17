@@ -66,10 +66,9 @@ BOOST_AUTO_TEST_CASE( fit )
 		const size_t
 			width = 512,
 			height = 512;
-		ImageBufferAllocator allocator;
 		Image
-			model(width, height, 0.0, allocator),
-			restored(width, height, 0.0, allocator);
+			model(width, height, 0.0),
+			restored(width, height, 0.0);
 		model[((height/2)*width) + (width/2)] = 1.0;
 		long double
 			pixelScale = 1 /*amin*/ * (M_PI/180.0/60.0),
@@ -93,8 +92,7 @@ BOOST_AUTO_TEST_CASE( fit_with_bad_initial_value )
 	const size_t
 		width = 64,
 		height = 64;
-	ImageBufferAllocator allocator;
-	Image restored(width, height, 0.0, allocator);
+	Image restored(width, height, 0.0);
 	PowerLawSED sed(150.0e6, 1.0);
 	ModelComponent component;
 	component.SetPosDec(0.0);
@@ -108,7 +106,7 @@ BOOST_AUTO_TEST_CASE( fit_with_bad_initial_value )
 	long double beamMaj = 4*pixelScale, beamMin = 4*pixelScale, beamPA = 0.0;
 	long double estimatedBeamPx = 1.0; // this is on purpose way off
 	ModelRenderer renderer(0.0, 0.0, pixelScale, pixelScale);
-	renderer.Restore(restored.data(), width, height, model, beamMaj, beamMin, beamPA, 100e6, 200e6, Polarization::StokesI);
+	renderer.Restore(restored.data(), width, height, model, beamMaj, beamMin, beamPA, 100e6, 200e6, aocommon::Polarization::StokesI);
 	
 	GaussianFitter fitter;
 	double fitMajor, fitMinor, fitPA;
@@ -123,8 +121,7 @@ BOOST_AUTO_TEST_CASE( fit_circular )
 	const size_t
 		width = 64,
 		height = 64;
-	ImageBufferAllocator allocator;
-	Image restored(width, height, 0.0, allocator);
+	Image restored(width, height, 0.0);
 	PowerLawSED sed(150.0e6, 1.0);
 	ModelComponent component;
 	component.SetPosDec(0.0);
@@ -138,7 +135,7 @@ BOOST_AUTO_TEST_CASE( fit_circular )
 	long double beamMaj = 4*pixelScale, beamMin = 4*pixelScale, beamPA = 0.0;
 	long double estimatedBeamPx = 1.0; // this is on purpose way off
 	ModelRenderer renderer(0.0, 0.0, pixelScale, pixelScale);
-	renderer.Restore(restored.data(), width, height, model, beamMaj, beamMin, beamPA, 100e6, 200e6, Polarization::StokesI);
+	renderer.Restore(restored.data(), width, height, model, beamMaj, beamMin, beamPA, 100e6, 200e6, aocommon::Polarization::StokesI);
 	
 	GaussianFitter fitter;
 	double fitMajor = estimatedBeamPx;
@@ -152,8 +149,7 @@ BOOST_AUTO_TEST_CASE( fit_small_beam )
 	const size_t
 		width = 64,
 		height = 64;
-	ImageBufferAllocator allocator;
-	Image restored(width, height, 0.0, allocator);
+	Image restored(width, height, 0.0);
 	PowerLawSED sed(150.0e6, 1.0);
 	ModelComponent component;
 	component.SetPosDec(0.0);
@@ -167,7 +163,7 @@ BOOST_AUTO_TEST_CASE( fit_small_beam )
 	long double beamMaj = 4*pixelScale, beamMin = 0.5*pixelScale, beamPA = 0.0;
 	long double estimatedBeamPx = 1.0; // this is on purpose way off
 	ModelRenderer renderer(0.0, 0.0, pixelScale, pixelScale);
-	renderer.Restore(restored.data(), width, height, model, beamMaj, beamMin, beamPA, 100e6, 200e6, Polarization::StokesI);
+	renderer.Restore(restored.data(), width, height, model, beamMaj, beamMin, beamPA, 100e6, 200e6, aocommon::Polarization::StokesI);
 	
 	GaussianFitter fitter;
 	double fitMajor = estimatedBeamPx, fitMinor = estimatedBeamPx, fitPA = 0.0;

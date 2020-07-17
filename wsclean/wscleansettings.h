@@ -23,12 +23,19 @@ public:
 	
 	void Validate() const;
 	
-	void Propogate() { RecalculatePaddedDimensions(); }
+	void Propogate() {
+		if(mode == ImagingMode || mode == PredictMode)
+		{
+			RecalculatePaddedDimensions();
+			doReorder = determineReorder();
+			dataColumnName = determineDataColumn();
+		}
+	}
 	
 	void RecalculatePaddedDimensions();
 	
 	std::vector<std::string> filenames;
-	enum Mode { ImagingMode, PredictMode, RestoreMode } mode;
+	enum Mode { ImagingMode, PredictMode, RestoreMode, RestoreListMode } mode;
 	size_t paddedImageWidth, paddedImageHeight;
 	size_t trimmedImageWidth, trimmedImageHeight;
 	double imagePadding;
@@ -36,7 +43,7 @@ public:
 	size_t channelsOut, intervalsOut;
 	enum MSSelection::EvenOddSelection evenOddTimesteps;
 	bool divideChannelsByGaps;
-	ao::uvector<double> divideChannelFrequencies;
+	aocommon::UVector<double> divideChannelFrequencies;
 	double pixelScaleX, pixelScaleY;
 	std::string restoreModel, restoreInput, restoreOutput;
 	double manualBeamMajorSize, manualBeamMinorSize, manualBeamPA;
@@ -44,7 +51,6 @@ public:
 	double beamFittingBoxSize;
 	bool continuedRun;
 	double memFraction, absMemLimit;
-	bool directAllocation;
 	double minUVWInMeters, maxUVWInMeters, minUVInLambda, maxUVInLambda, wLimit, rankFilterLevel;
 	size_t rankFilterSize;
 	double gaussianTaperBeamSize, tukeyTaperInLambda, tukeyInnerTaperInLambda, edgeTaperInLambda, edgeTukeyTaperInLambda;
@@ -53,24 +59,25 @@ public:
 	double nWLayersFactor;
 	size_t antialiasingKernelSize, overSamplingFactor, threadCount, parallelReordering, parallelGridding;
 	bool useMPI;
-	size_t fieldId;
+	std::vector<size_t> fieldIds;
 	size_t startTimestep, endTimestep;
 	size_t startChannel, endChannel;
 	size_t predictionChannels;
 	std::string dataColumnName;
-	std::set<PolarizationEnum> polarizations;
+	std::set<aocommon::PolarizationEnum> polarizations;
 	std::set<size_t> spectralWindows;
 	WeightMode weightMode;
 	std::string prefixName;
 	bool joinedPolarizationCleaning, joinedFrequencyCleaning;
-	std::set<PolarizationEnum> linkedPolarizations;
+	std::set<aocommon::PolarizationEnum> linkedPolarizations;
 	size_t parallelDeconvolutionMaxSize;
 	bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved, isDirtySaved, isFirstResidualSaved;
 	bool reusePsf, reuseDirty;
 	std::string reusePsfPrefix, reuseDirtyPrefix;
 	bool writeImagingWeightSpectrumColumn;
 	std::string temporaryDirectory;
-	bool forceReorder, forceNoReorder, subtractModel, modelUpdateRequired, mfWeighting;
+	bool forceReorder, forceNoReorder, doReorder;
+	bool subtractModel, modelUpdateRequired, mfWeighting;
 	size_t fullResOffset, fullResWidth, fullResPad;
 	bool applyPrimaryBeam, reusePrimaryBeam, useDifferentialLofarBeam, savePsfPb;
 	std::string mwaPath;
@@ -104,12 +111,12 @@ public:
 	bool allowNegativeComponents, stopOnNegativeComponents;
 	bool useMultiscale, useSubMinorOptimization, squaredJoins;
 	double spectralCorrectionFrequency;
-	ao::uvector<double> spectralCorrection;
+	aocommon::UVector<double> spectralCorrection;
 	bool multiscaleFastSubMinorLoop;
 	double multiscaleGain, multiscaleDeconvolutionScaleBias;
-	bool multiscaleNormalizeResponse;
+	size_t multiscaleMaxScales;
 	double multiscaleConvolutionPadding;
-	ao::uvector<double> multiscaleScaleList;
+	aocommon::UVector<double> multiscaleScaleList;
 	MultiScaleTransforms::Shape multiscaleShapeFunction;
 	
 	double deconvolutionBorderRatio;
@@ -119,7 +126,7 @@ public:
 	std::string localRMSImage;
 	bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
 	std::string moreSaneLocation, moreSaneArgs;
-	ao::uvector<double> moreSaneSigmaLevels;
+	aocommon::UVector<double> moreSaneSigmaLevels;
 	enum SpectralFittingMode spectralFittingMode;
 	size_t spectralFittingTerms;
 	/**
@@ -137,7 +144,7 @@ public:
 	{
 		MSSelection selection;
 		selection.SetInterval(startTimestep, endTimestep);
-		selection.SetFieldId(fieldId);
+		selection.SetFieldIds(fieldIds);
 		selection.SetMinUVWInM(minUVWInMeters);
 		selection.SetMaxUVWInM(maxUVWInMeters);
 		selection.SetEvenOrOddTimesteps(evenOddTimesteps);
@@ -150,6 +157,8 @@ public:
 	
 private:
 	void checkPolarizations() const;
+	bool determineReorder() const;
+	std::string determineDataColumn() const;
 };
 
 inline WSCleanSettings::WSCleanSettings() :
@@ -170,7 +179,6 @@ inline WSCleanSettings::WSCleanSettings() :
 	beamFittingBoxSize(10.0),
 	continuedRun(false),
 	memFraction(1.0), absMemLimit(0.0),
-	directAllocation(false),
 	minUVWInMeters(0.0), maxUVWInMeters(0.0),
 	minUVInLambda(0.0), maxUVInLambda(0.0), wLimit(0.0),
 	rankFilterLevel(3.0), rankFilterSize(16),
@@ -183,7 +191,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	parallelReordering(1),
 	parallelGridding(1),
 	useMPI(false),
-	fieldId(0),
+	fieldIds{0},
 	startTimestep(0), endTimestep(0),
 	startChannel(0), endChannel(0),
 	predictionChannels(0),
@@ -200,7 +208,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	reusePsfPrefix(), reuseDirtyPrefix(),
 	writeImagingWeightSpectrumColumn(false),
 	temporaryDirectory(),
-	forceReorder(false), forceNoReorder(false),
+	forceReorder(false), forceNoReorder(false), doReorder(true),
 	subtractModel(false),
 	modelUpdateRequired(true),
 	mfWeighting(false),
@@ -249,7 +257,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	multiscaleFastSubMinorLoop(true),
 	multiscaleGain(0.2),
 	multiscaleDeconvolutionScaleBias(0.6),
-	multiscaleNormalizeResponse(false),
+	multiscaleMaxScales(0),
 	multiscaleConvolutionPadding(1.1),
 	multiscaleScaleList(),
 	multiscaleShapeFunction(MultiScaleTransforms::TaperedQuadraticShape),
@@ -267,7 +275,7 @@ inline WSCleanSettings::WSCleanSettings() :
 	spectralFittingTerms(0),
 	deconvolutionChannelCount(0)
 {
-	polarizations.insert(Polarization::StokesI);
+	polarizations.insert(aocommon::Polarization::StokesI);
 }
 
 
