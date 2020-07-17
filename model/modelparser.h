@@ -170,7 +170,7 @@ class ModelParser : private Tokenizer
 						for(size_t p=0; p!=4; ++p)
 							linFluxes[p] = getTokenAsDouble();
 						double stokesFluxes[4];
-						Polarization::LinearToStokes(linFluxes, stokesFluxes);
+						aocommon::Polarization::LinearToStokes(linFluxes, stokesFluxes);
 						for(size_t p=0; p!=4; ++p)
 							measurement.SetFluxDensityFromIndex(p, stokesFluxes[p]);
 					}
@@ -211,7 +211,7 @@ class ModelParser : private Tokenizer
 			double refFrequency = 0.0;
 			double brightness[4] = { 0.0, 0.0, 0.0, 0.0 };
 			bool isLogarithmic = true;
-			ao::uvector<double> terms;
+			aocommon::UVector<double> terms;
 			bool hasFrequency = false, hasBrightness = false;
 			while(getToken(token) && token != "}")
 			{

@@ -13,8 +13,9 @@
 #include "../mwa/tilebeambase.h"
 #include "../mwa/tilebeam2016.h"
 
-#include "../lane.h"
-#include "../matrix2x2.h"
+#include <aocommon/lane.h>
+#include <aocommon/matrix2x2.h>
+
 
 #include "atermbeam.h"
 #include "atermstub.h"
@@ -22,7 +23,7 @@
 class MWABeamTerm : public ATermBeam
 {
 public:
-	MWABeamTerm(casacore::MeasurementSet& ms, size_t width, size_t height, double ra, double dec, double dl, double dm, double phaseCentreDL, double phaseCentreDM);
+	MWABeamTerm(casacore::MeasurementSet& ms, const CoordinateSystem& coordinateSystem);
 	
 	void SetSearchPath(const std::string& searchPath)
 	{
@@ -30,7 +31,7 @@ public:
 	}
 	
 private:
-	virtual bool calculateBeam(std::complex<float>* buffer, double time, double frequency) final override;
+	virtual bool calculateBeam(std::complex<float>* buffer, double time, double frequency, size_t fieldId) final override;
 
 	size_t _width, _height, _nStations;
 	double _phaseCentreRA, _phaseCentreDec, _dl, _dm, _phaseCentreDL, _phaseCentreDM;

@@ -32,7 +32,7 @@
 
 // #define REDUNDANT_VALIDATION 1
 
-PartitionedMS::PartitionedMS(const Handle& handle, size_t partIndex, PolarizationEnum polarization, size_t dataDescId) :
+PartitionedMS::PartitionedMS(const Handle& handle, size_t partIndex, aocommon::PolarizationEnum polarization, size_t dataDescId) :
 	_handle(handle),
 	_partIndex(partIndex),
 	_metaFile(getMetaFilename(handle._data->_msPath, handle._data->_temporaryDirectory, dataDescId)),
@@ -42,13 +42,12 @@ PartitionedMS::PartitionedMS(const Handle& handle, size_t partIndex, Polarizatio
 	_metaPtrIsOk(true),
 	_weightPtrIsOk(true),
 	_polarization(polarization),
-	_polarizationCountInFile(_polarization==Polarization::Instrumental ? 4 : 1)
+	_polarizationCountInFile(_polarization==aocommon::Polarization::Instrumental ? 4 : 1)
 {
 	_metaFile.read(reinterpret_cast<char*>(&_metaHeader), sizeof(MetaHeader));
 	std::vector<char> msPath(_metaHeader.filenameLength+1, char(0));
 	_metaFile.read(msPath.data(), _metaHeader.filenameLength);
 	Logger::Info << "Opening reordered part " << partIndex << " spw " << dataDescId << " for " << msPath.data() << '\n';
-	_msPath = msPath.data();
 	std::string partPrefix = getPartPrefix(msPath.data(), partIndex, polarization, dataDescId, handle._data->_temporaryDirectory);
 	
 	_dataFile.open(partPrefix+".tmp", std::ios::in);
@@ -159,6 +158,7 @@ void PartitionedMS::ReadMeta(MetaData& metaData)
 	metaData.vInM = record.v;
 	metaData.wInM = record.w;
 	metaData.dataDescId = record.dataDescId;
+	metaData.fieldId = record.fieldId;
 	metaData.antenna1 = record.antenna1;
 	metaData.antenna2 = record.antenna2;
 	metaData.time = record.time;
@@ -271,7 +271,7 @@ std::string PartitionedMS::getFilenamePrefix(const std::string& msPathStr, const
 	return prefix;
 }
 
-std::string PartitionedMS::getPartPrefix(const std::string& msPathStr, size_t partIndex, PolarizationEnum pol, size_t dataDescId, const std::string& tempDir)
+std::string PartitionedMS::getPartPrefix(const std::string& msPathStr, size_t partIndex, aocommon::PolarizationEnum pol, size_t dataDescId, const std::string& tempDir)
 {
 	std::string prefix = getFilenamePrefix(msPathStr, tempDir);
 	
@@ -282,7 +282,7 @@ std::string PartitionedMS::getPartPrefix(const std::string& msPathStr, size_t pa
 	if(partIndex < 10) partPrefix << '0';
 	partPrefix << partIndex;
 	partPrefix << "-";
-	partPrefix << Polarization::TypeToShortString(pol);
+	partPrefix << aocommon::Polarization::TypeToShortString(pol);
 	partPrefix << "-b" << dataDescId;
 	return partPrefix.str();
 }
@@ -323,9 +323,9 @@ struct PartitionFiles
 PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::vector<ChannelRange>& channels, MSSelection& selection, const string& dataColumnName, bool includeModel, bool initialModelRequired, const WSCleanSettings& settings)
 {
 	const bool modelUpdateRequired = settings.modelUpdateRequired;
-	std::set<PolarizationEnum> polsOut;
+	std::set<aocommon::PolarizationEnum> polsOut;
 	if(settings.useIDG)
-		polsOut.insert(Polarization::Instrumental);
+		polsOut.insert(aocommon::Polarization::Instrumental);
 	else
 		polsOut = settings.polarizations;
 	const std::string& temporaryDirectory = settings.temporaryDirectory;
@@ -352,7 +352,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 	size_t fileIndex = 0;
 	for(size_t part=0; part!=channelParts; ++part)
 	{
-		for(PolarizationEnum p : polsOut)
+		for(aocommon::PolarizationEnum p : polsOut)
 		{
 			PartitionFiles& f = files[fileIndex];
 			std::string partPrefix = getPartPrefix(msPath, part, p, channels[part].dataDescId, temporaryDirectory);
@@ -377,10 +377,11 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 	else {
 		if(initialModelRequired)
 			throw std::runtime_error("Baseline-dependent averaging is enabled together with a model that requires the model data (e.g. -continue or -subtract-model). This is not possible.");
-		rowProvider.reset(new AveragingMSRowProvider(settings.baselineDependentAveragingInWavelengths, msPath, selection, selectedDataDescIds, dataColumnName, initialModelRequired));
+		rowProvider.reset(new AveragingMSRowProvider(settings.baselineDependentAveragingInWavelengths, msPath, selection, selectedDataDescIds, settings.fieldIds[0], dataColumnName, initialModelRequired));
 	}
 	
-	std::vector<PolarizationEnum> msPolarizations = GetMSPolarizations(rowProvider->MS());
+	std::vector<aocommon::PolarizationEnum> msPolarizations = GetMSPolarizations(rowProvider->MS());
+	size_t nAntennas = rowProvider->MS().antenna().nrow();
 	
 	const casacore::IPosition shape(rowProvider->DataShape());
 	size_t channelCount = shape[1];
@@ -421,7 +422,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 		progress1.reset(new ProgressBar("Reordering"));
 	
 	size_t selectedRowsTotal = 0;
-	ao::uvector<size_t> selectedRowCountPerSpwIndex(selectedDataDescIds.size(), 0);
+	aocommon::UVector<size_t> selectedRowCountPerSpwIndex(selectedDataDescIds.size(), 0);
 	while(!rowProvider->AtEnd())
 	{
 		if(progress1)
@@ -431,11 +432,12 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 		memset(&meta, 0, sizeof(MetaRecord));
 
 		double time;
-		uint32_t dataDescId, antenna1, antenna2;
-		rowProvider->ReadData(dataArray, flagArray, weightSpectrumArray, meta.u, meta.v, meta.w, dataDescId, antenna1, antenna2, time);
+		uint32_t dataDescId, antenna1, antenna2, fieldId;
+		rowProvider->ReadData(dataArray, flagArray, weightSpectrumArray, meta.u, meta.v, meta.w, dataDescId, antenna1, antenna2, fieldId, time);
 		meta.dataDescId = dataDescId;
 		meta.antenna1 = antenna1;
 		meta.antenna2 = antenna2;
+		meta.fieldId = fieldId;
 		meta.time = time;
 		size_t spwIndex = selectedDataDescIds[meta.dataDescId];
 		++selectedRowCountPerSpwIndex[spwIndex];
@@ -457,7 +459,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 					partStartCh = channels[part].start,
 					partEndCh = channels[part].end;
 				
-				for(PolarizationEnum p : polsOut)
+				for(aocommon::PolarizationEnum p : polsOut)
 				{
 					PartitionFiles& f = files[fileIndex];
 					copyData(dataBuffer.data(), partStartCh, partEndCh, msPolarizations, dataArray, p);
@@ -519,7 +521,7 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 		header.channelStart = channels[part].start,
 		header.channelCount = channels[part].end - header.channelStart;
 		header.dataDescId = channels[part].dataDescId;
-		for(std::set<PolarizationEnum>::const_iterator p=polsOut.begin(); p!=polsOut.end(); ++p)
+		for(std::set<aocommon::PolarizationEnum>::const_iterator p=polsOut.begin(); p!=polsOut.end(); ++p)
 		{
 			PartitionFiles& f = files[fileIndex];
 			f.data->seekp(0, std::ios::beg);
@@ -549,12 +551,12 @@ PartitionedMS::Handle PartitionedMS::Partition(const string& msPath, const std::
 	}
 	progress2.reset();
 	
-	return Handle(msPath, dataColumnName, temporaryDirectory, channels, initialModelRequired, modelUpdateRequired, polsOut, selection);
+	return Handle(msPath, dataColumnName, temporaryDirectory, channels, initialModelRequired, modelUpdateRequired, polsOut, selection, nAntennas);
 }
 
 void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 {
-	const std::set<PolarizationEnum> pols = handle._polarizations;
+	const std::set<aocommon::PolarizationEnum> pols = handle._polarizations;
 	
 	std::map<size_t,size_t> dataDescIds;
 	getDataDescIdMap(dataDescIds, handle._channels);
@@ -588,7 +590,7 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 		for(size_t part=0; part!=channelParts; ++part)
 		{
 			size_t dataDescId = handle._channels[part].dataDescId;
-			for(std::set<PolarizationEnum>::const_iterator p=pols.begin(); p!=pols.end(); ++p)
+			for(std::set<aocommon::PolarizationEnum>::const_iterator p=pols.begin(); p!=pols.end(); ++p)
 			{
 				std::string partPrefix = getPartPrefix(handle._msPath, part, *p, dataDescId, handle._temporaryDirectory);
 				modelFiles[fileIndex].reset(new std::ifstream(partPrefix + "-m.tmp"));
@@ -597,7 +599,7 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 		}
 		
 		casacore::MeasurementSet ms(handle._msPath, casacore::Table::Update);
-		const std::vector<PolarizationEnum> msPolarizations = GetMSPolarizations(ms);
+		const std::vector<aocommon::PolarizationEnum> msPolarizations = GetMSPolarizations(ms);
 		initializeModelColumn(ms);
 		casacore::ScalarColumn<int> antenna1Column(ms, ms.columnName(casacore::MSMainEnums::ANTENNA1));
 		casacore::ScalarColumn<int> antenna2Column(ms, ms.columnName(casacore::MSMainEnums::ANTENNA2));
@@ -611,7 +613,7 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 		const casacore::IPosition shape(dataColumn.shape(0));
 		size_t channelCount = shape[1];
 		
-		size_t polarizationsPerFile = (*pols.begin())==Polarization::Instrumental ? 4 : 1;
+		size_t polarizationsPerFile = (*pols.begin())==aocommon::Polarization::Instrumental ? 4 : 1;
 		std::vector<std::complex<float>> modelDataBuffer(channelCount * polarizationsPerFile);
 		std::vector<float> weightBuffer(channelCount * polarizationsPerFile);
 		casacore::Array<std::complex<float>> modelDataArray(shape);
@@ -650,7 +652,7 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 							partEndCh = handle._channels[part].end;
 						if(dataDescId == dataDescIdIter->second)
 						{
-							for(std::set<PolarizationEnum>::const_iterator p=pols.begin(); p!=pols.end(); ++p)
+							for(std::set<aocommon::PolarizationEnum>::const_iterator p=pols.begin(); p!=pols.end(); ++p)
 							{
 								modelFiles[fileIndex]->read(reinterpret_cast<char*>(modelDataBuffer.data()), (partEndCh - partStartCh) * polarizationsPerFile * sizeof(std::complex<float>));
 								if(!modelFiles[fileIndex]->good())
@@ -677,27 +679,30 @@ void PartitionedMS::unpartition(const PartitionedMS::Handle::HandleData& handle)
 
 PartitionedMS::Handle::HandleData::~HandleData()
 {
-	if(_modelUpdateRequired)
-		PartitionedMS::unpartition(*this);
-	
-	Logger::Info << "Cleaning up temporary files...\n";
-	
-	std::set<size_t> removedMetaFiles;
-	for(size_t part=0; part!=_channels.size(); ++part)
+	if(!_isCopy)
 	{
-		for(PolarizationEnum p : _polarizations)
+		if(_modelUpdateRequired)
+			PartitionedMS::unpartition(*this);
+	
+		Logger::Info << "Cleaning up temporary files...\n";
+		
+		std::set<size_t> removedMetaFiles;
+		for(size_t part=0; part!=_channels.size(); ++part)
 		{
-			std::string prefix = getPartPrefix(_msPath, part, p, _channels[part].dataDescId, _temporaryDirectory);
-			std::remove((prefix + ".tmp").c_str());
-			std::remove((prefix + "-w.tmp").c_str());
-			std::remove((prefix + "-m.tmp").c_str());
-		}
-		size_t dataDescId = _channels[part].dataDescId;
-		if(removedMetaFiles.count(dataDescId) == 0)
-		{
-			removedMetaFiles.insert(dataDescId);
-			std::string metaFile = getMetaFilename(_msPath, _temporaryDirectory, dataDescId);
-			std::remove(metaFile.c_str());
+			for(aocommon::PolarizationEnum p : _polarizations)
+			{
+				std::string prefix = getPartPrefix(_msPath, part, p, _channels[part].dataDescId, _temporaryDirectory);
+				std::remove((prefix + ".tmp").c_str());
+				std::remove((prefix + "-w.tmp").c_str());
+				std::remove((prefix + "-m.tmp").c_str());
+			}
+			size_t dataDescId = _channels[part].dataDescId;
+			if(removedMetaFiles.count(dataDescId) == 0)
+			{
+				removedMetaFiles.insert(dataDescId);
+				std::string metaFile = getMetaFilename(_msPath, _temporaryDirectory, dataDescId);
+				std::remove(metaFile.c_str());
+			}
 		}
 	}
 }
@@ -726,4 +731,64 @@ void PartitionedMS::getDataDescIdMap(std::map<size_t, size_t>& dataDescIds, cons
 			++spwIndex;
 		}
 	}
+}
+
+void PartitionedMS::Handle::Serialize(SerialOStream& stream) const
+{
+	stream.Ptr(_data);
+}
+
+void PartitionedMS::Handle::Unserialize(SerialIStream& stream)
+{
+	stream.Ptr(_data);
+}
+
+void PartitionedMS::Handle::HandleData::Serialize(SerialOStream& stream) const
+{
+	stream
+		.String(_msPath)
+		.String(_dataColumnName)
+		.String(_temporaryDirectory)
+		.UInt64(_channels.size());
+	for(const ChannelRange& range : _channels)
+	{
+		stream
+			.UInt64(range.dataDescId)
+			.UInt64(range.start)
+			.UInt64(range.end);
+	}
+	stream
+		.Bool(_initialModelRequired)
+		.Bool(_modelUpdateRequired)
+		.UInt64(_polarizations.size());
+	for(aocommon::PolarizationEnum p : _polarizations)
+		stream.UInt32(p);
+	_selection.Serialize(stream);
+	stream.UInt64(_nAntennas);
+}
+
+void PartitionedMS::Handle::HandleData::Unserialize(SerialIStream& stream)
+{
+	_isCopy = true;
+	stream
+		.String(_msPath)
+		.String(_dataColumnName)
+		.String(_temporaryDirectory);
+	_channels.resize(stream.UInt64());
+	for(ChannelRange& range : _channels)
+	{
+		stream
+			.UInt64(range.dataDescId)
+			.UInt64(range.start)
+			.UInt64(range.end);
+	}
+	stream
+		.Bool(_initialModelRequired)
+		.Bool(_modelUpdateRequired);
+	size_t nPol = stream.UInt64();
+	_polarizations.clear();
+	for(size_t i=0; i!=nPol; ++i)
+		_polarizations.emplace((aocommon::PolarizationEnum) stream.UInt32());
+	_selection.Unserialize(stream);
+	stream.UInt64(_nAntennas);
 }

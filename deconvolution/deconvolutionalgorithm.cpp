@@ -1,11 +1,14 @@
 #include "deconvolutionalgorithm.h"
 
-#include "../units/imagecoordinates.h"
 #include "../system.h"
 
 #include "../model/modelsource.h"
 #include "../model/model.h"
 #include "../model/powerlawsed.h"
+
+#include <aocommon/imagecoordinates.h>
+
+using namespace aocommon;
 
 DeconvolutionAlgorithm::DeconvolutionAlgorithm() :
 	_threshold(0.0),
@@ -24,7 +27,7 @@ DeconvolutionAlgorithm::DeconvolutionAlgorithm() :
 {
 }
 
-void DeconvolutionAlgorithm::GetModelFromImage(Model &model, const double* image, size_t width, size_t height, double phaseCentreRA, double phaseCentreDec, double pixelSizeX, double pixelSizeY, double phaseCentreDL, double phaseCentreDM, double spectralIndex, double refFreq, PolarizationEnum polarization)
+void DeconvolutionAlgorithm::GetModelFromImage(Model &model, const double* image, size_t width, size_t height, double phaseCentreRA, double phaseCentreDec, double pixelSizeX, double pixelSizeY, double phaseCentreDL, double phaseCentreDM, double spectralIndex, double refFreq, aocommon::PolarizationEnum polarization)
 {
 	for(size_t y=0; y!=height; ++y)
 	{
@@ -80,4 +83,4 @@ void DeconvolutionAlgorithm::PerformSpectralFit(double* values)
 	_spectralFitter.FitAndEvaluate(values);
 }
 
-double Evaluate(double x, const ao::uvector<double>& terms, double referenceFrequencyHz=1.0);
+double Evaluate(double x, const aocommon::UVector<double>& terms, double referenceFrequencyHz=1.0);

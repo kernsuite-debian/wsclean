@@ -1,7 +1,7 @@
 #ifndef SPECTRAL_FITTER_H
 #define SPECTRAL_FITTER_H
 
-#include "../uvector.h"
+#include <aocommon/uvector.h>
 
 enum SpectralFittingMode {
 	NoSpectralFitting,
@@ -29,16 +29,27 @@ public:
 	
 	void FitAndEvaluate(double* values) const;
 	
-	void Fit(ao::uvector<double>& terms, const double* values) const;
+	void Fit(aocommon::UVector<double>& terms, const double* values) const;
 	
-	void Evaluate(double* values, const ao::uvector<double>& terms) const;
+	void Evaluate(double* values, const aocommon::UVector<double>& terms) const;
 	
-	double Evaluate(const ao::uvector<double>& terms, double frequency) const;
+	double Evaluate(const aocommon::UVector<double>& terms, double frequency) const;
 	
 	void SetFrequencies(const double* frequencies, const double* weights, size_t n)
 	{
 		_frequencies.assign(frequencies, frequencies+n);
 		_weights.assign(weights, weights+n);
+		double weightSum = 0.0;
+		_referenceFrequency = 0.0;
+		for(size_t i=0; i!=n; ++i)
+		{
+			_referenceFrequency += _frequencies[i] * _weights[i];
+			weightSum += _weights[i];
+		}
+		if(weightSum != 0.0)
+			_referenceFrequency /= weightSum;
+		else
+			_referenceFrequency = 150e6;
 	}
 	
 	double Frequency(size_t index) const
@@ -56,13 +67,14 @@ public:
 	size_t NFrequencies() const { return _frequencies.size(); }
 	
 	double ReferenceFrequency() const {
-		return _frequencies[_frequencies.size()/2];
+		return _referenceFrequency;
 	}
 	
 private:
 	enum SpectralFittingMode _mode;
 	size_t _nTerms;
-	ao::uvector<double> _frequencies, _weights;
+	aocommon::UVector<double> _frequencies, _weights;
+	double _referenceFrequency;
 };
 
 #endif

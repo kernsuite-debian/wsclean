@@ -1,16 +1,19 @@
 #include "atermbase.h"
 
 #include "../fitswriter.h"
-#include "../matrix2x2.h"
-#include "../uvector.h"
+
+#include <aocommon/matrix2x2.h>
+#include <aocommon/uvector.h>
 
 #include "../wsclean/logger.h"
 
+using aocommon::Matrix2x2;
+
 void ATermBase::StoreATermsEigenvalues(const std::string& filename, const std::complex<float>* buffer, size_t nStations, size_t width, size_t height)
 {
-	size_t ny = floor(sqrt(nStations)), nx = (nStations+ny-1) / ny;
+	size_t ny = std::floor(std::sqrt(nStations)), nx = (nStations+ny-1) / ny;
 	Logger::Info << "Storing " << filename << " (" << nStations << " ant, " << nx << " x " << ny << ")\n";
-	ao::uvector<double> img(nx*ny * width*height, 0.0);
+	aocommon::UVector<double> img(nx*ny * width*height, 0.0);
 	for(size_t ant=0; ant!=nStations; ++ant)
 	{
 		size_t xCorner = (ant%nx)*width, yCorner = (ant/nx)*height;
@@ -32,9 +35,9 @@ void ATermBase::StoreATermsEigenvalues(const std::string& filename, const std::c
 
 void ATermBase::StoreATermsReal(const std::string& filename, const std::complex<float>* buffer, size_t nStations, size_t width, size_t height)
 {
-	size_t ny = floor(sqrt(nStations)), nx = (nStations+ny-1) / ny;
+	size_t ny = std::floor(std::sqrt(nStations)), nx = (nStations+ny-1) / ny;
 	Logger::Info << "Storing " << filename << " (" << nStations << " ant, " << nx << " x " << ny << ")\n";
-	ao::uvector<double> img(nx*ny * width*height, 0.0);
+	aocommon::UVector<double> img(nx*ny * width*height, 0.0);
 	for(size_t ant=0; ant!=nStations; ++ant)
 	{
 		size_t xCorner = (ant%nx)*width, yCorner = (ant/nx)*height;

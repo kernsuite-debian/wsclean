@@ -9,13 +9,14 @@
 #include "../fitswriter.h"
 #include "../fftconvolver.h"
 
+#include "../wsclean/logger.h"
+
 void MoreSane::ExecuteMajorIteration(double* dataImage, double* modelImage, const double* psfImage, size_t width, size_t height)
 {
 	if(_iterationNumber!=0)
 	{
 		Logger::Info << "Convolving model with psf...\n";
-		ImageBufferAllocator::Ptr preparedPsf;
-		_allocator->Allocate(width*height, preparedPsf);
+		Image preparedPsf(width, height);
 		FFTConvolver::PrepareKernel(preparedPsf.data(), psfImage, width, height);
 		FFTConvolver::ConvolveSameSize(_fftwManager, modelImage, preparedPsf.data(), width, height);
 		Logger::Info << "Adding model back to residual...\n";
@@ -89,7 +90,7 @@ void MoreSane::ExecuteMajorIteration(double* dataImage, double* modelImage, cons
 	
 }
 
-double MoreSane::ExecuteMajorIteration(ImageSet& dataImage, ImageSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold)
+double MoreSane::ExecuteMajorIteration(ImageSet& dataImage, ImageSet& modelImage, const aocommon::UVector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold)
 {
 	for(size_t i=0; i!=dataImage.size(); ++i)
 	{

@@ -3,15 +3,16 @@
 #include "../units/angle.h"
 #include "../units/radeccoord.h"
 
-#include "../banddata.h"
+#include <aocommon/banddata.h>
 #include "../fftresampler.h"
 #include "../fitsreader.h"
 #include "../fitswriter.h"
-#include "../units/imagecoordinates.h"
+#include <aocommon/imagecoordinates.h>
 #include "../imageweights.h"
-#include "../matrix2x2.h"
+#include <aocommon/matrix2x2.h>
+
 #include "../progressbar.h"
-#include "../uvector.h"
+#include <aocommon/uvector.h>
 
 #include "../wsclean/imageweightcache.h"
 #include "../wsclean/logger.h"
@@ -35,6 +36,8 @@
 #include <casacore/measures/TableMeasures/ArrayMeasColumn.h>
 
 #include <stdexcept>
+
+using namespace aocommon;
 
 void MWABeam::Make(PrimaryBeamImageSet& beamImages)
 {
@@ -76,8 +79,7 @@ void MWABeam::Make(PrimaryBeamImageSet& beamImages)
 	if(_width!=_sampledWidth || _height!=_sampledHeight)
 	{
 		FFTResampler resampler(_sampledWidth, _sampledHeight, _width, _height, 1);
-		ImageBufferAllocator::Ptr scratch;
-		_allocator->Allocate(_width*_height, scratch);
+		Image scratch(_width, _height);
 		for(size_t p=0; p!=8; ++p)
 		{
 			resampler.Resample(&beamImages[p][0], scratch.data());
@@ -162,7 +164,7 @@ void MWABeam::makeBeamForMS(PrimaryBeamImageSet& beamImages, MSProvider& msProvi
 		Logger::Debug << "Mid time for this interval: " << timeEpoch << '\n';
 		
 		casacore::MeasFrame frame(arrayPos, timeEpoch);
-		ao::uvector<double> singleImages[8];
+		aocommon::UVector<double> singleImages[8];
 		double *imgPtr[8];
 		for(size_t i=0; i!=8; ++i)
 		{
