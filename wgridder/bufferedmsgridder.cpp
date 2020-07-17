@@ -8,17 +8,15 @@
 #include "../fftresampler.h"
 #include "../image.h"
 
-#include "../wsclean/imagebufferallocator.h"
 #include "../wsclean/logger.h"
 
 #include "../msproviders/msprovider.h"
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
-BufferedMSGridder::BufferedMSGridder(ImageBufferAllocator* imageAllocator, size_t threadCount, double memFraction, double absMemLimit) :
+BufferedMSGridder::BufferedMSGridder(size_t threadCount, double memFraction, double absMemLimit) :
 	MSGridderBase(),
-	_cpuCount(threadCount),
-	_imageBufferAllocator(imageAllocator)
+	_cpuCount(threadCount)
 {
 	_memSize = getAvailableMemory(memFraction, absMemLimit);
 }
@@ -52,25 +50,25 @@ void BufferedMSGridder::gridMeasurementSet(MSData &msData)
 {
 	const MultiBandData selectedBands(msData.SelectedBand());
 
-	ao::uvector<std::complex<float>> modelBuffer(selectedBands.MaxChannels());
-	ao::uvector<float> weightBuffer(selectedBands.MaxChannels());
-	ao::uvector<bool> isSelected(selectedBands.MaxChannels(), true);
+	aocommon::UVector<std::complex<float>> modelBuffer(selectedBands.MaxChannels());
+	aocommon::UVector<float> weightBuffer(selectedBands.MaxChannels());
+	aocommon::UVector<bool> isSelected(selectedBands.MaxChannels(), true);
 
 	size_t totalNRows = 0;
 	for(size_t dataDescId=0; dataDescId!=selectedBands.DataDescCount(); ++dataDescId)
 	{
 		const BandData& band = selectedBands[dataDescId];
-		ao::uvector<double> frequencies(band.ChannelCount());
+		aocommon::UVector<double> frequencies(band.ChannelCount());
 		for(size_t i=0; i!=frequencies.size(); ++i)
 			frequencies[i] = band.Channel(i).Frequency();
 
 		size_t maxNRows = calculateMaxNRowsInMemory(band.ChannelCount());
 
-		ao::uvector<std::complex<float>> visBuffer(maxNRows * band.ChannelCount());
-		ao::uvector<double> uvwBuffer(maxNRows * 3);
+		aocommon::UVector<std::complex<float>> visBuffer(maxNRows * band.ChannelCount());
+		aocommon::UVector<double> uvwBuffer(maxNRows * 3);
 
 		msData.msProvider->Reset();
-		ao::uvector<std::complex<float>> newItemData(band.ChannelCount());
+		aocommon::UVector<std::complex<float>> newItemData(band.ChannelCount());
 		InversionRow newRowData;
 		newRowData.data = newItemData.data();
 
@@ -123,13 +121,13 @@ void BufferedMSGridder::predictMeasurementSet(MSData &msData)
 	for(size_t dataDescId=0; dataDescId!=selectedBands.DataDescCount(); ++dataDescId)
 	{
 		const BandData& band = selectedBands[dataDescId];
-		ao::uvector<double> frequencies(band.ChannelCount());
+		aocommon::UVector<double> frequencies(band.ChannelCount());
 		for(size_t i=0; i!=frequencies.size(); ++i)
 			frequencies[i] = band.Channel(i).Frequency();
 
 		size_t maxNRows = calculateMaxNRowsInMemory(band.ChannelCount());
 
-		ao::uvector<double> uvwBuffer(maxNRows * 3);
+		aocommon::UVector<double> uvwBuffer(maxNRows * 3);
 		// Iterate over chunks until all data has been gridded
 		msData.msProvider->Reset();
 		while(msData.msProvider->CurrentRowAvailable())
@@ -152,7 +150,7 @@ void BufferedMSGridder::predictMeasurementSet(MSData &msData)
 			}
 
 			Logger::Info << "Predicting " << nRows << " rows...\n";
-			ao::uvector<std::complex<float>> visBuffer(maxNRows * band.ChannelCount());
+			aocommon::UVector<std::complex<float>> visBuffer(maxNRows * band.ChannelCount());
 			_gridder->PredictVisibilities(nRows, band.ChannelCount(), uvwBuffer.data(), frequencies.data(), visBuffer.data());
 
 			Logger::Info << "Writing...\n";
@@ -202,7 +200,7 @@ void BufferedMSGridder::Invert()
 		Logger::Info << ", effective count after weighting: " << EffectiveGriddedVisibilityCount();
 	Logger::Info << '\n';
 
-	_image = _imageBufferAllocator->AllocatePtr(ActualInversionWidth() * ActualInversionHeight());
+	_image = Image(ActualInversionWidth(), ActualInversionHeight());
 	{
 		std::vector<float> imageFloat = _gridder->RealImage();
                 for (size_t i=0; i<imageFloat.size(); ++i) _image[i] = imageFloat[i];
@@ -214,7 +212,7 @@ void BufferedMSGridder::Invert()
 		// The input is of size _actualInversionWidth x _actualInversionHeight
 		FFTResampler resampler(_actualInversionWidth, _actualInversionHeight, ImageWidth(), ImageHeight(), _cpuCount);
 
-		ImageBufferAllocator::Ptr resized = _imageBufferAllocator->AllocatePtr(ImageWidth() * ImageHeight());
+		Image resized = Image(ImageWidth(), ImageHeight());
 		resampler.Resample(_image.data(), resized.data());
 		_image = std::move(resized);
 	}
@@ -223,14 +221,13 @@ void BufferedMSGridder::Invert()
 	{
 		Logger::Debug << "Trimming " << ImageWidth() << " x " << ImageHeight() << " -> " << TrimWidth() << " x " << TrimHeight() << '\n';
 
-		ImageBufferAllocator::Ptr
-			trimmed = _imageBufferAllocator->AllocatePtr(TrimWidth() * TrimHeight());
+		Image trimmed(TrimWidth(), TrimHeight());
 		Image::Trim(trimmed.data(), TrimWidth(), TrimHeight(), _image.data(), ImageWidth(), ImageHeight());
 		_image = std::move(trimmed);
 	}
 }
 
-void BufferedMSGridder::Predict(ImageBufferAllocator::Ptr image)
+void BufferedMSGridder::Predict(Image image)
 {
 	std::vector<MSData> msDataVector;
 	initializeMSDataVector(msDataVector);
@@ -242,8 +239,7 @@ void BufferedMSGridder::Predict(ImageBufferAllocator::Ptr image)
 
 	if(TrimWidth() != ImageWidth() || TrimHeight() != ImageHeight())
 	{
-		ImageBufferAllocator::Ptr untrimmedImage =
-			_imageBufferAllocator->AllocatePtr(ImageWidth() * ImageHeight());
+		Image untrimmedImage(ImageWidth(), ImageHeight());
 		Logger::Debug << "Untrimming " << TrimWidth() << " x " << TrimHeight() << " -> " << ImageWidth() << " x " << ImageHeight() << '\n';
 		Image::Untrim(untrimmedImage.data(), ImageWidth(), ImageHeight(), image.data(), TrimWidth(), TrimHeight());
 		image = std::move(untrimmedImage);
@@ -251,8 +247,7 @@ void BufferedMSGridder::Predict(ImageBufferAllocator::Ptr image)
 
 	if(ImageWidth()!=_actualInversionWidth || ImageHeight()!=_actualInversionHeight)
 	{
-		ImageBufferAllocator::Ptr resampledImage =
-			_imageBufferAllocator->AllocatePtr(ImageWidth() * ImageHeight());
+		Image resampledImage(ImageWidth(), ImageHeight());
 		FFTResampler resampler(ImageWidth(), ImageHeight(), _actualInversionWidth, _actualInversionHeight, _cpuCount);
 
 		resampler.Resample(image.data(), resampledImage.data());

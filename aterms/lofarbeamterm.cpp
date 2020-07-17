@@ -1,13 +1,13 @@
 #include "lofarbeamterm.h"
 
-#include "../banddata.h"
-#include "../lane.h"
-#include "../matrix2x2.h"
+#include <aocommon/banddata.h>
+#include <aocommon/matrix2x2.h>
+
 #include "../system.h"
 
 #include "../lofar/lofarbeamkeywords.h"
 
-#include "../units/imagecoordinates.h"
+#include <aocommon/imagecoordinates.h>
 
 #include "../wsclean/logger.h"
 
@@ -17,16 +17,19 @@
 #include <casacore/measures/Measures/MEpoch.h>
 #include <casacore/tables/Tables/TableRecord.h>
 
+#include <aocommon/lane.h>
+
 #include <algorithm>
 
 using namespace LOFAR::StationResponse;
+using namespace aocommon;
 
-LofarBeamTerm::LofarBeamTerm(casacore::MeasurementSet& ms, size_t width, size_t height, double dl, double dm, double phaseCentreDL, double phaseCentreDM, const std::string& dataColumnName) :
-	_width(width),
-	_height(height),
-	_dl(dl), _dm(dm),
-	_phaseCentreDL(phaseCentreDL),
-	_phaseCentreDM(phaseCentreDM),
+LofarBeamTerm::LofarBeamTerm(casacore::MeasurementSet& ms, const CoordinateSystem& coordinateSystem, const std::string& dataColumnName) :
+	_width(coordinateSystem.width),
+	_height(coordinateSystem.height),
+	_dl(coordinateSystem.dl), _dm(coordinateSystem.dm),
+	_phaseCentreDL(coordinateSystem.phaseCentreDL),
+	_phaseCentreDM(coordinateSystem.phaseCentreDM),
 	_useDifferentialBeam(false),
 	_useChannelFrequency(true)
 {
@@ -46,6 +49,8 @@ LofarBeamTerm::LofarBeamTerm(casacore::MeasurementSet& ms, size_t width, size_t 
 	_subbandFrequency = band.CentreFrequency();
 	
 	casacore::MSField fieldTable(ms.field());
+	if(fieldTable.nrow() != 1)
+		throw std::runtime_error("Set has multiple fields");
 	
 	casacore::MEpoch::ScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
 	casacore::MDirection::ScalarColumn phaseDirColumn(fieldTable, fieldTable.columnName(casacore::MSFieldEnums::PHASE_DIR));
@@ -59,8 +64,6 @@ LofarBeamTerm::LofarBeamTerm(casacore::MeasurementSet& ms, size_t width, size_t 
 	_phaseCentreDec = j2000Val[1];
 
 	casacore::ScalarMeasColumn<casacore::MDirection> delayDirColumn(fieldTable, casacore::MSField::columnName(casacore::MSFieldEnums::DELAY_DIR));
-	if(fieldTable.nrow() != 1)
-		throw std::runtime_error("Set has multiple fields");
 	_delayDir = delayDirColumn(0);
 	
 	if(fieldTable.tableDesc().isColumn("LOFAR_TILE_BEAM_DIR")) {
@@ -83,9 +86,9 @@ void setITRFVector(const casacore::MDirection& itrfDir, LOFAR::StationResponse::
 	itrf[2] = itrfVal[2];
 }
 
-bool LofarBeamTerm::calculateBeam(std::complex<float>* buffer, double time, double frequency)
+bool LofarBeamTerm::calculateBeam(std::complex<float>* buffer, double time, double frequency, size_t)
 {
-	ao::lane<size_t> lane(_nThreads);
+	aocommon::Lane<size_t> lane(_nThreads);
 	_lane = &lane;
 
 	LOFAR::StationResponse::ITRFConverter itrfConverter(time);
@@ -167,13 +170,11 @@ void LofarBeamTerm::calcThread(std::complex<float>* buffer, double time, double 
 		size_t y = job_id / _stations.size();
 		for(size_t x=0; x!=_width; ++x)
 		{
-			double l, m, n, ra, dec;
+			double l, m, n;
 			ImageCoordinates::XYToLM(x, y, _dl, _dm, _width, _height, l, m);
 			l += _phaseCentreDL;
 			m += _phaseCentreDM;
 			n = sqrt(1.0 - l*l - m*m);
-
-			ImageCoordinates::LMToRaDec(l, m, _phaseCentreRA, _phaseCentreDec, ra, dec);
 
 			vector3r_t itrfDirection;
 

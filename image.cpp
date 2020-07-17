@@ -1,121 +1,143 @@
 #include "image.h"
 
+#include "serialostream.h"
+#include "serialistream.h"
+
 #include <algorithm>
 #include <cmath>
 
-Image::Image(size_t width, size_t height, ImageBufferAllocator& allocator) :
-	_data(allocator.Allocate(width*height)),
-	_width(width), _height(height), _allocator(&allocator)
+template<typename NumT>
+ImageT<NumT>::ImageT(size_t width, size_t height) :
+	_data(new value_type[width*height]),
+	_width(width), _height(height)
 {
 }
 
-Image::Image(size_t width, size_t height, double initialValue, ImageBufferAllocator& allocator) :
-	_data(allocator.Allocate(width*height)),
-	_width(width), _height(height), _allocator(&allocator)
+template<typename NumT>
+ImageT<NumT>::ImageT(size_t width, size_t height, value_type initialValue) :
+	_data(new value_type[width*height]),
+	_width(width), _height(height)
 {
 	std::fill(_data, _data+_width*_height, initialValue);
 }
 
-Image::~Image()
+template<typename NumT>
+ImageT<NumT>::~ImageT()
 {
-	if(_allocator != nullptr)
-		_allocator->Free(_data);
+	delete[] _data;
 }
 
-Image::Image(const Image& source) :
-	_data((source._allocator==nullptr) ? nullptr : source._allocator->Allocate(source._width * source._height)),
+template<typename NumT>
+ImageT<NumT>::ImageT(const ImageT& source) :
+	_data(new value_type[source._width * source._height]),
 	_width(source._width),
-	_height(source._height),
-	_allocator(source._allocator)
+	_height(source._height)
 {
 	std::copy(source._data, source._data + _width*_height, _data);
 }
 
-Image& Image::operator=(const Image& source)
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator=(const ImageT& source)
 {
-	if(source._allocator == nullptr)
+	if(_width * _height != source._width * source._height)
 	{
-		reset();
+		delete[] _data;
+		_data = new value_type[source._width * source._height];
 	}
-	else {
-		if(_allocator == nullptr)
-		{
-			_allocator = source._allocator;
-			_data = _allocator->Allocate(source._width * source._height);
-		}
-		else if(_width * _height != source._width * source._height || source._allocator != _allocator)
-		{
-			_allocator->Free(_data);
-			_allocator = source._allocator;
-			_data = _allocator->Allocate(source._width * source._height);
-		}
-		_width = source._width;
-		_height = source._height;
-		std::copy(source._data, source._data + _width*_height, _data);
-	}
+	_width = source._width;
+	_height = source._height;
+	std::copy(source._data, source._data + _width*_height, _data);
 	return *this;
 }
 
-Image& Image::operator=(double value)
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator=(value_type value)
 {
-	for(double& v : *this)
+	for(value_type& v : *this)
 		v = value;
 	return *this;
 }
 
-Image::Image(Image&& source) :
+template<typename NumT>
+ImageT<NumT>::ImageT(ImageT&& source) :
 	_data(source._data),
 	_width(source._width),
-	_height(source._height),
-	_allocator(source._allocator)
+	_height(source._height)
 {
 	source._width = 0;
 	source._height = 0;
 	source._data = nullptr;
-	source._allocator = nullptr;
 }
 
-Image& Image::operator=(Image&& source)
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator=(ImageT&& source)
 {
 	std::swap(_data, source._data);
 	std::swap(_width, source._width);
 	std::swap(_height, source._height);
-	std::swap(_allocator, source._allocator);
 	return *this;
 }
 
-void Image::reset()
+template<typename NumT>
+void ImageT<NumT>::reset()
 {
-	if(_allocator != nullptr)
-		_allocator->Free(_data);
+	delete[] _data;
 	_data = nullptr;
 	_width = 0;
 	_height = 0;
-	_allocator = nullptr;
 }
 
-Image& Image::operator+=(const Image& other)
+template<typename NumT>
+void ImageT<NumT>::Serialize ( SerialOStream& stream ) const
+{
+	stream
+		.UInt64(_width)
+		.UInt64(_height);
+	size_t n = sizeof(NumT)*_width*_height;
+	std::copy_n(reinterpret_cast<const unsigned char*>(_data), n, stream.Chunk(n));
+}
+
+template<typename NumT>
+void ImageT<NumT>::Unserialize ( SerialIStream& stream )
+{
+	delete[] _data;
+	stream
+		.UInt64(_width)
+		.UInt64(_height);
+	if(_width * _height == 0)
+		_data = nullptr;
+	else
+		_data = new value_type[_width*_height];
+	size_t n = sizeof(NumT)*_width*_height;
+	std::copy_n(stream.Chunk(n), n, reinterpret_cast<unsigned char*>(_data));
+}
+
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator+=(const ImageT& other)
 {
 	for(size_t i=0; i!=_width*_height; ++i)
 		_data[i] += other[i];
 	return *this;
 }
 
-Image& Image::operator-=(const Image& other)
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator-=(const ImageT& other)
 {
 	for(size_t i=0; i!=_width*_height; ++i)
 		_data[i] -= other[i];
 	return *this;
 }
 
-Image& Image::operator*=(double factor)
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator*=(value_type factor)
 {
 	for(size_t i=0; i!=_width*_height; ++i)
 		_data[i] *= factor;
 	return *this;
 }
 
-Image& Image::operator*=(const Image& other)
+template<typename NumT>
+ImageT<NumT>& ImageT<NumT>::operator*=(const ImageT& other)
 {
 	for(size_t i=0; i!=_width*_height; ++i)
 		_data[i] *= other[i];
@@ -125,14 +147,15 @@ Image& Image::operator*=(const Image& other)
 // Cut-off the borders of an image.
 // @param outWidth Should be <= inWidth.
 // @param outHeight Should be <= inHeight.
-void Image::Trim(double* output, size_t outWidth, size_t outHeight, const double* input, size_t inWidth, size_t inHeight)
+template<typename NumT>
+void ImageT<NumT>::Trim(value_type* output, size_t outWidth, size_t outHeight, const value_type* input, size_t inWidth, size_t inHeight)
 {
 	size_t startX = (inWidth - outWidth) / 2;
 	size_t startY = (inHeight - outHeight) / 2;
 	size_t endY = (inHeight + outHeight) / 2;
 	for(size_t y=startY; y!=endY; ++y)
 	{
-		memcpy(&output[(y-startY)*outWidth], &input[y*inWidth + startX], outWidth*sizeof(double));
+		memcpy(&output[(y-startY)*outWidth], &input[y*inWidth + startX], outWidth*sizeof(value_type));
 	}
 }
 
@@ -140,7 +163,8 @@ void Image::Trim(double* output, size_t outWidth, size_t outHeight, const double
 	* @param outWidth Should be &gt;= inWidth.
 	* @param outHeight Should be &gt;= inHeight.
 	*/
-void Image::Untrim(double* output, size_t outWidth, size_t outHeight, const double* input, size_t inWidth, size_t inHeight)
+template<typename NumT>
+void ImageT<NumT>::Untrim(value_type* output, size_t outWidth, size_t outHeight, const value_type* input, size_t inWidth, size_t inHeight)
 {
 	size_t startX = (outWidth - inWidth) / 2;
 	size_t endX = (outWidth + inWidth) / 2;
@@ -148,54 +172,59 @@ void Image::Untrim(double* output, size_t outWidth, size_t outHeight, const doub
 	size_t endY = (outHeight + inHeight) / 2;
 	for(size_t y=0; y!=startY; ++y)
 	{
-		double* ptr = &output[y*outWidth];
+		value_type* ptr = &output[y*outWidth];
 		for(size_t x=0; x!=outWidth; ++x)
 			ptr[x] = 0.0;
 	}
 	for(size_t y=startY; y!=endY; ++y)
 	{
-		double* ptr = &output[y*outWidth];
+		value_type* ptr = &output[y*outWidth];
 		for(size_t x=0; x!=startX; ++x)
 			ptr[x] = 0.0;
-		memcpy(&output[y*outWidth + startX], &input[(y-startY)*inWidth], inWidth*sizeof(double));
+		memcpy(&output[y*outWidth + startX], &input[(y-startY)*inWidth], inWidth*sizeof(value_type));
 		for(size_t x=endX; x!=outWidth; ++x)
 			ptr[x] = 0.0;
 	}
 	for(size_t y=endY; y!=outHeight; ++y)
 	{
-		double* ptr = &output[y*outWidth];
+		value_type* ptr = &output[y*outWidth];
 		for(size_t x=0; x!=outWidth; ++x)
 			ptr[x] = 0.0;
 	}
 }
 
-double Image::Sum() const
+template<typename NumT>
+typename ImageT<NumT>::value_type ImageT<NumT>::Sum() const
 {
-	double sum = 0.0;
-	for(const double& v : *this)
+	value_type sum = 0.0;
+	for(const value_type& v : *this)
 		sum += v;
 	return sum;
 }
 
-double Image::Average() const
+template<typename NumT>
+typename ImageT<NumT>::value_type ImageT<NumT>::Average() const
 {
-	return Sum() / size();
+	return Sum() / NumT(size());
 }
 
-double Image::Min() const
+template<>
+typename ImageT<double>::value_type ImageT<double>::Min() const
 {
 	return *std::min_element(begin(), end());
 }
 
-double Image::Max() const
+template<>
+typename ImageT<double>::value_type ImageT<double>::Max() const
 {
 	return *std::max_element(begin(), end());
 }
 
-double Image::median_with_copy(const double* data, size_t size, ao::uvector<double>& copy)
+template<>
+typename ImageT<double>::value_type ImageT<double>::median_with_copy(const value_type* data, size_t size, aocommon::UVector<value_type>& copy)
 {
 	copy.reserve(size);
-	for(const double* i=data ; i!=data+size; ++i)
+	for(const value_type* i=data ; i!=data+size; ++i)
 	{
 		if(std::isfinite(*i))
 			copy.push_back(*i);
@@ -204,9 +233,9 @@ double Image::median_with_copy(const double* data, size_t size, ao::uvector<doub
 		return 0.0;
 	else {
 		bool even = (copy.size()%2) == 0;
-		ao::uvector<double>::iterator mid = copy.begin()+(copy.size()-1)/2;
+		typename aocommon::UVector<value_type>::iterator mid = copy.begin()+(copy.size()-1)/2;
 		std::nth_element(copy.begin(), mid, copy.end());
-		double median = *mid;
+		value_type median = *mid;
 		if(even)
 		{
 			std::nth_element(mid, mid+1, copy.end());
@@ -216,18 +245,25 @@ double Image::median_with_copy(const double* data, size_t size, ao::uvector<doub
 	}
 }
 
-double Image::MAD(const double* data, size_t size)
+template<typename NumT>
+typename ImageT<NumT>::value_type ImageT<NumT>::median_with_copy(const value_type*, size_t, aocommon::UVector<value_type>&)
+{ 
+	throw std::runtime_error("not implemented");
+}
+
+template<>
+typename ImageT<double>::value_type ImageT<double>::MAD(const value_type* data, size_t size)
 {
-	ao::uvector<double> copy;
-	double median = median_with_copy(data, size, copy);
+	aocommon::UVector<value_type> copy;
+	value_type median = median_with_copy(data, size, copy);
 	if(copy.empty())
 		return 0.0;
 		
 	// Replace all values by the difference from the mean
-	ao::uvector<double>::iterator mid = copy.begin()+(copy.size()-1)/2;
-	for(ao::uvector<double>::iterator i=copy.begin(); i!=mid+1; ++i)
+	typename aocommon::UVector<value_type>::iterator mid = copy.begin()+(copy.size()-1)/2;
+	for(typename aocommon::UVector<value_type>::iterator i=copy.begin(); i!=mid+1; ++i)
 		*i = median - *i;
-	for(ao::uvector<double>::iterator i=mid+1; i!=copy.end(); ++i)
+	for(typename aocommon::UVector<value_type>::iterator i=mid+1; i!=copy.end(); ++i)
 		*i = *i - median;
 	
 	std::nth_element(copy.begin(), mid, copy.end());
@@ -240,3 +276,15 @@ double Image::MAD(const double* data, size_t size)
 	}
 	return median;
 }
+
+template<typename NumT>
+typename ImageT<NumT>::value_type ImageT<NumT>::MAD(const value_type*, size_t)
+{ 
+	throw std::runtime_error("not implemented");
+}
+
+
+template class ImageT<double>;
+template class ImageT<float>;
+template class ImageT<std::complex<double>>;
+template class ImageT<std::complex<float>>;

@@ -7,8 +7,9 @@
 #include "spectralfitter.h"
 
 #include "../image.h"
-#include "../polarization.h"
-#include "../uvector.h"
+
+#include <aocommon/polarization.h>
+#include <aocommon/uvector.h>
 
 namespace ao {
 	template<typename T> class lane;
@@ -19,7 +20,7 @@ class DeconvolutionAlgorithm
 public:
 	virtual ~DeconvolutionAlgorithm() { }
 	
-	virtual double ExecuteMajorIteration(class ImageSet& dataImage, class ImageSet& modelImage, const ao::uvector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold) = 0;
+	virtual double ExecuteMajorIteration(class ImageSet& dataImage, class ImageSet& modelImage, const aocommon::UVector<const double*>& psfImages, size_t width, size_t height, bool& reachedMajorThreshold) = 0;
 	
 	virtual std::unique_ptr<DeconvolutionAlgorithm> Clone() const = 0;
 	
@@ -62,7 +63,7 @@ public:
 	
 	// This is used in the 'fitsmodel' executable. Might need to find a better place for it, or remove it.
 	static void GetModelFromImage(class Model &model, const double* image, size_t width, size_t height, double phaseCentreRA, double phaseCentreDec, double pixelSizeX, double pixelSizeY, double phaseCentreDL, double phaseCentreDM, double spectralIndex, double refFreq, 
-																PolarizationEnum polarization = Polarization::StokesI);
+																aocommon::PolarizationEnum polarization = aocommon::Polarization::StokesI);
 	
 	static void RemoveNaNsInPSF(double* psf, size_t width, size_t height);
 	
@@ -85,7 +86,7 @@ public:
 		_spectralFitter.SetMode(mode, nTerms);
 	}
 	
-	void InitializeFrequencies(const ao::uvector<double>& frequencies, const ao::uvector<double>& weights)
+	void InitializeFrequencies(const aocommon::UVector<double>& frequencies, const aocommon::UVector<double>& weights)
 	{
 		_spectralFitter.SetFrequencies(frequencies.data(), weights.data(), frequencies.size());
 	}

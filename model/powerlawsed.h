@@ -62,9 +62,9 @@ public:
 			return PolynomialFitter::Evaluate(frequencyHz/_referenceFrequency - 1.0, _terms) * _factors[pIndex];
 	}
 	
-	virtual long double IntegratedFlux(long double startFrequency, long double endFrequency, PolarizationEnum polarization) const override
+	virtual long double IntegratedFlux(long double startFrequency, long double endFrequency, aocommon::PolarizationEnum polarization) const override
 	{
-		size_t pIndex = Polarization::StokesToIndex(polarization);
+		size_t pIndex = aocommon::Polarization::StokesToIndex(polarization);
 		long double sum = 0.0;
 		for(size_t i=0; i!=101; ++i)
 		{
@@ -74,7 +74,7 @@ public:
 		return sum / 101.0;
 	}
 	
-	virtual long double AverageFlux(long double startFrequency, long double endFrequency, PolarizationEnum polarization) const override
+	virtual long double AverageFlux(long double startFrequency, long double endFrequency, aocommon::PolarizationEnum polarization) const override
 	{
 		return IntegratedFlux(startFrequency, endFrequency, polarization);
 	}
@@ -120,7 +120,7 @@ public:
 			_factors[p] = brightnessVector[p] / refBrightness;
 	}
 	
-	void SetFromStokesIFit(double referenceFrequency, const ao::uvector<double>& terms)
+	void SetFromStokesIFit(double referenceFrequency, const aocommon::UVector<double>& terms)
 	{
 		_referenceFrequency = referenceFrequency;
 		double refBrightness = terms[0];
@@ -172,7 +172,7 @@ public:
 private:
 	double _referenceFrequency;
 	double _factors[4];
-	ao::uvector<double> _terms;
+	aocommon::UVector<double> _terms;
 	bool _isLogarithmic;
 };
 
