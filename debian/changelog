@@ -1,3 +1,10 @@
+wsclean (2.10-1) unstable; urgency=low
+
+  * New upstream version 2.10. Rediff patches
+  * Add 'Rules-Requires-Root: no' to d/control
+
+ -- Ole Streicher <olebole@debian.org>  Fri, 17 Jul 2020 10:50:25 +0200
+
 wsclean (2.9-2) unstable; urgency=low
 
   * No-change source-only re-upload
