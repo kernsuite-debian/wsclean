@@ -1,3 +1,9 @@
+wsclean (2.10.1-1) unstable; urgency=low
+
+  * New upstream version 2.10.1. Fixes FTBFS on 32-bit archs
+
+ -- Ole Streicher <olebole@debian.org>  Mon, 20 Jul 2020 12:24:54 +0200
+
 wsclean (2.10-1) unstable; urgency=low
 
   * New upstream version 2.10. Rediff patches
