@@ -1,3 +1,9 @@
+wsclean (2.10.1-1kern1) focal; urgency=medium
+
+  * new upstream release
+
+ -- KERN packaging <packaging@kernsuite.info>  Tue, 23 Feb 2021 10:55:32 +0200
+
 wsclean (2.9-2kern2) bionic; urgency=medium
 
   [ Gijs Molenaar ]
