@@ -1,13 +1,14 @@
 #ifndef WSCLEAN_IMAGING_TABLE_H
 #define WSCLEAN_IMAGING_TABLE_H
 
+#include "../msproviders/partitionedms.h"
+
+#include <aocommon/polarization.h>
+
+#include <aocommon/uvector.h>
+
 #include <string>
 #include <vector>
-
-#include "../uvector.h"
-#include "../polarization.h"
-
-#include "../msproviders/partitionedms.h"
 
 class ImagingTableEntry
 {
@@ -35,7 +36,7 @@ public:
 	double siCorrection;
 	size_t inputChannelCount;
 	
-	PolarizationEnum polarization;
+	aocommon::PolarizationEnum polarization;
 	
 	size_t outputChannelIndex;
 	

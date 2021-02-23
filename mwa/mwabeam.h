@@ -1,22 +1,22 @@
 #ifndef MWA_BEAM
 #define MWA_BEAM
 
-#include <set>
-
-#include "../polarization.h"
-#include "../uvector.h"
+#include <aocommon/polarization.h>
 #include "../wsclean/imagingtable.h"
-#include "../wsclean/imagebufferallocator.h"
 #include "../wsclean/primarybeamimageset.h"
+
+#include <aocommon/uvector.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 #include <casacore/measures/Measures/MDirection.h>
 
+#include <set>
+
 class MWABeam
 {
 public:
-	MWABeam(const ImagingTableEntry* tableEntry, ImageBufferAllocator* allocator) :
-	_tableEntry(tableEntry), _allocator(allocator),
+	MWABeam(const ImagingTableEntry* tableEntry) :
+	_tableEntry(tableEntry),
 	_undersample(8), _secondsBeforeBeamUpdate(1800),
 	_frequencyInterpolation(true)
 	{
@@ -68,8 +68,6 @@ private:
 	
 	const ImagingTableEntry* _tableEntry;
 	std::vector<MSProviderInfo> _msProviders;
-	
-	class ImageBufferAllocator* _allocator;
 	
 	size_t _width, _height, _sampledWidth, _sampledHeight;
 	size_t _undersample, _secondsBeforeBeamUpdate;

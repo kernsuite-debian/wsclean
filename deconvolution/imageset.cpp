@@ -52,11 +52,10 @@ void ImageSet::LoadAndAverage(CachedImageSet& imageSet)
 	for(size_t i=0; i!=_images.size(); ++i)
 		assign(_images[i], 0.0);
 	
-	ImageBufferAllocator::Ptr scratch;
-	_allocator.Allocate(_imageSize, scratch);
+	Image scratch(_width, _height);
 	
 	/// TODO : use real weights of images
-	ao::uvector<size_t> weights(_images.size(), 0.0);
+	aocommon::UVector<size_t> weights(_images.size(), 0.0);
 	size_t imgIndex = 0;
 	for(size_t sqIndex=0; sqIndex!=_imagingTable.SquaredGroupCount(); ++sqIndex)
 	{
@@ -88,16 +87,15 @@ void ImageSet::LoadAndAverage(CachedImageSet& imageSet)
 		multiply(_images[i], 1.0/double(weights[i]));
 }
 
-void ImageSet::LoadAndAveragePSFs(CachedImageSet& psfSet, std::vector<ao::uvector<double>>& psfImages, PolarizationEnum psfPolarization)
+void ImageSet::LoadAndAveragePSFs(CachedImageSet& psfSet, std::vector<aocommon::UVector<double>>& psfImages, aocommon::PolarizationEnum psfPolarization)
 {
 	for(size_t chIndex=0; chIndex!=_channelsInDeconvolution; ++chIndex)
-		psfImages[chIndex].assign(_imageSize, 0.0);
+		psfImages[chIndex].assign(_width * _height, 0.0);
 	
-	ImageBufferAllocator::Ptr scratch;
-	_allocator.Allocate(_imageSize, scratch);
+	Image scratch(_width, _height);
 	
 	/// TODO : use real weights of images
-	ao::uvector<size_t> weights(_channelsInDeconvolution, 0.0);
+	aocommon::UVector<size_t> weights(_channelsInDeconvolution, 0.0);
 	for(size_t sqIndex=0; sqIndex!=_imagingTable.SquaredGroupCount(); ++sqIndex)
 	{
 		size_t chIndex = (sqIndex*_channelsInDeconvolution)/_imagingTable.SquaredGroupCount();
@@ -129,10 +127,10 @@ void ImageSet::InterpolateAndStore(CachedImageSet& imageSet, const SpectralFitte
 		// to have all channel images in memory at the same time.
 		// TODO: this assumes that polarizations are not joined!
 		size_t nTerms = fitter.NTerms();
-		ao::uvector<double> termsImage(_imageSize * nTerms);
-		ao::uvector<double> spectralPixel(_channelsInDeconvolution);
-		ao::uvector<double> termsPixel(nTerms);
-		for(size_t px=0; px!=_imageSize; ++px)
+		aocommon::UVector<double> termsImage(_width * _height * nTerms);
+		aocommon::UVector<double> spectralPixel(_channelsInDeconvolution);
+		aocommon::UVector<double> termsPixel(nTerms);
+		for(size_t px=0; px!=_width * _height; ++px)
 		{
 			bool isZero = true;
 			for(size_t s=0; s!=_images.size(); ++s)
@@ -157,14 +155,13 @@ void ImageSet::InterpolateAndStore(CachedImageSet& imageSet, const SpectralFitte
 		
 		// Now that we know the fit for each pixel, evaluate the function for each
 		// pixel of each output channel.
-		ImageBufferAllocator::Ptr scratch;
-		_allocator.Allocate(_imageSize, scratch);
+		Image scratch(_width, _height);
 		size_t imgIndex = 0;
 		for(size_t eIndex=0; eIndex!=_imagingTable.EntryCount(); ++eIndex)
 		{
 			const ImagingTableEntry& e = _imagingTable[eIndex];
 			double freq = e.CentralFrequency();
-			for(size_t px=0; px!=_imageSize; ++px)
+			for(size_t px=0; px!=_width * _height; ++px)
 			{
 				const double* termsPtr = &termsImage[px*nTerms];
 				for(size_t i=0; i!=nTerms; ++i)
@@ -379,22 +376,23 @@ void ImageSet::getLinearIntegratedWithNormalChannels(double* dest) const
 	}
 }
 
-void ImageSet::CalculateDeconvolutionFrequencies(const ImagingTable& groupTable, ao::uvector<double>& frequencies, ao::uvector<double>& weights, size_t nDeconvolutionChannels)
+void ImageSet::CalculateDeconvolutionFrequencies(const ImagingTable& groupTable, aocommon::UVector<double>& frequencies, aocommon::UVector<double>& weights, size_t nDeconvolutionChannels)
 {
 	size_t nInputChannels = groupTable.SquaredGroupCount();
 	if(nDeconvolutionChannels == 0) nDeconvolutionChannels = nInputChannels;
 	frequencies.assign(nDeconvolutionChannels, 0.0);
 	weights.assign(nDeconvolutionChannels, 0.0);
-	ao::uvector<size_t> counts(nDeconvolutionChannels, 0);
+	aocommon::UVector<double> weightSums(nDeconvolutionChannels, 0);
 	for(size_t i=0; i!=nInputChannels; ++i)
 	{
 		const ImagingTableEntry& entry = groupTable.GetSquaredGroup(i)[0];
-		double freq = entry.CentralFrequency();
+		double
+			freq = entry.CentralFrequency(),
+			weight = entry.imageWeight;
 		size_t deconvolutionChannel = i * nDeconvolutionChannels / nInputChannels;
-		frequencies[deconvolutionChannel] += freq;
-		weights[deconvolutionChannel] += entry.imageWeight;
-		counts[deconvolutionChannel]++;
+		frequencies[deconvolutionChannel] += freq * weight;
+		weights[deconvolutionChannel] += weight;
 	}
 	for(size_t i=0; i!=nDeconvolutionChannels; ++i)
-		frequencies[i] /= counts[i];
+		frequencies[i] /= weights[i];
 }

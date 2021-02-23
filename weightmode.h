@@ -4,6 +4,9 @@
 #include <string>
 #include <sstream>
 
+#include "serialostream.h"
+#include "serialistream.h"
+
 class WeightMode
 {
 public:
@@ -69,8 +72,28 @@ public:
 			default: return "?";
 		}
 	}
+	
+	void Serialize(SerialOStream& stream) const
+	{
+		stream.UInt32(_mode);
+		if(_mode == BriggsWeighted)
+		{
+			stream.Double(_briggsRobustness);
+			stream.Double(_superWeight);
+		}
+	}
+	
+	void Unserialize(SerialIStream& stream)
+	{
+		stream.UInt32(_mode);
+		if(_mode == BriggsWeighted)
+		{
+			stream.Double(_briggsRobustness);
+			stream.Double(_superWeight);
+		}
+	}
 private:
-	enum WeightingEnum _mode;
+	WeightingEnum _mode;
 	double _briggsRobustness, _superWeight;
 };
 

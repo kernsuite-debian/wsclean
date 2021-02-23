@@ -4,15 +4,16 @@
 #include "msgridderbase.h"
 #include "wstackinggridder.h"
 
-#include "../lane.h"
 #include "../multibanddata.h"
-
-#include <complex>
-#include <memory>
+#include "../image.h"
 
 #include <casacore/casa/Arrays/Array.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 
+#include <aocommon/lane.h>
+
+#include <complex>
+#include <memory>
 #include <thread>
 
 namespace casacore {
@@ -25,16 +26,16 @@ class WSMSGridder : public MSGridderBase
 	public:
 		typedef WStackingGridderF GridderType;
 		
-		WSMSGridder(class ImageBufferAllocator* imageAllocator, size_t threadCount, double memFraction, double absMemLimit);
+		WSMSGridder(size_t threadCount, double memFraction, double absMemLimit);
 	
 		virtual void Invert() final override;
 		
-		virtual void Predict(ImageBufferAllocator::Ptr image) final override { Predict(std::move(image), nullptr); }
-		virtual void Predict(ImageBufferAllocator::Ptr real, ImageBufferAllocator::Ptr imaginary) final override;
+		virtual void Predict(Image image) final override { Predict(std::move(image), Image()); }
+		virtual void Predict(Image real, Image imaginary) final override;
 		
-		virtual ImageBufferAllocator::Ptr ImageRealResult() final override
+		virtual Image ImageRealResult() final override
 		{ return std::move(_realImage); }
-		virtual ImageBufferAllocator::Ptr ImageImaginaryResult() final override {
+		virtual Image ImageImaginaryResult() final override {
 			if(!IsComplex())
 				throw std::runtime_error("No imaginary result available for non-complex inversion");
 			return std::move(_imaginaryImage);
@@ -66,7 +67,7 @@ class WSMSGridder : public MSGridderBase
 
 		void predictMeasurementSet(MSData& msData);
 
-		void workThread(ao::lane<InversionRow>* workLane)
+		void workThread(aocommon::Lane<InversionRow>* workLane)
 		{
 			InversionRow workItem;
 			while(workLane->read(workItem))
@@ -78,18 +79,17 @@ class WSMSGridder : public MSGridderBase
 		
 		void startInversionWorkThreads(size_t maxChannelCount);
 		void finishInversionWorkThreads();
-		void workThreadPerSample(ao::lane<InversionWorkSample>* workLane);
+		void workThreadPerSample(aocommon::Lane<InversionWorkSample>* workLane);
 		
-		void predictCalcThread(ao::lane<PredictionWorkItem>* inputLane, ao::lane<PredictionWorkItem>* outputLane);
-		void predictWriteThread(ao::lane<PredictionWorkItem>* samplingWorkLane, const MSData* msData);
+		void predictCalcThread(aocommon::Lane<PredictionWorkItem>* inputLane, aocommon::Lane<PredictionWorkItem>* outputLane);
+		void predictWriteThread(aocommon::Lane<PredictionWorkItem>* samplingWorkLane, const MSData* msData);
 
 		std::unique_ptr<GridderType> _gridder;
-		std::vector<ao::lane<InversionWorkSample>> _inversionCPULanes;
+		std::vector<aocommon::Lane<InversionWorkSample>> _inversionCPULanes;
 		std::vector<std::thread> _threadGroup;
 		size_t _cpuCount, _laneBufferSize;
 		int64_t _memSize;
-		ImageBufferAllocator* _imageBufferAllocator;
-		ImageBufferAllocator::Ptr _realImage, _imaginaryImage;
+		Image _realImage, _imaginaryImage;
 };
 
 #endif

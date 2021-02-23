@@ -1,26 +1,28 @@
 #include "dftpredictionalgorithm.h"
-#include "units/imagecoordinates.h"
-#include "matrix2x2.h"
+#include <aocommon/imagecoordinates.h>
+
+#include <aocommon/matrix2x2.h>
 #include "model/model.h"
 #include "progressbar.h"
 
 #include <casacore/measures/TableMeasures/ArrayMeasColumn.h>
 
-DFTPredictionImage::DFTPredictionImage(size_t width, size_t height, ImageBufferAllocator& allocator) :
+using aocommon::MC2x2;
+
+DFTPredictionImage::DFTPredictionImage(size_t width, size_t height) :
 	_width(width),
-	_height(height),
-	_allocator(&allocator)
+	_height(height)
 {
 	const size_t s = width*height;
 	for(size_t p=0; p!=4; ++p)
 	{
-		_allocator->Allocate(s, _images[p]);
+		_images[p] = Image(width, height);
 		for(size_t i=0; i!=s; ++i)
 			_images[p][i] = 0.0;
 	}
 }
 
-void DFTPredictionImage::Add(PolarizationEnum polarization, const double* image)
+void DFTPredictionImage::Add(aocommon::PolarizationEnum polarization, const double* image)
 {
 	size_t size = _width * _height;
 	for(size_t i=0; i!=size; ++i)
@@ -29,46 +31,46 @@ void DFTPredictionImage::Add(PolarizationEnum polarization, const double* image)
 		double stokes[4];
 		switch(polarization)
 		{
-		case Polarization::XX:
+		case aocommon::Polarization::XX:
 			temp[0] = image[i];
-			Polarization::LinearToStokes(temp, stokes);
+			aocommon::Polarization::LinearToStokes(temp, stokes);
 			_images[0][i] += stokes[0];
 			_images[1][i] += stokes[1];
 			break;
-		case Polarization::XY:
-		case Polarization::YX:
-		case Polarization::Instrumental:
+		case aocommon::Polarization::XY:
+		case aocommon::Polarization::YX:
+		case aocommon::Polarization::Instrumental:
 			throw std::runtime_error("Invalid call to Add()");
-		case Polarization::YY:
+		case aocommon::Polarization::YY:
 			temp[3] = image[i];
-			Polarization::LinearToStokes(temp, stokes);
+			aocommon::Polarization::LinearToStokes(temp, stokes);
 			_images[0][i] += stokes[0];
 			_images[1][i] += stokes[1];
 			break;
-		case Polarization::StokesI:
+		case aocommon::Polarization::StokesI:
 			_images[0][i] += image[i];
 			break;
-		case Polarization::StokesQ:
+		case aocommon::Polarization::StokesQ:
 			_images[1][i] += image[i];
 			break;
-		case Polarization::StokesU:
+		case aocommon::Polarization::StokesU:
 			_images[2][i] += image[i];
 			break;
-		case Polarization::StokesV:
+		case aocommon::Polarization::StokesV:
 			_images[3][i] += image[i];
 			break;
-		case Polarization::RR:
+		case aocommon::Polarization::RR:
 			temp[0] = image[i];
-			Polarization::CircularToStokes(temp, stokes);
+			aocommon::Polarization::CircularToStokes(temp, stokes);
 			_images[0][i] += stokes[0];
 			_images[3][i] += stokes[3];
 			break;
-		case Polarization::RL:
-		case Polarization::LR:
+		case aocommon::Polarization::RL:
+		case aocommon::Polarization::LR:
 			throw std::runtime_error("Invalid call to Add()");
-		case Polarization::LL:
+		case aocommon::Polarization::LL:
 			temp[0] = image[i];
-			Polarization::CircularToStokes(temp, stokes);
+			aocommon::Polarization::CircularToStokes(temp, stokes);
 			_images[0][i] += stokes[0];
 			_images[3][i] += stokes[3];
 			break;
@@ -77,7 +79,7 @@ void DFTPredictionImage::Add(PolarizationEnum polarization, const double* image)
 	_pols.push_back(polarization);
 }
 
-void DFTPredictionImage::Add(PolarizationEnum polarization, const double* real, const double* imaginary)
+void DFTPredictionImage::Add(aocommon::PolarizationEnum polarization, const double* real, const double* imaginary)
 {
 	size_t size = _width * _height;
 	for(size_t i=0; i!=size; ++i)
@@ -86,37 +88,37 @@ void DFTPredictionImage::Add(PolarizationEnum polarization, const double* real, 
 		double stokes[4];
 		switch(polarization)
 		{
-		case Polarization::XX:
-		case Polarization::YY:
-		case Polarization::StokesI:
-		case Polarization::StokesQ:
-		case Polarization::StokesU:
-		case Polarization::StokesV:
-		case Polarization::RR:
-		case Polarization::LL:
-		case Polarization::Instrumental:
+		case aocommon::Polarization::XX:
+		case aocommon::Polarization::YY:
+		case aocommon::Polarization::StokesI:
+		case aocommon::Polarization::StokesQ:
+		case aocommon::Polarization::StokesU:
+		case aocommon::Polarization::StokesV:
+		case aocommon::Polarization::RR:
+		case aocommon::Polarization::LL:
+		case aocommon::Polarization::Instrumental:
 			throw std::runtime_error("Invalid call to Add()");
-		case Polarization::XY:
+		case aocommon::Polarization::XY:
 			temp[1] = std::complex<double>(real[i], imaginary[i]);
-			Polarization::LinearToStokes(temp, stokes);
+			aocommon::Polarization::LinearToStokes(temp, stokes);
 			_images[2][i] += stokes[2];
 			_images[3][i] += stokes[3];
 			break;
-		case Polarization::YX:
+		case aocommon::Polarization::YX:
 			temp[2] = std::complex<double>(real[i], imaginary[i]);
-			Polarization::LinearToStokes(temp, stokes);
+			aocommon::Polarization::LinearToStokes(temp, stokes);
 			_images[2][i] += stokes[2];
 			_images[3][i] += stokes[3];
 			break;
-		case Polarization::RL:
+		case aocommon::Polarization::RL:
 			temp[1] = std::complex<double>(real[i], imaginary[i]);
-			Polarization::CircularToStokes(temp, stokes);
+			aocommon::Polarization::CircularToStokes(temp, stokes);
 			_images[1][i] += stokes[1];
 			_images[2][i] += stokes[2];
 			break;
-		case Polarization::LR:
+		case aocommon::Polarization::LR:
 			temp[2] = std::complex<double>(real[i], imaginary[i]);
-			Polarization::CircularToStokes(temp, stokes);
+			aocommon::Polarization::CircularToStokes(temp, stokes);
 			_images[1][i] += stokes[1];
 			_images[2][i] += stokes[2];
 			break;
@@ -136,14 +138,14 @@ void DFTPredictionImage::FindComponents(DFTPredictionInput& destination, double 
 				_images[2][index] != 0.0 || _images[3][index] != 0.0)
 			{
 				double l, m;
-				ImageCoordinates::XYToLM(x, y, pixelSizeX, pixelSizeY, _width, _height, l, m);
+				aocommon::ImageCoordinates::XYToLM(x, y, pixelSizeX, pixelSizeY, _width, _height, l, m);
 				l += dl; m += dm;
 				double ra, dec;
-				ImageCoordinates::LMToRaDec(l, m, phaseCentreRA, phaseCentreDec, ra, dec);
+				aocommon::ImageCoordinates::LMToRaDec(l, m, phaseCentreRA, phaseCentreDec, ra, dec);
 				double stokes[4] = { _images[0][index], _images[1][index],
 					_images[2][index], _images[3][index] };
 				std::complex<double> linear[4];
-				Polarization::StokesToLinear(stokes, linear);
+				aocommon::Polarization::StokesToLinear(stokes, linear);
 				destination.AddComponent(DFTPredictionComponent(ra, dec, l, m, linear, channelCount));
 			}
 			++index;
@@ -161,7 +163,7 @@ void DFTPredictionInput::ConvertApparentToAbsolute(casacore::MeasurementSet& ms)
 {
 	std::vector<ComponentInfo> compInfos(_components.size());
 	
-	const BandData band(ms.spectralWindow());
+	const aocommon::BandData band(ms.spectralWindow());
 	LBeamEvaluator evaluator(ms);
 	casacore::MEpoch::ROScalarColumn timeColumn(ms, ms.columnName(casacore::MSMainEnums::TIME));
 	size_t nrow = ms.nrow();
@@ -223,7 +225,7 @@ void DFTPredictionInput::ConvertApparentToAbsolute(casacore::MeasurementSet& ms)
 	
 }
 
-void DFTPredictionInput::InitializeFromModel(const Model& model, long double phaseCentreRA, long double phaseCentreDec, const BandData& band)
+void DFTPredictionInput::InitializeFromModel(const Model& model, long double phaseCentreRA, long double phaseCentreDec, const aocommon::BandData& band)
 {
 	for(const ModelSource& s : model)
 	{
@@ -231,7 +233,7 @@ void DFTPredictionInput::InitializeFromModel(const Model& model, long double pha
 		{
 			long double l, m;
 			DFTPredictionComponent& component = AddComponent();
-			ImageCoordinates::RaDecToLM(comp.PosRA(), comp.PosDec(), phaseCentreRA, phaseCentreDec, l, m);
+			aocommon::ImageCoordinates::RaDecToLM(comp.PosRA(), comp.PosDec(), phaseCentreRA, phaseCentreDec, l, m);
 			component.SetPosition(comp.PosRA(), comp.PosDec(), l, m);
 			if(comp.Type() == ModelComponent::GaussianSource)
 			{
@@ -243,8 +245,8 @@ void DFTPredictionInput::InitializeFromModel(const Model& model, long double pha
 				MC2x2& flux = component.LinearFlux(ch);
 				double stokes[4];
 				for(size_t p=0; p!=4; ++p)
-					stokes[p] = comp.SED().FluxAtFrequency(band.ChannelFrequency(ch), Polarization::IndexToStokes(p));
-				Polarization::StokesToLinear(stokes, flux.Data());
+					stokes[p] = comp.SED().FluxAtFrequency(band.ChannelFrequency(ch), aocommon::Polarization::IndexToStokes(p));
+				aocommon::Polarization::StokesToLinear(stokes, flux.Data());
 			}
 		}
 	}

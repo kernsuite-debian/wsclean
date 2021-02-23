@@ -14,13 +14,15 @@
 
 #include <StationResponse/LofarMetaDataUtil.h>
 
-#include "../lane.h"
-#include "../matrix2x2.h"
+#include <aocommon/lane.h>
+
+#include <aocommon/matrix2x2.h>
+
 
 class LofarBeamTerm : public ATermBeam
 {
 public:
-	LofarBeamTerm(casacore::MeasurementSet& ms, size_t width, size_t height, double dl, double dm, double phaseCentreDL, double phaseCentreDM, const std::string& dataColumnName);
+	LofarBeamTerm(casacore::MeasurementSet& ms, const CoordinateSystem& coordinateSystem, const std::string& dataColumnName);
 	
 	void SetUseDifferentialBeam(bool useDiffBeam)
 	{
@@ -33,7 +35,7 @@ public:
 	}
 	
 private:
-	bool calculateBeam(std::complex<float>* buffer, double time, double frequency) final override;
+	bool calculateBeam(std::complex<float>* buffer, double time, double frequency, size_t fieldId) final override;
 
 	void calcThread(std::complex<float>* buffer, double time, double frequency);
 	
@@ -46,10 +48,10 @@ private:
 	LOFAR::StationResponse::vector3r_t _l_vector_itrf;
 	LOFAR::StationResponse::vector3r_t _m_vector_itrf;
 	LOFAR::StationResponse::vector3r_t _n_vector_itrf;
-	std::vector<MC2x2F> _inverseCentralGain;
+	std::vector<aocommon::MC2x2F> _inverseCentralGain;
 	LOFAR::StationResponse::vector3r_t _station0, _tile0;
 	
-	ao::lane<size_t> *_lane;
+	aocommon::Lane<size_t> *_lane;
 	size_t _nThreads;
 	std::vector<std::thread> _threads;
 };

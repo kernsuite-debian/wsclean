@@ -3,8 +3,6 @@
 
 #include "../deconvolution/simpleclean.h"
 
-#include "../wsclean/imagebufferallocator.h"
-
 ThreadedDeconvolutionTools::ThreadedDeconvolutionTools(size_t threadCount) :
 	_taskLanes(threadCount),
 	_resultLanes(threadCount),
@@ -12,8 +10,8 @@ ThreadedDeconvolutionTools::ThreadedDeconvolutionTools(size_t threadCount) :
 {
 	for(size_t i=0; i!=_threadCount; ++i)
 	{
-		_taskLanes[i] = new ao::lane<ThreadTask*>(1);
-		_resultLanes[i] = new ao::lane<ThreadResult*>(1);
+		_taskLanes[i] = new aocommon::Lane<ThreadTask*>(1);
+		_resultLanes[i] = new aocommon::Lane<ThreadResult*>(1);
 		_threadGroup.emplace_back(&ThreadedDeconvolutionTools::threadFunc, this, _taskLanes[i], _resultLanes[i]);
 	}
 }
@@ -72,7 +70,7 @@ ThreadedDeconvolutionTools::ThreadResult* ThreadedDeconvolutionTools::Subtractio
 	return 0;
 }
 
-void ThreadedDeconvolutionTools::MultiScaleTransform(MultiScaleTransforms* msTransforms, const ao::uvector<double*>& images, double* scratch, double scale)
+void ThreadedDeconvolutionTools::MultiScaleTransform(MultiScaleTransforms* msTransforms, const aocommon::UVector<double*>& images, double* scratch, double scale)
 {
 	size_t imageIndex = 0;
 	size_t nextThread = 0;
@@ -112,23 +110,23 @@ ThreadedDeconvolutionTools::ThreadResult* ThreadedDeconvolutionTools::FinishMult
 	return 0;
 }
 
-void ThreadedDeconvolutionTools::MultiScaleTransform(MultiScaleTransforms* msTransforms, ImageBufferAllocator* allocator, const ao::uvector<double*>& images, ao::uvector<double> scales)
+void ThreadedDeconvolutionTools::MultiScaleTransform(MultiScaleTransforms* msTransforms, const aocommon::UVector<double*>& images, aocommon::UVector<double> scales)
 {
 	size_t imageIndex = 0;
 	size_t nextThread = 0;
 	
 	size_t scratchCount = std::min(images.size(), _threadCount);
-	std::unique_ptr<ImageBufferAllocator::Ptr[]> scratchImages(
-		new ImageBufferAllocator::Ptr[scratchCount]);
+	std::unique_ptr<Image::Ptr[]> scratchImages(
+		new Image::Ptr[scratchCount]);
 	for(size_t i=0; i!=scratchCount; ++i)
-		allocator->Allocate(msTransforms->Width() * msTransforms->Height(), scratchImages[i]);
+		scratchImages[i] = Image::Make(msTransforms->Width(), msTransforms->Height());
 	
 	while(imageIndex < images.size())
 	{
 		MultiScaleTransformTask* task = new MultiScaleTransformTask();
 		task->msTransforms = msTransforms;
 		task->image = images[imageIndex];
-		task->scratch = scratchImages[nextThread].data();
+		task->scratch = scratchImages[nextThread]->data();
 		task->scale = scales[imageIndex];
 		_taskLanes[nextThread]->write(task);
 		
@@ -159,7 +157,7 @@ ThreadedDeconvolutionTools::ThreadResult* ThreadedDeconvolutionTools::MultiScale
 	return 0;
 }
 
-void ThreadedDeconvolutionTools::FindMultiScalePeak(MultiScaleTransforms* msTransforms, ImageBufferAllocator* allocator, const double* image, const ao::uvector<double>& scales, std::vector<ThreadedDeconvolutionTools::PeakData>& results, bool allowNegativeComponents, const bool* mask, const std::vector<ao::uvector<bool>>& scaleMasks, double borderRatio, const Image& rmsFactorImage, bool calculateRMS)
+void ThreadedDeconvolutionTools::FindMultiScalePeak(MultiScaleTransforms* msTransforms, const double* image, const aocommon::UVector<double>& scales, std::vector<ThreadedDeconvolutionTools::PeakData>& results, bool allowNegativeComponents, const bool* mask, const std::vector<aocommon::UVector<bool>>& scaleMasks, double borderRatio, const Image& rmsFactorImage, bool calculateRMS)
 {
 	size_t imageIndex = 0;
 	size_t nextThread = 0;
@@ -169,23 +167,23 @@ void ThreadedDeconvolutionTools::FindMultiScalePeak(MultiScaleTransforms* msTran
 	const size_t dataSize = msTransforms->Width() * msTransforms->Height();
 	
 	size_t size = std::min(scales.size(), _threadCount);
-	std::unique_ptr<ImageBufferAllocator::Ptr[]> imageData(
-		new ImageBufferAllocator::Ptr[size]);
-	std::unique_ptr<ImageBufferAllocator::Ptr[]> scratchData(
-		new ImageBufferAllocator::Ptr[size]);
+	std::unique_ptr<Image::Ptr[]> imageData(
+		new Image::Ptr[size]);
+	std::unique_ptr<Image::Ptr[]> scratchData(
+		new Image::Ptr[size]);
 	for(size_t i=0; i!=size; ++i)
 	{
-		allocator->Allocate(dataSize, imageData[i]);
-		allocator->Allocate(dataSize, scratchData[i]);
+		imageData[i] = Image::Make(msTransforms->Width(), msTransforms->Height());
+		scratchData[i] = Image::Make(msTransforms->Width(), msTransforms->Height());
 	}
 	
 	while(imageIndex < scales.size())
 	{
 		FindMultiScalePeakTask* task = new FindMultiScalePeakTask();
 		task->msTransforms = msTransforms;
-		memcpy(imageData[nextThread].data(), image, dataSize*sizeof(double));
-		task->image = imageData[nextThread].data();
-		task->scratch = scratchData[nextThread].data();
+		memcpy(imageData[nextThread]->data(), image, dataSize*sizeof(double));
+		task->image = imageData[nextThread]->data();
+		task->scratch = scratchData[nextThread]->data();
 		task->scale = scales[imageIndex];
 		task->allowNegativeComponents = allowNegativeComponents;
 		if(scaleMasks.empty())
@@ -202,7 +200,7 @@ void ThreadedDeconvolutionTools::FindMultiScalePeak(MultiScaleTransforms* msTran
 		{
 			for(size_t thr=0; thr!=nextThread; ++thr)
 			{
-				ThreadResult* result = 0;
+				ThreadResult* result = nullptr;
 				_resultLanes[thr]->read(result);
 				results[resultIndex].normalizedValue = static_cast<FindMultiScalePeakResult*>(result)->normalizedValue;
 				results[resultIndex].unnormalizedValue = static_cast<FindMultiScalePeakResult*>(result)->unnormalizedValue;
@@ -218,7 +216,7 @@ void ThreadedDeconvolutionTools::FindMultiScalePeak(MultiScaleTransforms* msTran
 	}
 	for(size_t thr=0; thr!=nextThread; ++thr)
 	{
-		ThreadResult* result = 0;
+		ThreadResult* result = nullptr;
 		_resultLanes[thr]->read(result);
 		results[resultIndex].unnormalizedValue = static_cast<FindMultiScalePeakResult*>(result)->unnormalizedValue;
 		results[resultIndex].normalizedValue = static_cast<FindMultiScalePeakResult*>(result)->normalizedValue;

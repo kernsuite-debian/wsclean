@@ -19,14 +19,14 @@ void LMSPredicter::InitializeInput(const Model& model)
 	double ra = val[0];
 	double dec = val[1];
 	
-	BandData band(_ms.spectralWindow());
+	aocommon::BandData band(_ms.spectralWindow());
 	
 	_dftInput.InitializeFromModel(model, ra, dec, band);
 }
 
 void LMSPredicter::clearBuffers()
 {
-	for(MC2x2* buffer : _buffers)
+	for(aocommon::MC2x2* buffer : _buffers)
 		delete[] buffer;
 }
 
@@ -41,7 +41,7 @@ void LMSPredicter::Start()
 	if(polarizationCount != 4)
 		throw std::runtime_error("Expecting MS with 4 polarizations");
 	
-	_bandData = BandData(_ms.spectralWindow());
+	_bandData = aocommon::BandData(_ms.spectralWindow());
 	if(_endChannel == 0)
 	{
 		_startChannel = 0;
@@ -73,7 +73,7 @@ void LMSPredicter::Start()
 		for(size_t i=0; i!=_laneSize; ++i)
 		{
 			RowData rowData;
-			_buffers[i] = new MC2x2[_bandData.ChannelCount()];
+			_buffers[i] = new aocommon::MC2x2[_bandData.ChannelCount()];
 			rowData.modelData = _buffers[i];
 			_availableBufferLane.write(rowData);
 		}
@@ -165,7 +165,7 @@ void LMSPredicter::ReadThreadFunc()
 			rowData.timeIndex = timeIndex;
 			if(_useModelColumn)
 			{
-				MC2x2 *outptr = rowData.modelData;
+				aocommon::MC2x2 *outptr = rowData.modelData;
 				casacore::Complex* inptr = modelData.cbegin();
 				for(size_t ch=0; ch!=_bandData.ChannelCount(); ++ch)
 				{
@@ -204,7 +204,7 @@ void LMSPredicter::PredictThreadFunc()
 	RowData rowData;
 	while(_workLane.read(rowData))
 	{
-		MC2x2 *valIter = rowData.modelData;
+		aocommon::MC2x2 *valIter = rowData.modelData;
 		for(size_t ch=_startChannel; ch!=_endChannel; ++ch)
 		{
 			double lambda = _bandData.ChannelWavelength(ch);

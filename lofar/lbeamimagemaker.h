@@ -1,14 +1,12 @@
 #ifndef BEAM_IMAGE_MAKER
 #define BEAM_IMAGE_MAKER
 
-#include <set>
-
 #include "../hmatrix4x4.h"
-#include "../polarization.h"
-#include "../uvector.h"
+#include <aocommon/polarization.h>
 #include "../wsclean/imagingtable.h"
-#include "../wsclean/imagebufferallocator.h"
 #include "../wsclean/primarybeamimageset.h"
+
+#include <aocommon/uvector.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 #include <casacore/measures/Measures/MDirection.h>
@@ -17,11 +15,13 @@
 #include <StationResponse/Station.h>
 #endif
 
+#include <set>
+
 class LBeamImageMaker
 {
 public:
-	LBeamImageMaker(const ImagingTableEntry* tableEntry, ImageBufferAllocator* allocator) :
-	_tableEntry(tableEntry), _allocator(allocator),
+	LBeamImageMaker(const ImagingTableEntry* tableEntry) :
+	_tableEntry(tableEntry),
 	_undersample(8), _secondsBeforeBeamUpdate(1800),
 	_useDifferentialBeam(false)
 	{
@@ -92,7 +92,7 @@ private:
 		}
 	private:
 		size_t _nAntenna;
-		ao::uvector<double> _weights;
+		aocommon::UVector<double> _weights;
 	};
 	
 	void makeBeamForMS(std::vector<HMC4x4>& _matrices, MSProvider& msProvider, const MSSelection& selection, double centralFrequency);
@@ -101,7 +101,7 @@ private:
 	
 	void calculateStationWeights(const class ImageWeights& imageWeights, double& totalWeight, WeightMatrix& baselineWeights, SynchronizedMS& ms, MSProvider& msProvider, const MSSelection& selection, double endTime);
 	
-	void logWeights(casacore::MeasurementSet& ms, const ao::uvector<double>& weights);
+	void logWeights(casacore::MeasurementSet& ms, const aocommon::UVector<double>& weights);
 #endif
 	
 	struct MSProviderInfo

@@ -3,9 +3,9 @@
 
 #include "paralleldeconvolution.h"
 
-#include "../wsclean/imagebufferallocator.h"
-#include "../polarization.h"
-#include "../uvector.h"
+#include <aocommon/polarization.h>
+
+#include <aocommon/uvector.h>
 
 #include <cstring>
 
@@ -17,7 +17,7 @@ public:
 	
 	void Perform(const class ImagingTable& groupTable, bool& reachedMajorThreshold, size_t majorIterationNr);
 	
-	void InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, PolarizationEnum psfPolarization, ImageBufferAllocator* imageAllocator, double beamSize, size_t threadCount);
+	void InitializeDeconvolutionAlgorithm(const ImagingTable& groupTable, aocommon::PolarizationEnum psfPolarization, double beamSize, size_t threadCount);
 	
 	void InitializeImages(class CachedImageSet& residuals, CachedImageSet& models, CachedImageSet& psfs)
 	{
@@ -61,16 +61,15 @@ private:
 	
 	ParallelDeconvolution _parallelDeconvolution;
 	
-	ao::uvector<bool> _cleanMask;
+	aocommon::UVector<bool> _cleanMask;
 	
 	bool _autoMaskIsFinished;
-	ao::uvector<double> _channelFrequencies, _channelWeights;
-	std::set<PolarizationEnum> _polarizations;
-	PolarizationEnum _psfPolarization;
+	aocommon::UVector<double> _channelFrequencies, _channelWeights;
+	std::set<aocommon::PolarizationEnum> _polarizations;
+	aocommon::PolarizationEnum _psfPolarization;
 	size_t _imgWidth, _imgHeight;
-	ImageBufferAllocator* _imageAllocator;
 	CachedImageSet *_psfImages, *_modelImages, *_residualImages;
-	ao::uvector<bool> _autoMask;
+	aocommon::UVector<bool> _autoMask;
 	double _beamSize, _pixelScaleX, _pixelScaleY;
 };
 

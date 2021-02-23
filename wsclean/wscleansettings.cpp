@@ -1,4 +1,5 @@
 #include "wscleansettings.h"
+#include "logger.h"
 
 #include <sstream>
 
@@ -18,6 +19,13 @@ void WSCleanSettings::Validate() const
 		if(pixelScaleX == 0.0 || pixelScaleY == 0.0)
 			throw std::runtime_error("Invalid pixel scale given: one direction was set to zero.");
 	}
+	else if(mode == PredictMode)
+	{
+		if(joinedFrequencyCleaning)
+			throw std::runtime_error("Joined frequency cleaning specified for prediction: prediction doesn't clean, parameter invalid");
+		if(joinedPolarizationCleaning)
+			throw std::runtime_error("Joined polarization cleaning specified for prediction: prediction doesn't clean, parameter invalid");
+	}
 	
 	// antialiasingKernelSize should be odd
 	if(antialiasingKernelSize%2 == 0)
@@ -29,8 +37,8 @@ void WSCleanSettings::Validate() const
 	
 	if(useIDG)
 	{
-		bool stokesIOnly = polarizations.size()==1 && *polarizations.begin() == Polarization::StokesI;
-		bool allStokes = Polarization::HasFullStokesPolarization(polarizations) &&
+		bool stokesIOnly = polarizations.size()==1 && *polarizations.begin() == aocommon::Polarization::StokesI;
+		bool allStokes = aocommon::Polarization::HasFullStokesPolarization(polarizations) &&
 			polarizations.size() == 4;
 		if(!allStokes && !stokesIOnly)
 		{
@@ -47,6 +55,10 @@ void WSCleanSettings::Validate() const
 		throw std::runtime_error("Can't grid with the beam without IDG: specify '-use-idg' to use IDG.");
 	if(gridWithBeam && applyPrimaryBeam)
 		throw std::runtime_error("Can't simultaneously grid with the beam and apply the average beam: use either one.");
+	if(gridWithBeam && !atermConfigFilename.empty())
+		throw std::runtime_error("Use of an aterm config file can't be combined with -grid-with-beam: add the beam to your aterm config and remove -grid-with-beam from the command line");
+	if(!useIDG && !atermConfigFilename.empty())
+		throw std::runtime_error("Use of an aterm config file required IDG enabled: add -use-idg");
 	if(useDifferentialLofarBeam && !(gridWithBeam || applyPrimaryBeam))
 		throw std::runtime_error("Differential beam correction was requested, but no beam correction is applied. Use either IDG and grid with the beam, or apply the average beam.");
 	
@@ -79,7 +91,7 @@ void WSCleanSettings::Validate() const
 	if(savePsfPb && !(applyPrimaryBeam || gridWithBeam))
 		throw std::runtime_error("You can not save the primary-beam corrected PSF without enabling primary beam correction: add -apply-primary-beam to your commandline or use IDG to apply the beam.");
 	
-	if(saveSourceList && (polarizations.size()!=1 || (*polarizations.begin())!=Polarization::StokesI))
+	if(saveSourceList && (polarizations.size()!=1 || (*polarizations.begin())!=aocommon::Polarization::StokesI))
 		throw std::runtime_error("Saving a source list currently only works for Stokes I imaging.");
 	
 	if(saveSourceList && deconvolutionIterationCount==0)
@@ -90,8 +102,8 @@ void WSCleanSettings::Validate() const
 
 void WSCleanSettings::checkPolarizations() const
 {
-	bool hasXY = polarizations.count(Polarization::XY)!=0;
-	bool hasYX = polarizations.count(Polarization::YX)!=0;
+	bool hasXY = polarizations.count(aocommon::Polarization::XY)!=0;
+	bool hasYX = polarizations.count(aocommon::Polarization::YX)!=0;
 	if(joinedPolarizationCleaning)
 	{
 		if(polarizations.size() == 1)
@@ -102,13 +114,13 @@ void WSCleanSettings::checkPolarizations() const
 			throw std::runtime_error("You are imaging XY and/or YX polarizations and have enabled cleaning (niter!=0). This is not possible -- you have to specify '-join-polarizations' or disable cleaning.");
 	}
 	
-	for(PolarizationEnum p : linkedPolarizations)
+	for(aocommon::PolarizationEnum p : linkedPolarizations)
 	{
 		if(polarizations.count(p) == 0)
 		{
 			std::ostringstream str;
 			str << "Linked polarization cleaning was requested for polarization "
-				<< Polarization::TypeToFullString(p)
+				<< aocommon::Polarization::TypeToFullString(p)
 				<< ", but this polarization is not imaged.";
 			throw std::runtime_error(str.str());
 		}
@@ -142,4 +154,37 @@ void WSCleanSettings::RecalculatePaddedDimensions()
 	{
 		Logger::Debug << "Using image size of " << trimmedImageWidth << " x " << trimmedImageHeight << ", padded to " << paddedImageWidth << " x " << paddedImageHeight << ".\n";
 	}
+}
+
+bool WSCleanSettings::determineReorder() const
+{
+	return (
+		(channelsOut != 1) ||
+		(polarizations.size()>=4) ||
+		(deconvolutionMGain != 1.0) ||
+		(baselineDependentAveragingInWavelengths != 0.0) ||
+		simulateNoise ||
+		forceReorder
+	) && !forceNoReorder;
+}
+
+std::string WSCleanSettings::determineDataColumn() const
+{
+	// If no column specified, determine column to use
+	if(mode == PredictMode)
+		return "DATA";
+	std::string col = dataColumnName;
+	if(col.empty())
+	{
+		casacore::MeasurementSet ms(filenames.front());
+		bool hasCorrected = ms.tableDesc().isColumn("CORRECTED_DATA");
+		if(hasCorrected) {
+			Logger::Info << "First measurement set has corrected data: tasks will be applied on the corrected data column.\n";
+			col = "CORRECTED_DATA";
+		} else {
+			Logger::Info << "No corrected data in first measurement set: tasks will be applied on the data column.\n";
+			col= "DATA";
+		}
+	}
+	return col;
 }
