@@ -1,2 +1,3 @@
 Don-t-use-RPATH.patch
 Build-and-use-shared-lib-for-libwsclean.patch
+Add-missing-linker-flags.patch

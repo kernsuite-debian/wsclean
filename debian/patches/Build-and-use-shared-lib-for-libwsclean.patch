@@ -3,32 +3,36 @@ Date: Fri, 30 Sep 2016 14:06:27 +0200
 Subject: Build and use shared lib for libwsclean
 
 ---
- CMakeLists.txt | 14 ++++++++------
- 1 file changed, 8 insertions(+), 6 deletions(-)
+ CMakeLists.txt | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4d1eb43..9e939fb 100644
+index 2a94932..3ff842b 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -146,20 +146,22 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+@@ -165,13 +165,14 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
  set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
  
  add_library(wsclean-shared SHARED ${WSCLEANFILES})
 -target_link_libraries(wsclean-shared)
 +set_target_properties(wsclean-shared PROPERTIES OUTPUT_NAME wsclean)
  set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
-+target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${HDF5_LIBRARIES} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${IDGAPI_LIBRARIES})
++target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${HDF5_LIBRARIES})
+ 
+ set(ALL_LIBRARIES ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES} ${MPI_LIBRARIES})
  
  add_executable(wsclean wscleanmain.cpp)
--target_link_libraries(wsclean wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
+-target_link_libraries(wsclean wsclean-lib ${ALL_LIBRARIES})
 +target_link_libraries(wsclean wsclean-shared ${CASACORE_LIBRARIES} ${Boost_SYSTEM_LIBRARY})
  
- #add_executable(interfaceexample EXCLUDE_FROM_ALL interface/interfaceexample.c)
--#target_link_libraries(interfaceexample wsclean-lib ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES})
-+#target_link_libraries(interfaceexample wsclean-shared)
+ if(MPI_FOUND)
+   add_executable(wsclean-mp
+@@ -180,11 +181,12 @@ if(MPI_FOUND)
+   target_link_libraries(wsclean-mp wsclean-lib ${ALL_LIBRARIES})
+ endif(MPI_FOUND)
  
 -add_executable(wsuvbinning EXCLUDE_FROM_ALL wsclean/examples/wsuvbinning.cpp ${WSCLEANFILES})
--target_link_libraries(wsuvbinning ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_FILESYSTEM_LIBRARY} ${Boost_DATE_TIME_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES})
+-target_link_libraries(wsuvbinning ${ALL_LIBRARIES})
 +add_executable(wsuvbinning EXCLUDE_FROM_ALL wsclean/examples/wsuvbinning.cpp)
 +target_link_libraries(wsuvbinning wsclean-shared)
  
