@@ -1,2 +1,2 @@
-version=3
-https://sf.net/wsclean/wsclean-(\d[0-9a-zA-Z._]*)\.(?:zip|tgz|tbz|txz|(?:tar\.(?:gz|bz2|xz)))
+version=4
+https://gitlab.com/aroffringa/wsclean/tags?sort=updated_desc .*v(\d\S+)\.tar\.gz
