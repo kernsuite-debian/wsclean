@@ -3,14 +3,13 @@
 
 #include "griddingtask.h"
 #include "griddingresult.h"
+#include "writerlockmanager.h"
 
-#include "../wsclean/observationinfo.h"
-#include "../wsclean/measurementsetgridder.h"
-#include "../wsclean/msgridderbase.h"
+#include "../structures/imageweights.h"
+#include "../structures/observationinfo.h"
+#include "../structures/msselection.h"
 
-#include "../imageweights.h"
 #include <aocommon/polarization.h>
-#include "../msselection.h"
 
 #include "../msproviders/msdatadescription.h"
 
@@ -20,31 +19,74 @@
 #include <functional>
 #include <vector>
 
-class GriddingTaskManager
-{
-public:
-	virtual ~GriddingTaskManager();
-	
-	virtual void Run(GriddingTask& task, std::function<void(GriddingResult&)> finishCallback);
-	
-	GriddingResult RunDirect(GriddingTask& task);
-	
-	virtual void Finish() { };
-	
-	//MSGridderBase* Gridder() { return _gridder.get(); }
-	
-	static std::unique_ptr<GriddingTaskManager> Make(const class WSCleanSettings& settings, bool useDirectScheduler = false);
-protected:
-	const class WSCleanSettings& _settings;
-	
-	GriddingTaskManager(const class WSCleanSettings& settings);
-	
-	std::unique_ptr<MSGridderBase> createGridder() const;
-	void prepareGridder (MSGridderBase& gridder);
-	GriddingResult runDirect(GriddingTask& task, MSGridderBase& gridder);
-	
-private:
-	std::unique_ptr<MSGridderBase> _gridder;
+class MSGridderBase;
+
+class GriddingTaskManager : protected WriterLockManager {
+ public:
+  virtual ~GriddingTaskManager();
+
+  /**
+   * Initialize writer groups. Call this function before scheduling Predict
+   * tasks in order to initialize the writer locks.
+   *
+   * @param nWriterGroups The number of writer groups.
+   */
+  virtual void Start(size_t nWriterGroups) {}
+
+  LockGuard GetLock(size_t writerGroupIndex) override {
+    static DummyWriterLock dummy;
+    return LockGuard(dummy);
+  }
+
+  /**
+   * Add the given task to the queue of tasks to be run. After finishing
+   * the task, the callback is called with the results. The callback will
+   * always run in the thread of the caller.
+   * Depending on the type of gridding task manager, this call might block.
+   *
+   * This implementation runs the task directly and blocks until done.
+   */
+  virtual void Run(GriddingTask&& task,
+                   std::function<void(GriddingResult&)> finishCallback);
+
+  /**
+   * Block until all tasks have finished.
+   */
+  virtual void Finish(){};
+
+  /**
+   * Run the given task. This variant of Run() does not call a
+   * callback function when finished. A gridder is created for
+   * the duration of the call.
+   */
+  GriddingResult RunDirect(GriddingTask&& task);
+
+  /**
+   * Make the gridding task manager according to the settings.
+   */
+  static std::unique_ptr<GriddingTaskManager> Make(
+      const class Settings& settings);
+
+ protected:
+  GriddingTaskManager(const class Settings& settings);
+
+  const class Settings& _settings;
+
+  std::unique_ptr<MSGridderBase> makeGridder() const;
+
+  /**
+   * Run the provided task with the specified gridder.
+   */
+  GriddingResult runDirect(GriddingTask&& task, MSGridderBase& gridder);
+
+ private:
+  class DummyWriterLock final : public WriterLock {
+   public:
+    void lock() override {}
+    void unlock() override {}
+  };
+
+  std::unique_ptr<MSGridderBase> constructGridder() const;
 };
 
 #endif
