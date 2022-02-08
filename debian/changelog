@@ -1,3 +1,10 @@
+wsclean (3.0.1-1kern1) focal; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * New upstream version 3.0.1
+
+ -- KERN packaging <packaging@kernsuite.info>  Mon, 07 Feb 2022 15:07:49 +0200
+
 wsclean (2.10.1-1kern1) focal; urgency=medium
 
   * new upstream release

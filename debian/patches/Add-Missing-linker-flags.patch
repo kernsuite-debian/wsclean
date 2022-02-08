@@ -1,0 +1,67 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 040c3bf..365c65e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -223,19 +223,19 @@ add_definitions(-DHAVE_GSL)
+ # Include GNUInstallDirs for CMAKE_INSTALL_FULL_LIBDIR
+ include(GNUInstallDirs)
+ # Use, i.e. don't skip the full RPATH for the build tree.
+-set(CMAKE_SKIP_BUILD_RPATH FALSE)
++#set(CMAKE_SKIP_BUILD_RPATH FALSE)
+ # When building, don't use the install RPATH already
+ # (but later on when installing).
+-set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
++#set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+ # Add the automatically determined parts of the RPATH
+ # which point to directories outside the build tree to the install RPATH.
+-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
++#set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+ # The RPATH to be used when installing, but only if it's not a system directory.
+-list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES
+-     "${CMAKE_INSTALL_FULL_LIBDIR}" isSystemDir)
+-if("${isSystemDir}" STREQUAL "-1")
+-  set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}")
+-endif("${isSystemDir}" STREQUAL "-1")
++#list(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES
++#     "${CMAKE_INSTALL_FULL_LIBDIR}" isSystemDir)
++#if("${isSystemDir}" STREQUAL "-1")
++#  set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}")
++#endif("${isSystemDir}" STREQUAL "-1")
+ 
+ configure_file("${PROJECT_SOURCE_DIR}/wscversion.h.in"
+                "${PROJECT_BINARY_DIR}/wscversion.h")
+@@ -382,11 +382,11 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+ set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
+ 
+ add_library(wsclean-shared SHARED ${WSCLEANFILES})
+-target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES})
++target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES} -lidg-api)
+ set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
+ 
+ add_executable(wsclean main/main.cpp)
+-target_link_libraries(wsclean wsclean-lib)
++target_link_libraries(wsclean wsclean-lib -lboost_program_options -lidg)
+ 
+ if(MPI_FOUND)
+   add_executable(wsclean-mp distributed/wsclean-mp.cpp distributed/slave.cpp)
+@@ -398,9 +398,8 @@ add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp
+ target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
+                       ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
+ 
+-add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp
+-                                            ${WSCLEANFILES})
+-target_link_libraries(wsuvbinning ${ALL_LIBRARIES})
++add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp)
++target_link_libraries(wsuvbinning wsclean-shared)
+ 
+ add_executable(
+   wspredictionexample EXCLUDE_FROM_ALL
+@@ -417,6 +416,8 @@ target_link_libraries(mscaleexample ${ALL_LIBRARIES})
+ 
+ install(TARGETS wsclean DESTINATION bin)
+ install(TARGETS wsclean-lib DESTINATION lib)
++install(TARGETS wsclean-lib DESTINATION lib/${DEB_HOST_MULTIARCH})
++install(TARGETS wsclean-shared DESTINATION lib/${DEB_HOST_MULTIARCH})
+ install(TARGETS chgcentre DESTINATION bin)
+ install(FILES interface/wscleaninterface.h DESTINATION include)
+ 
