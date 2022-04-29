@@ -1,23 +1,22 @@
 #include "imageweights.h"
 
-#include "multibanddata.h"
-
 #include <aocommon/io/serialostream.h>
 #include <aocommon/io/serialistream.h>
+#include <aocommon/multibanddata.h>
 
 #include "../msproviders/msprovider.h"
 #include "../msproviders/msreaders/msreader.h"
 
-#include "../units/angle.h"
-
-#include "../io/logger.h"
-
 #include <aocommon/fits/fitswriter.h>
 #include <aocommon/banddata.h>
+#include <aocommon/logger.h>
 #include <aocommon/staticfor.h>
+#include <aocommon/system.h>
+#include <aocommon/units/angle.h>
 
 #include <cmath>
 #include <iostream>
+#include <cassert>
 #include <cstring>
 
 ImageWeights::ImageWeights()
@@ -28,12 +27,13 @@ ImageWeights::ImageWeights()
       _pixelScaleY(0),
       _totalSum(0.0),
       _isGriddingFinished(false),
-      _weightsAsTaper(false) {}
+      _weightsAsTaper(false),
+      _threadCount(aocommon::system::ProcessorCount()) {}
 
 ImageWeights::ImageWeights(const WeightMode& weightMode, size_t imageWidth,
                            size_t imageHeight, double pixelScaleX,
                            double pixelScaleY, bool weightsAsTaper,
-                           double superWeight, size_t threadCount)
+                           double superWeight)
     : _weightMode(weightMode),
       _imageWidth(round(double(imageWidth) / superWeight)),
       _imageHeight(round(double(imageHeight) / superWeight)),
@@ -42,7 +42,7 @@ ImageWeights::ImageWeights(const WeightMode& weightMode, size_t imageWidth,
       _totalSum(0.0),
       _isGriddingFinished(false),
       _weightsAsTaper(weightsAsTaper),
-      _threadCount(threadCount) {
+      _threadCount(aocommon::system::ProcessorCount()) {
   if (_imageWidth % 2 != 0) ++_imageWidth;
   if (_imageHeight % 2 != 0) ++_imageHeight;
   _grid.assign(_imageWidth * _imageHeight / 2, 0.0);
@@ -75,9 +75,7 @@ void ImageWeights::Unserialize(aocommon::SerialIStream& stream) {
 void ImageWeights::Grid(MSProvider& msProvider,
                         const aocommon::BandData& selectedBand) {
   assert(!_isGriddingFinished);
-  size_t polarizationCount =
-      (msProvider.Polarization() == aocommon::Polarization::Instrumental) ? 4
-                                                                          : 1;
+  const size_t polarizationCount = msProvider.NPolarizations();
   if (_weightMode.RequiresGridding()) {
     aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount() *
                                           polarizationCount);
@@ -325,12 +323,13 @@ void ImageWeights::RankFilter(double rankLimit, size_t windowSize) {
 }
 
 void ImageWeights::SetGaussianTaper(double beamSize) {
-  Logger::Debug << "Applying " << Angle::ToNiceString(beamSize)
-                << " Gaussian taper...\n";
+  aocommon::Logger::Debug << "Applying "
+                          << aocommon::units::Angle::ToNiceString(beamSize)
+                          << " Gaussian taper...\n";
   double halfPowerUV = 1.0 / (beamSize * 2.0 * M_PI);
   const long double sigmaToHP = 2.0L * sqrtl(2.0L * logl(2.0L));
   double minusTwoSigmaSq = halfPowerUV * sigmaToHP;
-  Logger::Debug << "UV taper: " << minusTwoSigmaSq << '\n';
+  aocommon::Logger::Debug << "UV taper: " << minusTwoSigmaSq << '\n';
   minusTwoSigmaSq *= -2.0 * minusTwoSigmaSq;
   aocommon::StaticFor<size_t> loop(_threadCount);
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {

@@ -4,29 +4,78 @@
 
 #include "../io/imagefilename.h"
 
-#include "../main/settings.h"
-
 #include "../math/dijkstrasplitter.h"
 
-#include "../units/fluxdensity.h"
-
-#include "../structures/image.h"
-#include "../structures/primarybeam.h"
-
-#include "componentlist.h"
-
 #include <aocommon/parallelfor.h>
+#include <aocommon/units/fluxdensity.h>
 
-ParallelDeconvolution::ParallelDeconvolution(const class Settings& settings)
+#include <schaapcommon/fft/convolution.h>
+
+#include "deconvolutionsettings.h"
+
+using aocommon::Image;
+using aocommon::Logger;
+
+class ImageSet;
+
+ParallelDeconvolution::ParallelDeconvolution(
+    const DeconvolutionSettings& deconvolutionSettings)
     : _horImages(0),
       _verImages(0),
-      _settings(settings),
+      _settings(deconvolutionSettings),
       _allocator(nullptr),
       _mask(nullptr),
       _trackPerScaleMasks(false),
-      _usePerScaleMasks(false) {}
+      _usePerScaleMasks(false) {
+  // Make all FFTWF plan calls inside ParallelDeconvolution
+  // thread safe.
+  schaapcommon::fft::MakeFftwfPlannerThreadSafe();
+}
 
 ParallelDeconvolution::~ParallelDeconvolution() {}
+
+ComponentList ParallelDeconvolution::GetComponentList(
+    const DeconvolutionTable& table) const {
+  // TODO make this work with subimages
+  ComponentList list;
+  if (_settings.useMultiscale) {
+    // If no parallel deconvolution was used, the component list must be
+    // retrieved from the deconvolution algorithm.
+    if (_algorithms.size() == 1) {
+      list = static_cast<MultiScaleAlgorithm*>(_algorithms.front().get())
+                 ->GetComponentList();
+    } else {
+      list = *_componentList;
+    }
+  } else {
+    const size_t w = _settings.trimmedImageWidth;
+    const size_t h = _settings.trimmedImageHeight;
+    ImageSet modelSet(table, _settings.squaredJoins,
+                      _settings.linkedPolarizations, w, h);
+    modelSet.LoadAndAverage(false);
+    list = ComponentList(w, h, modelSet);
+  }
+  list.MergeDuplicates();
+  return list;
+}
+
+const DeconvolutionAlgorithm& ParallelDeconvolution::MaxScaleCountAlgorithm()
+    const {
+  if (_settings.useMultiscale) {
+    MultiScaleAlgorithm* maxAlgorithm =
+        static_cast<MultiScaleAlgorithm*>(_algorithms.front().get());
+    for (size_t i = 1; i != _algorithms.size(); ++i) {
+      MultiScaleAlgorithm* mAlg =
+          static_cast<MultiScaleAlgorithm*>(_algorithms[i].get());
+      if (mAlg->ScaleCount() > maxAlgorithm->ScaleCount()) {
+        maxAlgorithm = mAlg;
+      }
+    }
+    return *maxAlgorithm;
+  } else {
+    return FirstAlgorithm();
+  }
+}
 
 void ParallelDeconvolution::SetAlgorithm(
     std::unique_ptr<class DeconvolutionAlgorithm> algorithm) {
@@ -34,8 +83,8 @@ void ParallelDeconvolution::SetAlgorithm(
     _algorithms.resize(1);
     _algorithms.front() = std::move(algorithm);
   } else {
-    const size_t width = _settings.trimmedImageWidth,
-                 height = _settings.trimmedImageHeight;
+    const size_t width = _settings.trimmedImageWidth;
+    const size_t height = _settings.trimmedImageHeight;
     size_t maxSubImageSize = _settings.parallelDeconvolutionMaxSize;
     _horImages = (width + maxSubImageSize - 1) / maxSubImageSize,
     _verImages = (height + maxSubImageSize - 1) / maxSubImageSize;
@@ -90,34 +139,37 @@ void ParallelDeconvolution::SetSpectrallyForcedImages(
 }
 
 void ParallelDeconvolution::runSubImage(
-    SubImage& subImg, ImageSet& dataImage, ImageSet& modelImage,
-    const aocommon::UVector<const float*>& psfImages, double majorIterThreshold,
-    bool findPeakOnly, std::mutex* mutex) {
-  const size_t width = _settings.trimmedImageWidth,
-               height = _settings.trimmedImageHeight;
+    SubImage& subImg, ImageSet& dataImage, const ImageSet& modelImage,
+    ImageSet& resultModel, const std::vector<aocommon::Image>& psfImages,
+    double majorIterThreshold, bool findPeakOnly, std::mutex& mutex) {
+  const size_t width = _settings.trimmedImageWidth;
+  const size_t height = _settings.trimmedImageHeight;
 
   std::unique_ptr<ImageSet> subModel, subData;
   {
-    std::lock_guard<std::mutex> lock(*mutex);
-    subModel = modelImage.Trim(subImg.x, subImg.y, subImg.x + subImg.width,
-                               subImg.y + subImg.height, width);
+    std::lock_guard<std::mutex> lock(mutex);
     subData = dataImage.Trim(subImg.x, subImg.y, subImg.x + subImg.width,
                              subImg.y + subImg.height, width);
+    // Because the model of this subimage might extend outside of its boundaries
+    // (because of multiscale components), the model is placed back on the image
+    // by adding its values. This requires that values outside the boundary are
+    // set to zero at this point, otherwise multiple subimages could add the
+    // same sources.
+    subModel = modelImage.TrimMasked(
+        subImg.x, subImg.y, subImg.x + subImg.width, subImg.y + subImg.height,
+        width, subImg.boundaryMask.data());
   }
 
   // Construct the smaller psfs
-  std::vector<Image> subPsfs(psfImages.size());
-  aocommon::UVector<const float*> subPsfVector(psfImages.size());
+  std::vector<Image> subPsfs;
+  subPsfs.reserve(psfImages.size());
   for (size_t i = 0; i != psfImages.size(); ++i) {
-    subPsfs[i] = Image(subImg.width, subImg.height);
-    Image::Trim(subPsfs[i].data(), subImg.width, subImg.height, psfImages[i],
-                width, height);
-    subPsfVector[i] = subPsfs[i].data();
+    subPsfs.emplace_back(psfImages[i].Trim(subImg.width, subImg.height));
   }
   _algorithms[subImg.index]->SetCleanMask(subImg.mask.data());
 
   // Construct smaller RMS image if necessary
-  if (!_rmsImage.empty()) {
+  if (!_rmsImage.Empty()) {
     Image subRmsImage =
         _rmsImage.TrimBox(subImg.x, subImg.y, subImg.width, subImg.height);
     _algorithms[subImg.index]->SetRMSFactorImage(std::move(subRmsImage));
@@ -141,7 +193,7 @@ void ParallelDeconvolution::runSubImage(
     _algorithms[subImg.index]->SetMajorIterThreshold(majorIterThreshold);
 
   if (_usePerScaleMasks || _trackPerScaleMasks) {
-    std::lock_guard<std::mutex> lock(*mutex);
+    std::lock_guard<std::mutex> lock(mutex);
     MultiScaleAlgorithm& msAlg =
         static_cast<class MultiScaleAlgorithm&>(*_algorithms[subImg.index]);
     // During the first iteration, msAlg will not have scales/masks yet and the
@@ -164,15 +216,14 @@ void ParallelDeconvolution::runSubImage(
   }
 
   subImg.peak = _algorithms[subImg.index]->ExecuteMajorIteration(
-      *subData, *subModel, subPsfVector, subImg.width, subImg.height,
-      subImg.reachedMajorThreshold);
+      *subData, *subModel, subPsfs, subImg.reachedMajorThreshold);
 
   // Since this was an RMS image specifically for this subimage size, we free it
   // immediately
   _algorithms[subImg.index]->SetRMSFactorImage(Image());
 
   if (_trackPerScaleMasks) {
-    std::lock_guard<std::mutex> lock(*mutex);
+    std::lock_guard<std::mutex> lock(mutex);
     MultiScaleAlgorithm& msAlg =
         static_cast<class MultiScaleAlgorithm&>(*_algorithms[subImg.index]);
     if (_scaleMasks.empty()) {
@@ -185,12 +236,12 @@ void ParallelDeconvolution::runSubImage(
       if (i < _scaleMasks.size())
         Image::CopyMasked(_scaleMasks[i].data(), subImg.x, subImg.y, width,
                           msMask.data(), subImg.width, subImg.height,
-                          subImg.mask.data());
+                          subImg.boundaryMask.data());
     }
   }
 
   if (_settings.saveSourceList && _settings.useMultiscale) {
-    std::lock_guard<std::mutex> lock(*mutex);
+    std::lock_guard<std::mutex> lock(mutex);
     MultiScaleAlgorithm& algorithm =
         static_cast<MultiScaleAlgorithm&>(*_algorithms[subImg.index]);
     if (!_componentList)
@@ -200,43 +251,41 @@ void ParallelDeconvolution::runSubImage(
     algorithm.ClearComponentList();
   }
 
-  if (findPeakOnly) _algorithms[subImg.index]->SetMaxNIter(maxNIter);
-
-  if (!findPeakOnly) {
-    std::lock_guard<std::mutex> lock(*mutex);
-    dataImage.CopyMasked(*subData, subImg.x, subImg.y, width, subImg.width,
-                         subImg.height, subImg.mask.data());
-    modelImage.CopyMasked(*subModel, subImg.x, subImg.y, width, subImg.width,
-                          subImg.height, subImg.mask.data());
+  if (findPeakOnly) {
+    _algorithms[subImg.index]->SetMaxNIter(maxNIter);
+  } else {
+    std::lock_guard<std::mutex> lock(mutex);
+    dataImage.CopyMasked(*subData, subImg.x, subImg.y,
+                         subImg.boundaryMask.data());
+    resultModel.AddSubImage(*subModel, subImg.x, subImg.y);
   }
 }
 
 void ParallelDeconvolution::ExecuteMajorIteration(
-    class ImageSet& dataImage, class ImageSet& modelImage,
-    const aocommon::UVector<const float*>& psfImages,
+    ImageSet& dataImage, ImageSet& modelImage,
+    const std::vector<aocommon::Image>& psfImages,
     bool& reachedMajorThreshold) {
-  const size_t width = _settings.trimmedImageWidth,
-               height = _settings.trimmedImageHeight;
   if (_algorithms.size() == 1) {
-    ForwardingLogReceiver fwdReceiver;
+    aocommon::ForwardingLogReceiver fwdReceiver;
     _algorithms.front()->SetLogReceiver(fwdReceiver);
-    _algorithms.front()->ExecuteMajorIteration(
-        dataImage, modelImage, psfImages, width, height, reachedMajorThreshold);
+    _algorithms.front()->ExecuteMajorIteration(dataImage, modelImage, psfImages,
+                                               reachedMajorThreshold);
   } else {
     executeParallelRun(dataImage, modelImage, psfImages, reachedMajorThreshold);
   }
 }
 
 void ParallelDeconvolution::executeParallelRun(
-    class ImageSet& dataImage, class ImageSet& modelImage,
-    const aocommon::UVector<const float*>& psfImages,
+    ImageSet& dataImage, ImageSet& modelImage,
+    const std::vector<aocommon::Image>& psfImages,
     bool& reachedMajorThreshold) {
-  const size_t width = _settings.trimmedImageWidth,
-               height = _settings.trimmedImageHeight,
-               avgHSubImageSize = width / _horImages,
-               avgVSubImageSize = height / _verImages;
+  const size_t width = dataImage.Width();
+  const size_t height = dataImage.Height();
+  const size_t avgHSubImageSize = width / _horImages;
+  const size_t avgVSubImageSize = height / _verImages;
 
-  Image image(width, height), dividingLine(width, height, 0.0);
+  Image image(width, height);
+  Image dividingLine(width, height, 0.0);
   aocommon::UVector<bool> largeScratchMask(width * height);
   dataImage.GetLinearIntegrated(image);
 
@@ -255,13 +304,13 @@ void ParallelDeconvolution::executeParallelRun(
   splitLoop.Run(1, _horImages, [&](size_t divNr, size_t) {
     size_t splitStart = width * divNr / _horImages - avgHSubImageSize / 4,
            splitEnd = width * divNr / _horImages + avgHSubImageSize / 4;
-    divisor.DivideVertically(image.data(), dividingLine.data(), splitStart,
+    divisor.DivideVertically(image.Data(), dividingLine.Data(), splitStart,
                              splitEnd);
   });
   for (size_t divNr = 0; divNr != _horImages; ++divNr) {
     size_t midX = divNr * width / _horImages + avgHSubImageSize / 2;
     VerticalArea& area = verticalAreas[divNr];
-    divisor.FloodVerticalArea(dividingLine.data(), midX,
+    divisor.FloodVerticalArea(dividingLine.Data(), midX,
                               largeScratchMask.data(), area.x, area.width);
     area.mask.resize(area.width * height);
     Image::TrimBox(area.mask.data(), area.x, 0, area.width, height,
@@ -273,7 +322,7 @@ void ParallelDeconvolution::executeParallelRun(
   splitLoop.Run(1, _verImages, [&](size_t divNr, size_t) {
     size_t splitStart = height * divNr / _verImages - avgVSubImageSize / 4,
            splitEnd = height * divNr / _verImages + avgVSubImageSize / 4;
-    divisor.DivideHorizontally(image.data(), dividingLine.data(), splitStart,
+    divisor.DivideHorizontally(image.Data(), dividingLine.Data(), splitStart,
                                splitEnd);
   });
 
@@ -285,7 +334,7 @@ void ParallelDeconvolution::executeParallelRun(
   for (size_t y = 0; y != _verImages; ++y) {
     size_t midY = y * height / _verImages + avgVSubImageSize / 2;
     size_t hAreaY, hAreaWidth;
-    divisor.FloodHorizontalArea(dividingLine.data(), midY,
+    divisor.FloodHorizontalArea(dividingLine.Data(), midY,
                                 largeScratchMask.data(), hAreaY, hAreaWidth);
 
     for (size_t x = 0; x != _horImages; ++x) {
@@ -304,8 +353,8 @@ void ParallelDeconvolution::executeParallelRun(
       Image::TrimBox(subImage.mask.data(), subImage.x, subImage.y,
                      subImage.width, subImage.height, mask.data(), width,
                      height);
-
-      // If a user mask is active, take the union of that mask with the division
+      subImage.boundaryMask = subImage.mask;
+      // If a user mask is active, take the union of that mask with the boundary
       // mask (note that 'mask' is reused as a scratch space)
       if (_mask != nullptr) {
         Image::TrimBox(mask.data(), subImage.x, subImage.y, subImage.width,
@@ -325,10 +374,12 @@ void ParallelDeconvolution::executeParallelRun(
 
   // Find the starting peak over all subimages
   aocommon::ParallelFor<size_t> loop(_settings.parallelDeconvolutionMaxThreads);
+  ImageSet resultModel(modelImage, modelImage.Width(), modelImage.Height());
+  resultModel = 0.0;
   loop.Run(0, _algorithms.size(), [&](size_t index, size_t) {
     _logs.Activate(index);
-    runSubImage(subImages[index], dataImage, modelImage, psfImages, 0.0, true,
-                &mutex);
+    runSubImage(subImages[index], dataImage, modelImage, resultModel, psfImages,
+                0.0, true, mutex);
     _logs.Deactivate(index);
 
     _logs[index].Mute(false);
@@ -344,14 +395,14 @@ void ParallelDeconvolution::executeParallelRun(
     }
   }
   Logger::Info << "Subimage " << (indexOfMax + 1) << " has maximum peak of "
-               << FluxDensity::ToNiceString(maxValue) << ".\n";
+               << aocommon::units::FluxDensity::ToNiceString(maxValue) << ".\n";
   double mIterThreshold = maxValue * (1.0 - _settings.deconvolutionMGain);
 
   // Run the deconvolution
   loop.Run(0, _algorithms.size(), [&](size_t index, size_t) {
     _logs.Activate(index);
-    runSubImage(subImages[index], dataImage, modelImage, psfImages,
-                mIterThreshold, false, &mutex);
+    runSubImage(subImages[index], dataImage, modelImage, resultModel, psfImages,
+                mIterThreshold, false, mutex);
     _logs.Deactivate(index);
 
     _logs[index].Mute(false);
@@ -359,8 +410,9 @@ void ParallelDeconvolution::executeParallelRun(
                       << " finished its deconvolution iteration.\n";
     _logs[index].Mute(true);
   });
+  modelImage.SetImages(std::move(resultModel));
 
-  _rmsImage.reset();
+  _rmsImage.Reset();
 
   size_t subImagesFinished = 0;
   reachedMajorThreshold = false;
@@ -382,137 +434,4 @@ void ParallelDeconvolution::executeParallelRun(
     reachedMajorThreshold = false;
   } else
     Logger::Info << ": Deconvolution finished.\n";
-}
-
-void ParallelDeconvolution::SaveSourceList(CachedImageSet& modelImages,
-                                           const ImagingTable& table,
-                                           long double phaseCentreRA,
-                                           long double phaseCentreDec) {
-  std::string filename = _settings.prefixName + "-sources.txt";
-  if (_settings.useMultiscale) {
-    ComponentList* list;
-    // If no parallel deconvolution was used, the component list must be
-    // retrieved from the deconvolution algorithm.
-    if (_algorithms.size() == 1)
-      list = &static_cast<MultiScaleAlgorithm*>(_algorithms.front().get())
-                  ->GetComponentList();
-    else
-      list = _componentList.get();
-    writeSourceList(*list, filename, phaseCentreRA, phaseCentreDec);
-  } else {
-    const size_t w = _settings.trimmedImageWidth,
-                 h = _settings.trimmedImageHeight;
-    ImageSet modelSet(&table, _settings, w, h);
-    modelSet.LoadAndAverage(modelImages);
-    ComponentList componentList(w, h, modelSet);
-    writeSourceList(componentList, filename, phaseCentreRA, phaseCentreDec);
-  }
-}
-
-void ParallelDeconvolution::correctChannelForPB(
-    ComponentList& list, const ImagingTableEntry& entry) const {
-  Logger::Debug << "Correcting source list of channel "
-                << entry.outputChannelIndex << " for beam\n";
-  ImageFilename filename(entry.outputChannelIndex, entry.outputIntervalIndex);
-  filename.SetPolarization(entry.polarization);
-  PrimaryBeam pb(_settings);
-  PrimaryBeamImageSet beam = pb.Load(filename);
-  list.CorrectForBeam(beam, entry.outputChannelIndex);
-}
-
-void ParallelDeconvolution::SavePBSourceList(CachedImageSet& modelImages,
-                                             const ImagingTable& table,
-                                             long double phaseCentreRA,
-                                             long double phaseCentreDec) const {
-  // TODO make this work with subimages
-  std::unique_ptr<ComponentList> list;
-  const size_t w = _settings.trimmedImageWidth,
-               h = _settings.trimmedImageHeight;
-  if (_settings.useMultiscale) {
-    // If no parallel deconvolution was used, the component list must be
-    // retrieved from the deconvolution algorithm.
-    if (_algorithms.size() == 1)
-      list.reset(new ComponentList(
-          static_cast<MultiScaleAlgorithm*>(_algorithms.front().get())
-              ->GetComponentList()));
-    else
-      list.reset(new ComponentList(*_componentList));
-  } else {
-    ImageSet modelSet(&table, _settings, w, h);
-    modelSet.LoadAndAverage(modelImages);
-    list.reset(new ComponentList(w, h, modelSet));
-  }
-
-  if (_settings.deconvolutionChannelCount == 0 ||
-      _settings.deconvolutionChannelCount == table.SquaredGroups().size()) {
-    // No beam averaging is required
-    for (const ImagingTable::Group& sqGroup : table.SquaredGroups()) {
-      correctChannelForPB(*list, *sqGroup.front());
-    }
-  } else {
-    for (size_t ch = 0; ch != _settings.deconvolutionChannelCount; ++ch) {
-      Logger::Debug << "Correcting source list of channel " << ch
-                    << " for averaged beam\n";
-      PrimaryBeamImageSet beamImages = loadAveragePrimaryBeam(ch, table);
-      list->CorrectForBeam(beamImages, ch);
-    }
-  }
-
-  std::string filename = _settings.prefixName + "-sources-pb.txt";
-  writeSourceList(*list, filename, phaseCentreRA, phaseCentreDec);
-}
-
-void ParallelDeconvolution::writeSourceList(ComponentList& componentList,
-                                            const std::string& filename,
-                                            long double phaseCentreRA,
-                                            long double phaseCentreDec) const {
-  if (_settings.useMultiscale) {
-    MultiScaleAlgorithm* maxAlgorithm =
-        static_cast<MultiScaleAlgorithm*>(_algorithms.front().get());
-    for (size_t i = 1; i != _algorithms.size(); ++i) {
-      MultiScaleAlgorithm* mAlg =
-          static_cast<MultiScaleAlgorithm*>(_algorithms[i].get());
-      if (mAlg->ScaleCount() > maxAlgorithm->ScaleCount()) maxAlgorithm = mAlg;
-    }
-    componentList.Write(filename, *maxAlgorithm, _settings.pixelScaleX,
-                        _settings.pixelScaleY, phaseCentreRA, phaseCentreDec);
-  } else {
-    componentList.WriteSingleScale(filename, *_algorithms.front(),
-                                   _settings.pixelScaleX, _settings.pixelScaleY,
-                                   phaseCentreRA, phaseCentreDec);
-  }
-}
-
-PrimaryBeamImageSet ParallelDeconvolution::loadAveragePrimaryBeam(
-    size_t imageIndex, const ImagingTable& table) const {
-  Logger::Debug << "Averaging beam for deconvolution channel " << imageIndex
-                << "\n";
-
-  PrimaryBeamImageSet beamImages;
-
-  Image scratch(_settings.trimmedImageWidth, _settings.trimmedImageHeight);
-  size_t deconvolutionChannels = _settings.deconvolutionChannelCount;
-
-  /// TODO : use real weights of images
-  size_t count = 0;
-  PrimaryBeam pb(_settings);
-  const ImagingTable::Groups& squaredGroups = table.SquaredGroups();
-  for (size_t sqIndex = 0; sqIndex != squaredGroups.size(); ++sqIndex) {
-    size_t curImageIndex =
-        (sqIndex * deconvolutionChannels) / squaredGroups.size();
-    if (curImageIndex == imageIndex) {
-      const ImagingTableEntry& e = *squaredGroups[sqIndex].front();
-      Logger::Debug << "Adding beam at " << e.CentralFrequency() * 1e-6
-                    << " MHz\n";
-      ImageFilename filename(e.outputChannelIndex, e.outputIntervalIndex);
-
-      if (count == 0)
-        beamImages = pb.Load(filename);
-      else
-        beamImages += pb.Load(filename);
-      count++;
-    }
-  }
-  beamImages *= (1.0 / double(count));
-  return beamImages;
 }

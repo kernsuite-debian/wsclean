@@ -1,9 +1,10 @@
 #include "iuwtdecomposition.h"
 
-#include "../system/threadpool.h"
+using aocommon::Image;
 
-void IUWTDecomposition::DecomposeMT(ThreadPool& threadPool, const float* input,
-                                    float* scratch, bool includeLargest) {
+void IUWTDecomposition::DecomposeMT(aocommon::StaticFor<size_t>& loop,
+                                    const float* input, float* scratch,
+                                    bool includeLargest) {
   Image& i1(_scales.back().Coefficients());
   i1 = Image(_width, _height);
 
@@ -11,13 +12,13 @@ void IUWTDecomposition::DecomposeMT(ThreadPool& threadPool, const float* input,
   // copy the input into i0.
   Image& coefficients0 = _scales[0].Coefficients();
   coefficients0 = Image(_width, _height);
-  convolveMT(threadPool, i1.data(), input, scratch, _width, _height, 1);
-  convolveMT(threadPool, coefficients0.data(), i1.data(), scratch, _width,
-             _height, 1);
+  convolveMT(loop, i1.Data(), input, scratch, _width, _height, 1);
+  convolveMT(loop, coefficients0.Data(), i1.Data(), scratch, _width, _height,
+             1);
 
   // coefficients = i0 - i2
-  differenceMT(threadPool, coefficients0.data(), input, coefficients0.data(),
-               _width, _height);
+  differenceMT(loop, coefficients0.Data(), input, coefficients0.Data(), _width,
+               _height);
 
   // i0 = i1;
   Image i0(i1);
@@ -25,18 +26,18 @@ void IUWTDecomposition::DecomposeMT(ThreadPool& threadPool, const float* input,
   for (int scale = 1; scale != int(_scaleCount); ++scale) {
     Image& coefficients = _scales[scale].Coefficients();
     coefficients = Image(_width, _height);
-    convolveMT(threadPool, i1.data(), i0.data(), scratch, _width, _height,
+    convolveMT(loop, i1.Data(), i0.Data(), scratch, _width, _height, scale + 1);
+    convolveMT(loop, coefficients.Data(), i1.Data(), scratch, _width, _height,
                scale + 1);
-    convolveMT(threadPool, coefficients.data(), i1.data(), scratch, _width,
-               _height, scale + 1);
 
     // coefficients = i0 - i2
-    differenceMT(threadPool, coefficients.data(), i0.data(),
-                 coefficients.data(), _width, _height);
+    differenceMT(loop, coefficients.Data(), i0.Data(), coefficients.Data(),
+                 _width, _height);
 
     // i0 = i1;
-    if (scale + 1 != int(_scaleCount))
-      memcpy(i0.data(), i1.data(), sizeof(float) * _width * _height);
+    if (scale + 1 != int(_scaleCount)) {
+      std::copy_n(i1.Data(), _width * _height, i0.Data());
+    }
   }
 
   // The largest (residual) scales are in i1, but since the
@@ -46,52 +47,30 @@ void IUWTDecomposition::DecomposeMT(ThreadPool& threadPool, const float* input,
   //	_scales.back().Coefficients() = i1;
 
   // Do free the memory of the largest scale if it is not necessary:
-  if (!includeLargest) _scales.back().Coefficients().reset();
+  if (!includeLargest) _scales.back().Coefficients().Reset();
 }
 
-void IUWTDecomposition::convolveMT(ThreadPool& threadPool, float* output,
-                                   const float* image, float* scratch,
-                                   size_t width, size_t height, int scale) {
-  ConvolveHorizontalPartialFunc hFunc;
-  hFunc._output = scratch;
-  hFunc._image = image;
-  hFunc._width = width;
-  hFunc._scale = scale;
-  for (size_t t = 0; t != threadPool.size(); ++t) {
-    hFunc._startY = (height * t) / threadPool.size();
-    hFunc._endY = (height * (t + 1)) / threadPool.size();
-    threadPool.queue(hFunc);
-  }
-  threadPool.wait_for_all_tasks();
+void IUWTDecomposition::convolveMT(aocommon::StaticFor<size_t>& loop,
+                                   float* output, const float* image,
+                                   float* scratch, size_t width, size_t height,
+                                   int scale) {
+  loop.Run(0, height, [&](size_t y_start, size_t y_end) {
+    convolveHorizontalPartial(scratch, image, width, y_start, y_end, scale);
+  });
 
-  ConvolveVerticalPartialFunc vFunc;
-  vFunc._output = output;
-  vFunc._image = scratch;
-  vFunc._width = width;
-  vFunc._height = height;
-  vFunc._scale = scale;
-  for (size_t t = 0; t != threadPool.size(); ++t) {
-    vFunc._startX = (width * t) / threadPool.size();
-    vFunc._endX = (width * (t + 1)) / threadPool.size();
-    threadPool.queue(vFunc);
-  }
-  threadPool.wait_for_all_tasks();
+  loop.Run(0, width, [&](size_t x_start, size_t x_end) {
+    convolveVerticalPartialFast(output, scratch, width, height, x_start, x_end,
+                                scale);
+  });
 }
 
-void IUWTDecomposition::differenceMT(class ThreadPool& threadPool, float* dest,
-                                     const float* lhs, const float* rhs,
-                                     size_t width, size_t height) {
-  DifferencePartialFunc func;
-  func._dest = dest;
-  func._lhs = lhs;
-  func._rhs = rhs;
-  func._width = width;
-  for (size_t t = 0; t != threadPool.size(); ++t) {
-    func._startY = (height * t) / threadPool.size();
-    func._endY = (height * (t + 1)) / threadPool.size();
-    threadPool.queue(func);
-  }
-  threadPool.wait_for_all_tasks();
+void IUWTDecomposition::differenceMT(aocommon::StaticFor<size_t>& loop,
+                                     float* dest, const float* lhs,
+                                     const float* rhs, size_t width,
+                                     size_t height) {
+  loop.Run(0, height, [&](size_t y_start, size_t y_end) {
+    differencePartial(dest, lhs, rhs, width, y_start, y_end);
+  });
 }
 
 void IUWTDecomposition::convolveHorizontalFast(float* output,

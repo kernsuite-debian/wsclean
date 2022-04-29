@@ -3,24 +3,27 @@
 
 #include <wscversion.h>
 
-#include "../io/logger.h"
-
-#include "../units/angle.h"
-#include "../units/fluxdensity.h"
-
 #include "../structures/numberlist.h"
 
 #include <aocommon/fits/fitswriter.h>
+#include <aocommon/logger.h>
 #include <aocommon/radeccoord.h>
+#include <aocommon/units/angle.h>
+#include <aocommon/units/fluxdensity.h>
 
+#include <schaapcommon/fitters/spectralfitter.h>
 #include <schaapcommon/h5parm/jonesparameters.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/optional/optional.hpp>
 
 #include <iostream>
+#include <optional>
 #include <string>
 #include <sstream>
+
+using aocommon::Logger;
+using aocommon::units::Angle;
+using aocommon::units::FluxDensity;
 
 void CommandLine::printHelp() {
   std::cout
@@ -600,8 +603,10 @@ void CommandLine::printHelp() {
          "the given size.\n"
          "-deconvolution-threads <n>\n"
          "   Number of threads to use during deconvolution. On machines with "
-         "   a large nr of cores, this may be used to decrease the memory "
+         "a large nr of cores, this may be used to decrease the memory "
          "usage.\n"
+         "   If not specified, the number of threads during deconvolution "
+         "is controlled with the -j option.\n"
          "\n"
          "  ** RESTORATION OPTIONS **\n"
          "-restore <input residual> <input model> <output image>\n"
@@ -682,6 +687,12 @@ size_t CommandLine::parse_size_t(const char* param, const char* name) {
   return v;
 }
 
+std::vector<std::string> CommandLine::parseStringList(const char* param) {
+  std::vector<std::string> list;
+  boost::split(list, param, [](char c) { return c == ','; });
+  return list;
+}
+
 double CommandLine::parse_double(const char* param, const char* name) {
   char* endptr;
   double v = std::strtod(param, &endptr);
@@ -722,8 +733,8 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
   Settings& settings = wsclean.GetSettings();
   int argi = 1;
   bool mfWeighting = false, noMFWeighting = false, dryRun = false;
-  auto atermKernelSize = boost::make_optional<double>(false, 0.0);
-  Logger::SetVerbosity(Logger::NormalVerbosity);
+  auto atermKernelSize = std::make_optional<double>();
+  Logger::SetVerbosity(Logger::kNormalVerbosity);
   while (argi < argc && argv[argi][0] == '-') {
     const std::string param =
         argv[argi][1] == '-' ? (&argv[argi][2]) : (&argv[argi][1]);
@@ -736,9 +747,7 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
 #ifdef HAVE_IDG
         Logger::Info << "IDG is available.\n";
 #endif
-#ifdef HAVE_WGRIDDER
         Logger::Info << "WGridder is available.\n";
-#endif
       }
       return false;
     } else if (param == "help") {
@@ -748,9 +757,9 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
       }
       return false;
     } else if (param == "quiet") {
-      Logger::SetVerbosity(Logger::QuietVerbosity);
+      Logger::SetVerbosity(Logger::kQuietVerbosity);
     } else if (param == "v" || param == "verbose") {
-      Logger::SetVerbosity(Logger::VerboseVerbosity);
+      Logger::SetVerbosity(Logger::kVerboseVerbosity);
     } else if (param == "log-time") {
       Logger::SetLogTime(true);
     } else if (param == "temp-dir" || param == "tempdir") {
@@ -796,7 +805,7 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
     } else if (param == "scale") {
       ++argi;
       settings.pixelScaleX =
-          Angle::Parse(argv[argi], "scale parameter", Angle::Degrees);
+          Angle::Parse(argv[argi], "scale parameter", Angle::kDegrees);
       settings.pixelScaleY = settings.pixelScaleX;
     } else if (param == "nwlayers") {
       ++argi;
@@ -826,7 +835,7 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
     } else if (param == "threshold") {
       ++argi;
       settings.deconvolutionThreshold = FluxDensity::Parse(
-          argv[argi], "threshold parameter", FluxDensity::Jansky);
+          argv[argi], "threshold parameter", FluxDensity::kJansky);
     } else if (param == "auto-threshold") {
       ++argi;
       settings.autoDeconvolutionThreshold = true;
@@ -837,19 +846,19 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
       settings.autoMask = true;
       settings.autoMaskSigma = parse_double(argv[argi], 0.0, "auto-mask");
     } else if (param == "local-rms" || param == "rms-background") {
-      settings.localRMS = true;
+      settings.localRMSMethod = LocalRmsMethod::kRmsWindow;
       if (param == "rms-background") deprecated(isSlave, param, "local-rms");
     } else if (param == "local-rms-window" ||
                param == "rms-background-window") {
       ++argi;
-      settings.localRMS = true;
+      settings.localRMSMethod = LocalRmsMethod::kRmsWindow;
       settings.localRMSWindow =
           parse_double(argv[argi], 0.0, "local-rms-window", false);
       if (param == "rms-background-window")
         deprecated(isSlave, param, "local-rms-window");
     } else if (param == "local-rms-image" || param == "rms-background-image") {
       ++argi;
-      settings.localRMS = true;
+      settings.localRMSMethod = LocalRmsMethod::kRmsWindow;
       settings.localRMSImage = argv[argi];
       if (param == "rms-background-image")
         deprecated(isSlave, param, "local-rms-image");
@@ -857,11 +866,10 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
                param == "rms-background-method") {
       ++argi;
       std::string method = argv[argi];
-      settings.localRMS = true;
       if (method == "rms")
-        settings.localRMSMethod = Settings::RMSWindow;
+        settings.localRMSMethod = LocalRmsMethod::kRmsWindow;
       else if (method == "rms-with-min")
-        settings.localRMSMethod = Settings::RMSAndMinimumWindow;
+        settings.localRMSMethod = LocalRmsMethod::kRmsAndMinimumWindow;
       else
         throw std::runtime_error("Unknown RMS background method specified");
       if (param == "rms-background-method")
@@ -1075,7 +1083,7 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
     } else if (param == "taper-gaussian") {
       ++argi;
       double taperBeamSize =
-          Angle::Parse(argv[argi], "Gaussian taper", Angle::Arcseconds);
+          Angle::Parse(argv[argi], "Gaussian taper", Angle::kArcseconds);
       settings.gaussianTaperBeamSize = taperBeamSize;
     } else if (param == "taper-edge") {
       ++argi;
@@ -1159,15 +1167,17 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
       ++argi;
       settings.horizonMask = true;
       settings.horizonMaskDistance =
-          Angle::Parse(argv[argi], "horizon mask distance", Angle::Degrees);
+          Angle::Parse(argv[argi], "horizon mask distance", Angle::kDegrees);
     } else if (param == "fit-spectral-pol") {
       ++argi;
-      settings.spectralFittingMode = SpectralFittingMode::Polynomial;
+      settings.spectralFittingMode =
+          schaapcommon::fitters::SpectralFittingMode::Polynomial;
       settings.spectralFittingTerms =
           parse_size_t(argv[argi], "fit-spectral-pol");
     } else if (param == "fit-spectral-log-pol") {
       ++argi;
-      settings.spectralFittingMode = SpectralFittingMode::LogPolynomial;
+      settings.spectralFittingMode =
+          schaapcommon::fitters::SpectralFittingMode::LogPolynomial;
       settings.spectralFittingTerms =
           parse_size_t(argv[argi], "fit-spectral-log-pol");
     } else if (param == "force-spectrum") {
@@ -1228,18 +1238,18 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
       argi += 3;
     } else if (param == "beam-size" || param == "beamsize") {
       ++argi;
-      double beam = Angle::Parse(argv[argi], "beam size", Angle::Arcseconds);
+      double beam = Angle::Parse(argv[argi], "beam size", Angle::kArcseconds);
       settings.manualBeamMajorSize = beam;
       settings.manualBeamMinorSize = beam;
       settings.manualBeamPA = 0.0;
       if (param == "beamsize") deprecated(isSlave, param, "beam-size");
     } else if (param == "beam-shape" || param == "beamshape") {
       double beamMaj = Angle::Parse(argv[argi + 1], "beam shape, major axis",
-                                    Angle::Arcseconds);
+                                    Angle::kArcseconds);
       double beamMin = Angle::Parse(argv[argi + 2], "beam shape, minor axis",
-                                    Angle::Arcseconds);
+                                    Angle::kArcseconds);
       double beamPA = Angle::Parse(argv[argi + 3], "beam shape, position angle",
-                                   Angle::Degrees);
+                                   Angle::kDegrees);
       argi += 3;
       settings.manualBeamMajorSize = beamMaj;
       settings.manualBeamMinorSize = beamMin;
@@ -1350,11 +1360,14 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
       atermKernelSize = parse_double(argv[argi], 0.0, "aterm-kernel-size");
     } else if (param == "apply-facet-solutions") {
       ++argi;
-      settings.facetSolutionFiles =
-          schaapcommon::h5parm::JonesParameters::ParseList(argv[argi]);
+      settings.facetSolutionFiles = parseStringList(argv[argi]);
       ++argi;
-      settings.facetSolutionTables =
-          schaapcommon::h5parm::JonesParameters::ParseList(argv[argi]);
+      settings.facetSolutionTables = parseStringList(argv[argi]);
+      if (settings.facetSolutionTables.size() > 2) {
+        throw std::runtime_error(
+            "List of solution tables (soltabs) should contain at most two "
+            "entries.");
+      }
     } else if (param == "apply-facet-beam") {
       settings.applyFacetBeam = true;
     } else if (param == "facet-beam-update") {
@@ -1385,9 +1398,7 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
     } else if (param == "direct-ft-precision") {
       ++argi;
       std::string precStr = argv[argi];
-      if (precStr == "half")
-        settings.directFTPrecision = DirectFTPrecision::Half;
-      else if (precStr == "float")
+      if (precStr == "float")
         settings.directFTPrecision = DirectFTPrecision::Float;
       else if (precStr == "double")
         settings.directFTPrecision = DirectFTPrecision::Double;
@@ -1444,8 +1455,8 @@ bool CommandLine::ParseWithoutValidation(WSClean& wsclean, int argc,
   // and possibly set to quiet.
   if (!isSlave) printHeader();
 
-  size_t defaultAtermSize = settings.atermConfigFilename.empty() ? 5 : 16;
-  settings.atermKernelSize = atermKernelSize.get_value_or(defaultAtermSize);
+  const size_t defaultAtermSize = settings.atermConfigFilename.empty() ? 5 : 16;
+  settings.atermKernelSize = atermKernelSize.value_or(defaultAtermSize);
 
   settings.mfWeighting =
       (settings.joinedFrequencyDeconvolution && !noMFWeighting) || mfWeighting;
@@ -1472,7 +1483,7 @@ void CommandLine::Validate(WSClean& wsclean) {
 }
 
 void CommandLine::Run(class WSClean& wsclean) {
-  Settings& settings = wsclean.GetSettings();
+  const Settings& settings = wsclean.GetSettings();
   switch (settings.mode) {
     case Settings::RestoreMode:
       WSCFitsWriter::Restore(settings);

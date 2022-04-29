@@ -1,8 +1,6 @@
 #ifndef WSCLEAN_SETTINGS_H
 #define WSCLEAN_SETTINGS_H
 
-#include "../system/system.h"
-
 #include "../gridding/wstackinggridder.h"
 
 #include "../gridding/visibilityweightingmode.h"
@@ -11,9 +9,14 @@
 #include "../structures/msselection.h"
 
 #include "../deconvolution/deconvolutionalgorithm.h"
+#include "../deconvolution/deconvolutionsettings.h"
 #include "../multiscale/multiscaletransforms.h"
 
-enum class DirectFTPrecision { Half, Float, Double, LongDouble };
+#include <aocommon/system.h>
+
+#include <schaapcommon/fitters/spectralfitter.h>
+
+enum class DirectFTPrecision { Float, Double, LongDouble };
 
 /**
  * This class describes all settings for a single WSClean run.
@@ -71,8 +74,6 @@ class Settings {
   std::string prefixName;
   bool joinedPolarizationDeconvolution;
   bool joinedFrequencyDeconvolution;
-  std::set<aocommon::PolarizationEnum> linkedPolarizations;
-  size_t parallelDeconvolutionMaxSize, parallelDeconvolutionMaxThreads;
   bool smallInversion, makePSF, makePSFOnly, isWeightImageSaved, isUVImageSaved,
       isDirtySaved, isFirstResidualSaved;
   bool reusePsf, reuseDirty;
@@ -113,18 +114,22 @@ class Settings {
   /** @{
    * These settings all relate to the deconvolution.
    */
-  double deconvolutionThreshold, deconvolutionGain, deconvolutionMGain;
+  std::set<aocommon::PolarizationEnum> linkedPolarizations;
+  size_t parallelDeconvolutionMaxSize;
+  size_t parallelDeconvolutionMaxThreads;
+  double deconvolutionThreshold;
+  double deconvolutionGain;
+  double deconvolutionMGain;
   bool autoDeconvolutionThreshold, autoMask;
   double autoDeconvolutionThresholdSigma, autoMaskSigma;
-  bool localRMS;
   double localRMSWindow;
-  enum LocalRMSMethod { RMSWindow, RMSAndMinimumWindow } localRMSMethod;
+  LocalRmsMethod localRMSMethod;
   bool saveSourceList;
   size_t deconvolutionIterationCount, majorIterationCount;
   bool allowNegativeComponents, stopOnNegativeComponents;
   bool useMultiscale, useSubMinorOptimization, squaredJoins;
   double spectralCorrectionFrequency;
-  aocommon::UVector<float> spectralCorrection;
+  std::vector<float> spectralCorrection;
   bool multiscaleFastSubMinorLoop;
   double multiscaleGain, multiscaleDeconvolutionScaleBias;
   size_t multiscaleMaxScales;
@@ -141,7 +146,7 @@ class Settings {
   bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
   std::string moreSaneLocation, moreSaneArgs;
   aocommon::UVector<double> moreSaneSigmaLevels;
-  enum SpectralFittingMode spectralFittingMode;
+  schaapcommon::fitters::SpectralFittingMode spectralFittingMode;
   size_t spectralFittingTerms;
   std::string forcedSpectrumFilename;
   /**
@@ -155,6 +160,13 @@ class Settings {
    * @}
    */
 
+  /**
+   * @brief Extract the settings that are relevant to the deconvolution.
+   * Currently, it duplicates the existing settings into a DeconvolutionSettings
+   * object.
+   */
+  DeconvolutionSettings GetDeconvolutionSettings() const;
+
   MSSelection GetMSSelection() const {
     MSSelection selection;
     selection.SetInterval(startTimestep, endTimestep);
@@ -166,7 +178,8 @@ class Settings {
   }
 
   bool IsSpectralFittingEnabled() const {
-    return spectralFittingMode != SpectralFittingMode::NoFitting;
+    return spectralFittingMode !=
+           schaapcommon::fitters::SpectralFittingMode::NoFitting;
   }
 
  private:
@@ -226,7 +239,7 @@ inline Settings::Settings()
       nWLayersFactor(1.0),
       antialiasingKernelSize(7),
       overSamplingFactor(1023),
-      threadCount(System::ProcessorCount()),
+      threadCount(aocommon::system::ProcessorCount()),
       parallelReordering(1),
       parallelGridding(1),
       useMPI(false),
@@ -244,9 +257,6 @@ inline Settings::Settings()
       prefixName("wsclean"),
       joinedPolarizationDeconvolution(false),
       joinedFrequencyDeconvolution(false),
-      linkedPolarizations(),
-      parallelDeconvolutionMaxSize(0),
-      parallelDeconvolutionMaxThreads(threadCount),
       smallInversion(true),
       makePSF(false),
       makePSFOnly(false),
@@ -301,6 +311,9 @@ inline Settings::Settings()
       simulatedNoiseStdDev(0.0),
       simulatedBaselineNoiseFilename(),
       // Deconvolution default settings:
+      linkedPolarizations(),
+      parallelDeconvolutionMaxSize(0),
+      parallelDeconvolutionMaxThreads(0),
       deconvolutionThreshold(0.0),
       deconvolutionGain(0.1),
       deconvolutionMGain(1.0),
@@ -308,9 +321,8 @@ inline Settings::Settings()
       autoMask(false),
       autoDeconvolutionThresholdSigma(0.0),
       autoMaskSigma(0.0),
-      localRMS(false),
       localRMSWindow(25.0),
-      localRMSMethod(RMSWindow),
+      localRMSMethod(LocalRmsMethod::kNone),
       saveSourceList(false),
       deconvolutionIterationCount(0),
       majorIterationCount(20),
@@ -339,7 +351,8 @@ inline Settings::Settings()
       iuwtSNRTest(false),
       moreSaneLocation(),
       moreSaneArgs(),
-      spectralFittingMode(SpectralFittingMode::NoFitting),
+      spectralFittingMode(
+          schaapcommon::fitters::SpectralFittingMode::NoFitting),
       spectralFittingTerms(0),
       forcedSpectrumFilename(),
       deconvolutionChannelCount(0) {}

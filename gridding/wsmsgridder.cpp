@@ -1,16 +1,15 @@
 #include "wsmsgridder.h"
 
-#include "../io/logger.h"
-
 #include "../structures/imageweights.h"
-#include "../structures/image.h"
 
 #include "../system/buffered_lane.h"
 
-#include "../math/fftresampler.h"
-
 #include "../msproviders/msprovider.h"
 #include "../msproviders/msreaders/msreader.h"
+
+#include <aocommon/logger.h>
+
+#include <schaapcommon/fft/resampler.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
@@ -19,6 +18,9 @@
 #include <cassert>
 #include <queue>
 #include <stdexcept>
+
+using aocommon::Image;
+using aocommon::Logger;
 
 WSMSGridder::WSMSGridder(const Settings& settings)
     : MSGridderBase(settings),
@@ -32,8 +34,8 @@ WSMSGridder::WSMSGridder(const Settings& settings)
   _memSize = getAvailableMemory(_settings.memFraction, _settings.absMemLimit);
 
   // We do this once here. WStackingGridder does this too, but by default only
-  // for the float variant of fftw. FFTResampler does double fft's
-  // multithreaded, hence this needs to be done here too.
+  // for the float variant of fftw. schaapcommon::fft::Resampler does double
+  // fft's multithreaded, hence this needs to be done here too.
   fftw_make_planner_thread_safe();
 }
 
@@ -46,7 +48,7 @@ void WSMSGridder::countSamplesPerLayer(MSData& msData) {
   size_t total = 0;
   msData.matchingRows = 0;
   std::unique_ptr<MSReader> msReader = msData.msProvider->MakeReader();
-  const BandData& bandData = msData.bandData;
+  const aocommon::BandData& bandData = msData.bandData;
   while (msReader->CurrentRowAvailable()) {
     double uInM, vInM, wInM;
     msReader->ReadMeta(uInM, vInM, wInM);
@@ -95,7 +97,7 @@ size_t WSMSGridder::getSuggestedWGridSize() const {
     // slow down the process
     double memoryRequired =
         double(_cpuCount) * double(sizeof(GridderType::num_t)) *
-        double(_actualInversionWidth * _actualInversionHeight);
+        double(ActualInversionWidth() * ActualInversionHeight());
     if (4.0 * memoryRequired < double(_memSize)) {
       Logger::Info << "The theoretically suggested number of w-layers ("
                    << suggestedGridSize
@@ -124,7 +126,7 @@ size_t WSMSGridder::getSuggestedWGridSize() const {
 
 template <DDGainMatrix GainEntry>
 void WSMSGridder::gridMeasurementSet(MSData& msData) {
-  const BandData selectedBand = msData.SelectedBand();
+  const aocommon::BandData selectedBand = msData.SelectedBand();
   StartMeasurementSet(msData, false);
   _gridder->PrepareBand(selectedBand);
   aocommon::UVector<std::complex<float>> modelBuffer(
@@ -157,7 +159,7 @@ void WSMSGridder::gridMeasurementSet(MSData& msData) {
     while (msReader->CurrentRowAvailable()) {
       double uInMeters, vInMeters, wInMeters;
       msReader->ReadMeta(uInMeters, vInMeters, wInMeters);
-      const BandData& curBand(selectedBand);
+      const aocommon::BandData& curBand(selectedBand);
       const double w1 = wInMeters / curBand.LongestWavelength(),
                    w2 = wInMeters / curBand.SmallestWavelength();
       if (_gridder->IsInLayerRange(w1, w2)) {
@@ -257,7 +259,7 @@ template <DDGainMatrix GainEntry>
 void WSMSGridder::predictMeasurementSet(MSData& msData) {
   msData.msProvider->ReopenRW();
   msData.msProvider->ResetWritePosition();
-  const BandData selectedBandData(msData.SelectedBand());
+  const aocommon::BandData selectedBandData(msData.SelectedBand());
   _gridder->PrepareBand(selectedBandData);
 
   StartMeasurementSet(msData, true);
@@ -324,7 +326,8 @@ template void WSMSGridder::predictMeasurementSet<DDGainMatrix::kTrace>(
 
 void WSMSGridder::predictCalcThread(
     aocommon::Lane<PredictionWorkItem>* inputLane,
-    aocommon::Lane<PredictionWorkItem>* outputLane, const BandData* bandData) {
+    aocommon::Lane<PredictionWorkItem>* outputLane,
+    const aocommon::BandData* bandData) {
   lane_write_buffer<PredictionWorkItem> writeBuffer(outputLane,
                                                     _laneBufferSize);
 
@@ -346,7 +349,7 @@ void WSMSGridder::predictCalcThread(
 template <DDGainMatrix GainEntry>
 void WSMSGridder::predictWriteThread(
     aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const BandData* bandData) {
+    const MSData* msData, const aocommon::BandData* bandData) {
   lane_read_buffer<PredictionWorkItem> buffer(
       predictionWorkLane,
       std::min(_laneBufferSize, predictionWorkLane->capacity()));
@@ -374,24 +377,24 @@ void WSMSGridder::predictWriteThread(
 
 template void WSMSGridder::predictWriteThread<DDGainMatrix::kXX>(
     aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const BandData* bandData);
+    const MSData* msData, const aocommon::BandData* bandData);
 
 template void WSMSGridder::predictWriteThread<DDGainMatrix::kYY>(
     aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const BandData* bandData);
+    const MSData* msData, const aocommon::BandData* bandData);
 
 template void WSMSGridder::predictWriteThread<DDGainMatrix::kTrace>(
     aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const BandData* bandData);
+    const MSData* msData, const aocommon::BandData* bandData);
 
 void WSMSGridder::Invert() {
   std::vector<MSData> msDataVector;
   initializeMSDataVector(msDataVector);
 
-  _gridder.reset(new GridderType(_actualInversionWidth, _actualInversionHeight,
-                                 _actualPixelSizeX, _actualPixelSizeY,
-                                 _cpuCount, AntialiasingKernelSize(),
-                                 OverSamplingFactor()));
+  _gridder.reset(
+      new GridderType(ActualInversionWidth(), ActualInversionHeight(),
+                      ActualPixelSizeX(), ActualPixelSizeY(), _cpuCount,
+                      AntialiasingKernelSize(), OverSamplingFactor()));
   _gridder->SetGridMode(GetGridMode());
   if (HasDenormalPhaseCentre())
     _gridder->SetDenormalPhaseCentre(PhaseCentreDL(), PhaseCentreDM());
@@ -424,7 +427,7 @@ void WSMSGridder::Invert() {
     for (size_t i = 0; i != MeasurementSetCount(); ++i) {
       MSData& msData = msDataVector[i];
 
-      const BandData selectedBand(msData.SelectedBand());
+      const aocommon::BandData selectedBand(msData.SelectedBand());
 
       startInversionWorkThreads(selectedBand.ChannelCount());
 
@@ -475,25 +478,26 @@ void WSMSGridder::Invert() {
   else
     _imaginaryImage = Image();
 
-  if (ImageWidth() != _actualInversionWidth ||
-      ImageHeight() != _actualInversionHeight) {
+  if (ImageWidth() != ActualInversionWidth() ||
+      ImageHeight() != ActualInversionHeight()) {
     // Interpolate the image
-    // The input is of size _actualInversionWidth x _actualInversionHeight
-    FFTResampler resampler(_actualInversionWidth, _actualInversionHeight,
-                           ImageWidth(), ImageHeight(), _cpuCount);
+    // The input is of size ActualInversionWidth() x ActualInversionHeight()
+    schaapcommon::fft::Resampler resampler(
+        ActualInversionWidth(), ActualInversionHeight(), ImageWidth(),
+        ImageHeight(), _cpuCount);
 
     if (IsComplex()) {
       Image resizedReal(ImageWidth(), ImageHeight());
       Image resizedImag(ImageWidth(), ImageHeight());
       resampler.Start();
-      resampler.AddTask(_realImage.data(), resizedReal.data());
-      resampler.AddTask(_imaginaryImage.data(), resizedImag.data());
+      resampler.AddTask(_realImage.Data(), resizedReal.Data());
+      resampler.AddTask(_imaginaryImage.Data(), resizedImag.Data());
       resampler.Finish();
       _realImage = std::move(resizedReal);
       _imaginaryImage = std::move(resizedImag);
     } else {
       Image resized(ImageWidth(), ImageHeight());
-      resampler.Resample(_realImage.data(), resized.data());
+      resampler.Resample(_realImage.Data(), resized.Data());
       _realImage = std::move(resized);
     }
   }
@@ -504,14 +508,14 @@ void WSMSGridder::Invert() {
     // Perform trimming
 
     Image trimmed(TrimWidth(), TrimHeight());
-    Image::Trim(trimmed.data(), TrimWidth(), TrimHeight(), _realImage.data(),
+    Image::Trim(trimmed.Data(), TrimWidth(), TrimHeight(), _realImage.Data(),
                 ImageWidth(), ImageHeight());
     _realImage = std::move(trimmed);
 
     if (IsComplex()) {
       Image trimmedImag(TrimWidth(), TrimHeight());
-      Image::Trim(trimmedImag.data(), TrimWidth(), TrimHeight(),
-                  _imaginaryImage.data(), ImageWidth(), ImageHeight());
+      Image::Trim(trimmedImag.Data(), TrimWidth(), TrimHeight(),
+                  _imaginaryImage.Data(), ImageWidth(), ImageHeight());
       _imaginaryImage = std::move(trimmedImag);
     }
   }
@@ -528,8 +532,8 @@ void WSMSGridder::Predict(std::vector<Image>&& images) {
   initializeMSDataVector(msDataVector);
 
   _gridder = std::unique_ptr<GridderType>(
-      new GridderType(_actualInversionWidth, _actualInversionHeight,
-                      _actualPixelSizeX, _actualPixelSizeY, _cpuCount,
+      new GridderType(ActualInversionWidth(), ActualInversionHeight(),
+                      ActualPixelSizeX(), ActualPixelSizeY(), _cpuCount,
                       AntialiasingKernelSize(), OverSamplingFactor()));
   _gridder->SetGridMode(GetGridMode());
   if (HasDenormalPhaseCentre())
@@ -556,16 +560,17 @@ void WSMSGridder::Predict(std::vector<Image>&& images) {
     }
   }
 
-  if (ImageWidth() != _actualInversionWidth ||
-      ImageHeight() != _actualInversionHeight) {
+  if (ImageWidth() != ActualInversionWidth() ||
+      ImageHeight() != ActualInversionHeight()) {
     // Decimate the image
     // Input is ImageWidth() x ImageHeight()
-    FFTResampler resampler(ImageWidth(), ImageHeight(), _actualInversionWidth,
-                           _actualInversionHeight, _cpuCount);
+    schaapcommon::fft::Resampler resampler(ImageWidth(), ImageHeight(),
+                                           ActualInversionWidth(),
+                                           ActualInversionHeight(), _cpuCount);
 
     if (images.size() == 1) {
       Image resampled(ImageWidth(), ImageHeight());
-      resampler.Resample(images[0].data(), resampled.data());
+      resampler.Resample(images[0].Data(), resampled.Data());
       images[0] = std::move(resampled);
     } else {
       std::vector<Image> resampled;
@@ -573,7 +578,7 @@ void WSMSGridder::Predict(std::vector<Image>&& images) {
       resampler.Start();
       for (Image& image : images) {
         resampled.emplace_back(ImageWidth(), ImageHeight());
-        resampler.AddTask(image.data(), resampled.back().data());
+        resampler.AddTask(image.Data(), resampled.back().Data());
       }
       resampler.Finish();
       for (size_t i = 0; i != images.size(); ++i)

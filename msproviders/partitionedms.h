@@ -4,6 +4,7 @@
 #include "msprovider.h"
 
 #include "../structures/msselection.h"
+#include "../system/mappedfile.h"
 
 #include <aocommon/io/serialstreamfwd.h>
 #include <aocommon/polarization.h>
@@ -38,7 +39,7 @@ class PartitionedMS final : public MSProvider {
   };
 
   PartitionedMS(const Handle& handle, size_t partIndex,
-                aocommon::PolarizationEnum polarization, size_t bandIndex);
+                aocommon::PolarizationEnum polarization, size_t dataDescId);
 
   virtual ~PartitionedMS();
 
@@ -82,6 +83,10 @@ class PartitionedMS final : public MSProvider {
                           bool initialModelRequired,
                           const class Settings& settings);
 
+  const aocommon::BandData& Band() override {
+    return _handle._data->_bands[_dataDescId];
+  }
+
   class Handle {
     // PartitionedMSReader is a friend of Handle
     // in order to access the _data member.
@@ -104,7 +109,8 @@ class PartitionedMS final : public MSProvider {
                  const std::vector<ChannelRange>& channels,
                  bool initialModelRequired, bool modelUpdateRequired,
                  const std::set<aocommon::PolarizationEnum>& polarizations,
-                 const MSSelection& selection, size_t nAntennas)
+                 const MSSelection& selection,
+                 const aocommon::MultiBandData& bands, size_t nAntennas)
           : _msPath(msPath),
             _dataColumnName(dataColumnName),
             _temporaryDirectory(temporaryDirectory),
@@ -113,6 +119,7 @@ class PartitionedMS final : public MSProvider {
             _modelUpdateRequired(modelUpdateRequired),
             _polarizations(polarizations),
             _selection(selection),
+            _bands(bands),
             _nAntennas(nAntennas),
             _isCopy(false) {}
 
@@ -123,6 +130,7 @@ class PartitionedMS final : public MSProvider {
       bool _initialModelRequired, _modelUpdateRequired;
       std::set<aocommon::PolarizationEnum> _polarizations;
       MSSelection _selection;
+      aocommon::MultiBandData _bands;
       size_t _nAntennas;
       bool _isCopy;
 
@@ -136,11 +144,12 @@ class PartitionedMS final : public MSProvider {
            const std::vector<ChannelRange>& channels, bool initialModelRequired,
            bool modelUpdateRequired,
            const std::set<aocommon::PolarizationEnum>& polarizations,
-           const MSSelection& selection, size_t nAntennas)
+           const MSSelection& selection, const aocommon::MultiBandData& bands,
+           size_t nAntennas)
         : _data(new HandleData(msPath, dataColumnName, temporaryDirectory,
                                channels, initialModelRequired,
                                modelUpdateRequired, polarizations, selection,
-                               nAntennas)) {}
+                               bands, nAntennas)) {}
   };
 
  private:
@@ -152,23 +161,42 @@ class PartitionedMS final : public MSProvider {
 
   const Handle _handle;
   const size_t _partIndex;
-  char* _modelFileMap;
+  const size_t _dataDescId;
+  MappedFile _modelFile;
   size_t _currentOutputRow;
   std::unique_ptr<std::ofstream> _modelDataFile;
-  int _fd;
   const aocommon::PolarizationEnum _polarization;
-  const size_t _polarizationCountInFile;
+  size_t _polarizationCountInFile;
 
   struct MetaHeader {
-    uint64_t selectedRowCount;
-    uint32_t filenameLength;
-    double startTime;
+    double startTime = 0.0;
+    uint64_t selectedRowCount = 0;
+    uint32_t filenameLength = 0;
+    void Read(std::istream& str) {
+      str.read(reinterpret_cast<char*>(&startTime), sizeof(startTime));
+      str.read(reinterpret_cast<char*>(&selectedRowCount),
+               sizeof(selectedRowCount));
+      str.read(reinterpret_cast<char*>(&filenameLength),
+               sizeof(filenameLength));
+    }
+    void Write(std::ostream& str) const {
+      str.write(reinterpret_cast<const char*>(&startTime), sizeof(startTime));
+      str.write(reinterpret_cast<const char*>(&selectedRowCount),
+                sizeof(selectedRowCount));
+      str.write(reinterpret_cast<const char*>(&filenameLength),
+                sizeof(filenameLength));
+    }
+    static constexpr size_t BINARY_SIZE =
+        sizeof(startTime) + sizeof(selectedRowCount) + sizeof(filenameLength);
+    static_assert(BINARY_SIZE == 20);
   } _metaHeader;
   struct MetaRecord {
-    double u, v, w, time;
-    uint16_t antenna1, antenna2, fieldId;
-    static constexpr size_t BINARY_SIZE = 8 * 4 + 2 * 3;
-    void read(std::istream& str) {
+    double u = 0.0, v = 0.0, w = 0.0, time = 0.0;
+    uint16_t antenna1 = 0, antenna2 = 0, fieldId = 0;
+    static constexpr size_t BINARY_SIZE =
+        sizeof(double) * 4 + sizeof(uint16_t) * 3;
+    static_assert(BINARY_SIZE == 38);
+    void Read(std::istream& str) {
       str.read(reinterpret_cast<char*>(&u), sizeof(double));
       str.read(reinterpret_cast<char*>(&v), sizeof(double));
       str.read(reinterpret_cast<char*>(&w), sizeof(double));
@@ -177,7 +205,7 @@ class PartitionedMS final : public MSProvider {
       str.read(reinterpret_cast<char*>(&antenna2), sizeof(uint16_t));
       str.read(reinterpret_cast<char*>(&fieldId), sizeof(uint16_t));
     }
-    void write(std::ostream& str) const {
+    void Write(std::ostream& str) const {
       str.write(reinterpret_cast<const char*>(&u), sizeof(double));
       str.write(reinterpret_cast<const char*>(&v), sizeof(double));
       str.write(reinterpret_cast<const char*>(&w), sizeof(double));
@@ -188,10 +216,28 @@ class PartitionedMS final : public MSProvider {
     }
   };
   struct PartHeader {
-    uint64_t channelCount;
-    uint64_t channelStart;
-    uint32_t dataDescId;
-    bool hasModel;
+    uint64_t channelCount = 0;
+    uint64_t channelStart = 0;
+    uint32_t dataDescId = 0;
+    bool hasModel = false;
+    static constexpr size_t BINARY_SIZE = sizeof(channelCount) +
+                                          sizeof(channelStart) +
+                                          sizeof(dataDescId) + sizeof(hasModel);
+    static_assert(BINARY_SIZE == 21);
+    void Read(std::istream& str) {
+      str.read(reinterpret_cast<char*>(&channelCount), sizeof(channelCount));
+      str.read(reinterpret_cast<char*>(&channelStart), sizeof(channelStart));
+      str.read(reinterpret_cast<char*>(&dataDescId), sizeof(dataDescId));
+      str.read(reinterpret_cast<char*>(&hasModel), sizeof(hasModel));
+    }
+    void Write(std::ostream& str) const {
+      str.write(reinterpret_cast<const char*>(&channelCount),
+                sizeof(channelCount));
+      str.write(reinterpret_cast<const char*>(&channelStart),
+                sizeof(channelStart));
+      str.write(reinterpret_cast<const char*>(&dataDescId), sizeof(dataDescId));
+      str.write(reinterpret_cast<const char*>(&hasModel), sizeof(hasModel));
+    }
   } _partHeader;
 
   static std::string getFilenamePrefix(const std::string& msPath,

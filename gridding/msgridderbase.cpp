@@ -1,16 +1,14 @@
 #include "msgridderbase.h"
 
-#include "../io/logger.h"
-
 #include "../math/calculatefftsize.h"
 
 #include "../msproviders/msprovider.h"
 #include "../msproviders/msreaders/msreader.h"
 
 #include "../structures/imageweights.h"
-#include "../structures/multibanddata.h"
 
-#include "../units/angle.h"
+#include <aocommon/logger.h>
+#include <aocommon/units/angle.h>
 
 #ifdef HAVE_EVERYBEAM
 #include <EveryBeam/load.h>
@@ -22,6 +20,7 @@
 #include "../io/findmwacoefffile.h"
 #include <limits>
 #include <aocommon/matrix2x2.h>
+#include <aocommon/multibanddata.h>
 
 #include <schaapcommon/h5parm/h5parm.h>
 #include <schaapcommon/h5parm/soltab.h>
@@ -42,13 +41,14 @@
 
 #include <atomic>
 
+using aocommon::Logger;
 using schaapcommon::h5parm::JonesParameters;
 
 namespace {
 /**
  * @brief Apply conjugated gains to the visibilities.
  *
- * @tparam PolarizationCount polarization count, 4 for IDG, 1 for all other
+ * @tparam PolarizationCount polarization count, 2 or 4 for IDG, 1 for all other
  * gridders.
  * @tparam GainEntry Which entry or entries from the gain matrices should be
  * taken into account when correcting the visibilities? See also the
@@ -82,6 +82,13 @@ void ApplyConjugatedGain<1, DDGainMatrix::kTrace>(
 }
 
 template <>
+void ApplyConjugatedGain<2, DDGainMatrix::kFull>(std::complex<float>*,
+                                                 const aocommon::MC2x2F&,
+                                                 const aocommon::MC2x2F&) {
+  throw std::runtime_error("Not implemented");
+}
+
+template <>
 void ApplyConjugatedGain<4, DDGainMatrix::kFull>(
     std::complex<float>* visibilities, const aocommon::MC2x2F& gain1,
     const aocommon::MC2x2F& gain2) {
@@ -95,7 +102,7 @@ void ApplyConjugatedGain<4, DDGainMatrix::kFull>(
 /**
  * @brief Apply gains to the visibilities.
  *
- * @tparam PolarizationCount polarization count, 4 for IDG, 1 for all other
+ * @tparam PolarizationCount polarization count, 2 or 4 for IDG, 1 for all other
  * gridders.
  * @tparam GainEntry Which entry or entries from the gain matrices should be
  * taken into account when correcting the visibilities? See also the
@@ -125,6 +132,13 @@ void ApplyGain<1, DDGainMatrix::kTrace>(std::complex<float>* visibilities,
                                         const aocommon::MC2x2F& gain2) {
   // Stokes-I.
   *visibilities *= 0.5f * gain1.DoubleDot(gain2.Conjugate());
+}
+
+template <>
+void ApplyGain<2, DDGainMatrix::kFull>(std::complex<float>*,
+                                       const aocommon::MC2x2F&,
+                                       const aocommon::MC2x2F&) {
+  throw std::runtime_error("Not implemented");
 }
 
 template <>
@@ -168,7 +182,8 @@ std::complex<float> ComputeGain<DDGainMatrix::kTrace>(
 
 template <>
 std::complex<float> ComputeGain<DDGainMatrix::kFull>(
-    const aocommon::MC2x2F& gain1, const aocommon::MC2x2F& gain2) {
+    [[maybe_unused]] const aocommon::MC2x2F& gain1,
+    [[maybe_unused]] const aocommon::MC2x2F& gain2) {
   throw std::runtime_error("Not implemented!");
 }
 
@@ -204,12 +219,12 @@ MSGridderBase::MSData::MSData()
       antennaNames() {}
 
 MSGridderBase::MSGridderBase(const Settings& settings)
-    : _actualInversionWidth(0),
+    : _metaDataCache(nullptr),
+      _settings(settings),
+      _actualInversionWidth(0),
       _actualInversionHeight(0),
       _actualPixelSizeX(0),
       _actualPixelSizeY(0),
-      _metaDataCache(nullptr),
-      _settings(settings),
       _phaseCentreRA(0.0),
       _phaseCentreDec(0.0),
       _phaseCentreDL(0.0),
@@ -220,6 +235,7 @@ MSGridderBase::MSGridderBase(const Settings& settings)
       _facetGroupIndex(0),
       _msIndex(0),
       _additivePredict(false),
+      _imagePadding(1.0),
       _imageWidth(0),
       _imageHeight(0),
       _trimWidth(0),
@@ -343,8 +359,9 @@ void MSGridderBase::initializePointResponse(
             element_response_string, _settings.beamMode);
 
     _telescope = everybeam::Load(*ms, options);
-    _pointResponse =
-        _telescope->GetPointResponse(msData.msProvider->StartTime());
+    // Initialize with 0.0 time to make sure first call to UpdateTime()
+    // will fill the beam response cache.
+    _pointResponse = _telescope->GetPointResponse(0.0);
     _pointResponse->SetUpdateInterval(_settings.facetBeamUpdateTime);
     _cachedBeamResponse.resize(msData.bandData.ChannelCount() *
                                _pointResponse->GetAllStationsBufferSize());
@@ -373,7 +390,7 @@ void MSGridderBase::initializePredictReader(MSProvider& msProvider) {
 
 void MSGridderBase::initializeBandData(const casacore::MeasurementSet& ms,
                                        MSGridderBase::MSData& msData) {
-  msData.bandData = MultiBandData(ms)[msData.dataDescId];
+  msData.bandData = aocommon::MultiBandData(ms)[msData.dataDescId];
   if (Selection(msData.msIndex).HasChannelRange()) {
     msData.startChannel = Selection(msData.msIndex).ChannelRangeStart();
     msData.endChannel = Selection(msData.msIndex).ChannelRangeEnd();
@@ -395,6 +412,127 @@ void MSGridderBase::initializeBandData(const casacore::MeasurementSet& ms,
   }
 }
 
+#ifdef HAVE_EVERYBEAM
+void MSGridderBase::CacheBeamResponse(double time, size_t fieldId,
+                                      const aocommon::BandData& curBand) {
+  _pointResponse->UpdateTime(time);
+  if (_pointResponse->HasTimeUpdate()) {
+    for (size_t ch = 0; ch < curBand.ChannelCount(); ++ch) {
+      _pointResponse->ResponseAllStations(
+          _beamMode,
+          &_cachedBeamResponse[ch * _pointResponse->GetAllStationsBufferSize()],
+          _facetDirectionRA, _facetDirectionDec, curBand.ChannelFrequency(ch),
+          fieldId);
+    }
+  }
+}
+#endif
+
+void MSGridderBase::SetH5Parms() {
+  _h5parms.resize(MeasurementSetCount());
+  _h5SolTabs.resize(MeasurementSetCount());
+  _correctType.resize(MeasurementSetCount());
+
+  for (size_t i = 0; i < _h5parms.size(); ++i) {
+    if (_settings.facetSolutionFiles.size() > 1) {
+      _h5parms[i].reset(
+          new schaapcommon::h5parm::H5Parm(_settings.facetSolutionFiles[i]));
+    } else {
+      _h5parms[i].reset(
+          new schaapcommon::h5parm::H5Parm(_settings.facetSolutionFiles[0]));
+    }
+
+    if (_settings.facetSolutionTables.size() == 1) {
+      _h5SolTabs[i] = std::make_pair(
+          &_h5parms[i]->GetSolTab(_settings.facetSolutionTables[0]), nullptr);
+      _correctType[i] =
+          JonesParameters::StringToCorrectType(_h5SolTabs[i].first->GetType());
+    } else if (_settings.facetSolutionTables.size() == 2) {
+      const std::array<std::string, 2> solTabTypes{
+          _h5parms[i]->GetSolTab(_settings.facetSolutionTables[0]).GetType(),
+          _h5parms[i]->GetSolTab(_settings.facetSolutionTables[1]).GetType()};
+
+      auto itrA =
+          std::find(solTabTypes.begin(), solTabTypes.end(), "amplitude");
+      auto itrP = std::find(solTabTypes.begin(), solTabTypes.end(), "phase");
+
+      if (itrA == solTabTypes.end() || itrP == solTabTypes.end()) {
+        throw std::runtime_error(
+            "WSClean expected solution tables with name 'amplitude' and "
+            "'phase', but received " +
+            solTabTypes[0] + " and " + solTabTypes[1]);
+      } else {
+        const size_t idxA = std::distance(solTabTypes.begin(), itrA);
+        const size_t idxP = std::distance(solTabTypes.begin(), itrP);
+        _h5SolTabs[i] = std::make_pair(
+            &_h5parms[i]->GetSolTab(_settings.facetSolutionTables[idxA]),
+            &_h5parms[i]->GetSolTab(_settings.facetSolutionTables[idxP]));
+      }
+
+      const size_t npol1 = _h5SolTabs[i].first->HasAxis("pol")
+                               ? _h5SolTabs[i].first->GetAxis("pol").size
+                               : 1;
+      const size_t npol2 = _h5SolTabs[i].second->HasAxis("pol")
+                               ? _h5SolTabs[i].second->GetAxis("pol").size
+                               : 1;
+      if (npol1 == 1 && npol2 == 1) {
+        _correctType[i] = JonesParameters::CorrectType::SCALARGAIN;
+      } else if (npol1 == 2 && npol2 == 2) {
+        _correctType[i] = JonesParameters::CorrectType::GAIN;
+      } else if (npol1 == 4 && npol2 == 4) {
+        _correctType[i] = JonesParameters::CorrectType::FULLJONES;
+      } else {
+        throw std::runtime_error(
+            "Incorrect or mismatching number of polarizations in the "
+            "provided soltabs. Number of polarizations should be either "
+            "all 1, 2 or 4, but received " +
+            std::to_string(npol1) + " and " + std::to_string(npol2));
+      }
+    } else {
+      throw std::runtime_error(
+          "Specify the solution table name(s) with "
+          "-soltab-names=soltabname1[OPTIONAL,soltabname2]");
+    }
+  }
+}
+
+void MSGridderBase::CacheParmResponse(
+    double time, const std::vector<std::string>& antennaNames,
+    const aocommon::BandData& curBand) {
+  // Only extract DD solutions if the corresponding cache entry is empty.
+  if (_cachedParmResponse[_msIndex].empty()) {
+    const size_t nparms =
+        (_correctType[_msIndex] == JonesParameters::CorrectType::FULLJONES) ? 4
+                                                                            : 2;
+    const std::vector<double> freqs(curBand.begin(), curBand.end());
+    const size_t responseSize = _cachedMSTimes[_msIndex].size() * freqs.size() *
+                                antennaNames.size() * nparms;
+    const std::string dirName = _h5parms[_msIndex]->GetNearestSource(
+        _facetDirectionRA, _facetDirectionDec);
+    const size_t dirIndex = _h5SolTabs[_msIndex].first->GetDirIndex(dirName);
+    JonesParameters jonesParameters(
+        freqs, _cachedMSTimes[_msIndex], antennaNames, _correctType[_msIndex],
+        JonesParameters::InterpolationType::NEAREST, dirIndex,
+        _h5SolTabs[_msIndex].first, _h5SolTabs[_msIndex].second, false, 0.0f,
+        0u, JonesParameters::MissingAntennaBehavior::kUnit);
+    // parms (Casacore::Cube) is column major
+    const auto parms = jonesParameters.GetParms();
+    _cachedParmResponse[_msIndex].assign(&parms(0, 0, 0),
+                                         &parms(0, 0, 0) + responseSize);
+  }
+
+  auto it = std::find(_cachedMSTimes[_msIndex].begin() + _timeOffset[_msIndex],
+                      _cachedMSTimes[_msIndex].end(), time);
+  if (it != _cachedMSTimes[_msIndex].end()) {
+    // Update _timeOffset value with index
+    _timeOffset[_msIndex] = std::distance(_cachedMSTimes[_msIndex].begin(), it);
+  } else {
+    throw std::runtime_error(
+        "Time not found in cached times. A potential reason could be that the "
+        "time values in the provided MS are not in ascending order.");
+  }
+}
+
 template <size_t NPolInMSProvider>
 void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData) {
   Logger::Info << "Determining min and max w & theoretical beam size... ";
@@ -404,7 +542,7 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData) {
   msData.minW = 1e100;
   msData.maxBaselineUVW = 0.0;
   msData.maxBaselineInM = 0.0;
-  const BandData selectedBand = msData.SelectedBand();
+  const aocommon::BandData selectedBand = msData.SelectedBand();
   std::vector<float> weightArray(selectedBand.ChannelCount() *
                                  NPolInMSProvider);
   double curTimestep = -1, firstTime = -1, lastTime = -1;
@@ -484,6 +622,7 @@ void MSGridderBase::calculateWLimits(MSGridderBase::MSData& msData) {
 }
 
 template void MSGridderBase::calculateWLimits<1>(MSGridderBase::MSData& msData);
+template void MSGridderBase::calculateWLimits<2>(MSGridderBase::MSData& msData);
 template void MSGridderBase::calculateWLimits<4>(MSGridderBase::MSData& msData);
 
 void MSGridderBase::initializeMSDataVector(
@@ -496,8 +635,8 @@ void MSGridderBase::initializeMSDataVector(
 
   resetMetaData();
   // FIXME: migrate data members to GriddingResult
-  _metaDataCache->beamSum = 0.0;
   _metaDataCache->h5Sum = 0.0;
+  _metaDataCache->correctionSum = 0.0;
 
   bool hasCache = !_metaDataCache->msDataVector.empty();
   if (!hasCache) _metaDataCache->msDataVector.resize(MeasurementSetCount());
@@ -509,6 +648,10 @@ void MSGridderBase::initializeMSDataVector(
     _cachedParmResponse.assign(MeasurementSetCount(), {});
     _cachedMSTimes.assign(MeasurementSetCount(), {});
     _timeOffset.assign(MeasurementSetCount(), 0u);
+  }
+
+  if (!_settings.facetSolutionFiles.empty()) {
+    SetH5Parms();
   }
 
   for (size_t i = 0; i != MeasurementSetCount(); ++i) {
@@ -551,6 +694,9 @@ void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData,
   } else {
     if (msProvider.Polarization() == aocommon::Polarization::Instrumental)
       calculateWLimits<4>(msData);
+    else if (msProvider.Polarization() ==
+             aocommon::Polarization::DiagonalInstrumental)
+      calculateWLimits<2>(msData);
     else
       calculateWLimits<1>(msData);
     cacheEntry.maxW = msData.maxW;
@@ -559,74 +705,6 @@ void MSGridderBase::initializeMeasurementSet(MSGridderBase::MSData& msData,
     cacheEntry.maxBaselineUVW = msData.maxBaselineUVW;
     cacheEntry.maxBaselineInM = msData.maxBaselineInM;
     cacheEntry.integrationTime = msData.integrationTime;
-  }
-
-  if (!_settings.facetSolutionFiles.empty()) {
-    _h5parms.resize(MeasurementSetCount());
-    _h5SolTabs.resize(MeasurementSetCount());
-    _correctType.resize(MeasurementSetCount());
-
-    for (size_t i = 0; i < _h5parms.size(); ++i) {
-      if (_settings.facetSolutionFiles.size() > 1) {
-        _h5parms[i].reset(
-            new schaapcommon::h5parm::H5Parm(_settings.facetSolutionFiles[i]));
-      } else {
-        _h5parms[i].reset(
-            new schaapcommon::h5parm::H5Parm(_settings.facetSolutionFiles[0]));
-      }
-
-      if (_settings.facetSolutionTables.size() == 1) {
-        _h5SolTabs[i] = std::make_pair(
-            &_h5parms[i]->GetSolTab(_settings.facetSolutionTables[0]), nullptr);
-        _correctType[i] = JonesParameters::StringToCorrectType(
-            _h5SolTabs[i].first->GetType());
-      } else if (_settings.facetSolutionTables.size() == 2) {
-        const std::array<std::string, 2> solTabTypes{
-            _h5parms[i]->GetSolTab(_settings.facetSolutionTables[0]).GetType(),
-            _h5parms[i]->GetSolTab(_settings.facetSolutionTables[1]).GetType()};
-
-        auto itrA =
-            std::find(solTabTypes.begin(), solTabTypes.end(), "amplitude");
-        auto itrP = std::find(solTabTypes.begin(), solTabTypes.end(), "phase");
-
-        if (itrA == solTabTypes.end() || itrP == solTabTypes.end()) {
-          throw std::runtime_error(
-              "WSClean expected solution tables with name 'amplitude' and "
-              "'phase', but received " +
-              solTabTypes[0] + " and " + solTabTypes[1]);
-        } else {
-          const size_t idxA = std::distance(solTabTypes.begin(), itrA);
-          const size_t idxP = std::distance(solTabTypes.begin(), itrP);
-          _h5SolTabs[i] = std::make_pair(
-              &_h5parms[i]->GetSolTab(_settings.facetSolutionTables[idxA]),
-              &_h5parms[i]->GetSolTab(_settings.facetSolutionTables[idxP]));
-        }
-
-        const size_t npol1 = _h5SolTabs[i].first->HasAxis("pol")
-                                 ? _h5SolTabs[i].first->GetAxis("pol").size
-                                 : 1;
-        const size_t npol2 = _h5SolTabs[i].second->HasAxis("pol")
-                                 ? _h5SolTabs[i].second->GetAxis("pol").size
-                                 : 1;
-        if (npol1 == 1 && npol2 == 1) {
-          _correctType[i] = JonesParameters::CorrectType::SCALARGAIN;
-        } else if (npol1 == 2 && npol2 == 2) {
-          _correctType[i] = JonesParameters::CorrectType::GAIN;
-        } else if (npol1 == 4 && npol2 == 4) {
-          _correctType[i] = JonesParameters::CorrectType::FULLJONES;
-        } else {
-          throw std::runtime_error(
-              "Incorrect or mismatching number of polarizations in the "
-              "provided soltabs. Number of polarizations should be either "
-              "all 1, 2 or 4, but received " +
-              std::to_string(npol1) + " and " + std::to_string(npol2));
-        }
-      } else {
-        throw std::runtime_error(
-            "Specify the solution table name(s) with "
-            "-soltab-names=soltabname1[OPTIONAL,soltabname2]");
-      }
-    }
   }
 }
 
@@ -654,7 +732,8 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector) {
   _theoreticalBeamSize = 1.0 / maxBaseline;
   if (IsFirstIteration()) {
     Logger::Info << "Theoretic beam = "
-                 << Angle::ToNiceString(_theoreticalBeamSize) << "\n";
+                 << aocommon::units::Angle::ToNiceString(_theoreticalBeamSize)
+                 << "\n";
   }
   if (_wLimit != 0.0) {
     _maxW *= (1.0 - _wLimit);
@@ -710,10 +789,11 @@ void MSGridderBase::calculateOverallMetaData(const MSData* msDataVector) {
 template <size_t PolarizationCount, DDGainMatrix GainEntry>
 void MSGridderBase::writeVisibilities(
     MSProvider& msProvider, const std::vector<std::string>& antennaNames,
-    const BandData& curBand, std::complex<float>* buffer) {
+    const aocommon::BandData& curBand, std::complex<float>* buffer) {
   assert(!DoImagePSF());  // The PSF is never predicted.
 
   if (!_h5parms.empty()) {
+    assert(!_settings.facetRegionFilename.empty());
     MSProvider::MetaData metaData;
     _predictReader->ReadMeta(metaData);
     // When the facet beam is applied, the row will be incremented later in this
@@ -722,43 +802,12 @@ void MSGridderBase::writeVisibilities(
       _predictReader->NextInputRow();
     }
 
+    CacheParmResponse(metaData.time, antennaNames, curBand);
+
     const size_t nparms =
         (_correctType[_msIndex] == JonesParameters::CorrectType::FULLJONES) ? 4
                                                                             : 2;
-
-    // Only extract DD solutions if the corresponding cache entry is empty.
-    if (_cachedParmResponse[_msIndex].empty()) {
-      const std::vector<double> freqs(curBand.begin(), curBand.end());
-      const size_t responseSize = _cachedMSTimes[_msIndex].size() *
-                                  freqs.size() * antennaNames.size() * nparms;
-      const std::string dirName = _h5parms[_msIndex]->GetNearestSource(
-          _facetDirectionRA, _facetDirectionDec);
-      const size_t dirIndex = _h5SolTabs[_msIndex].first->GetDirIndex(dirName);
-      JonesParameters jonesParameters(
-          freqs, _cachedMSTimes[_msIndex], antennaNames, _correctType[_msIndex],
-          JonesParameters::InterpolationType::NEAREST, dirIndex,
-          _h5SolTabs[_msIndex].first, _h5SolTabs[_msIndex].second, false, 0.0f,
-          0u, JonesParameters::MissingAntennaBehavior::kUnit);
-      // parms (Casacore::Cube) is column major
-      const auto parms = jonesParameters.GetParms();
-      _cachedParmResponse[_msIndex].assign(&parms(0, 0, 0),
-                                           &parms(0, 0, 0) + responseSize);
-    }
-
     const size_t nchannels = curBand.ChannelCount();
-    auto it =
-        std::find(_cachedMSTimes[_msIndex].begin() + _timeOffset[_msIndex],
-                  _cachedMSTimes[_msIndex].end(), metaData.time);
-    if (it != _cachedMSTimes[_msIndex].end()) {
-      _timeOffset[_msIndex] =
-          std::distance(_cachedMSTimes[_msIndex].begin(), it);
-    } else {
-      throw std::runtime_error(
-          "Time not found in cached times. A potential reason could be that "
-          "the "
-          "time values in the provided MS are not in ascending order.");
-    }
-
     std::complex<float>* iter = buffer;
     if (nparms == 2) {
       for (size_t ch = 0; ch < nchannels; ++ch) {
@@ -792,21 +841,13 @@ void MSGridderBase::writeVisibilities(
   }
 
 #ifdef HAVE_EVERYBEAM
-  if (_settings.applyFacetBeam && !_settings.facetRegionFilename.empty()) {
+  if (_settings.applyFacetBeam) {
+    assert(!_settings.facetRegionFilename.empty());
     MSProvider::MetaData metaData;
     _predictReader->ReadMeta(metaData);
     _predictReader->NextInputRow();
-    _pointResponse->UpdateTime(metaData.time);
-    if (_pointResponse->HasTimeUpdate()) {
-      for (size_t ch = 0; ch < curBand.ChannelCount(); ++ch) {
-        _pointResponse->ResponseAllStations(
-            _beamMode,
-            &_cachedBeamResponse[ch *
-                                 _pointResponse->GetAllStationsBufferSize()],
-            _facetDirectionRA, _facetDirectionDec, curBand.ChannelFrequency(ch),
-            metaData.fieldId);
-      }
-    }
+
+    CacheBeamResponse(metaData.time, metaData.fieldId, curBand);
 
     std::complex<float>* iter = buffer;
     for (size_t ch = 0; ch < curBand.ChannelCount(); ++ch) {
@@ -832,43 +873,38 @@ void MSGridderBase::writeVisibilities(
 
 template void MSGridderBase::writeVisibilities<1, DDGainMatrix::kXX>(
     MSProvider& msProvider, const std::vector<std::string>& antennaNames,
-    const BandData& curBand, std::complex<float>* buffer);
+    const aocommon::BandData& curBand, std::complex<float>* buffer);
 
 template void MSGridderBase::writeVisibilities<1, DDGainMatrix::kYY>(
     MSProvider& msProvider, const std::vector<std::string>& antennaNames,
-    const BandData& curBand, std::complex<float>* buffer);
+    const aocommon::BandData& curBand, std::complex<float>* buffer);
 
 template void MSGridderBase::writeVisibilities<1, DDGainMatrix::kTrace>(
     MSProvider& msProvider, const std::vector<std::string>& antennaNames,
-    const BandData& curBand, std::complex<float>* buffer);
+    const aocommon::BandData& curBand, std::complex<float>* buffer);
+
+template void MSGridderBase::writeVisibilities<2, DDGainMatrix::kFull>(
+    MSProvider& msProvider, const std::vector<std::string>& antennaNames,
+    const aocommon::BandData& curBand, std::complex<float>* buffer);
 
 template void MSGridderBase::writeVisibilities<4, DDGainMatrix::kFull>(
     MSProvider& msProvider, const std::vector<std::string>& antennaNames,
-    const BandData& curBand, std::complex<float>* buffer);
+    const aocommon::BandData& curBand, std::complex<float>* buffer);
 
 #ifdef HAVE_EVERYBEAM
 template <size_t PolarizationCount, DDGainMatrix GainEntry>
 void MSGridderBase::ApplyConjugatedFacetBeam(MSReader& msReader,
                                              InversionRow& rowData,
-                                             const BandData& curBand,
-                                             float* weightBuffer) {
+                                             const aocommon::BandData& curBand,
+                                             const float* weightBuffer) {
   MSProvider::MetaData metaData;
   msReader.ReadMeta(metaData);
 
-  _pointResponse->UpdateTime(metaData.time);
-  if (_pointResponse->HasTimeUpdate()) {
-    for (size_t ch = 0; ch < curBand.ChannelCount(); ++ch) {
-      _pointResponse->ResponseAllStations(
-          _beamMode,
-          &_cachedBeamResponse[ch * _pointResponse->GetAllStationsBufferSize()],
-          _facetDirectionRA, _facetDirectionDec, curBand.ChannelFrequency(ch),
-          metaData.fieldId);
-    }
-  }
+  CacheBeamResponse(metaData.time, metaData.fieldId, curBand);
 
   // rowData.data contains the visibilities
   std::complex<float>* iter = rowData.data;
-  float* weightIter = weightBuffer;
+  const float* weightIter = weightBuffer;
   for (size_t ch = 0; ch < curBand.ChannelCount(); ++ch) {
     const size_t offset = ch * _pointResponse->GetAllStationsBufferSize();
     const size_t offset1 = offset + metaData.antenna1 * 4u;
@@ -879,62 +915,144 @@ void MSGridderBase::ApplyConjugatedFacetBeam(MSReader& msReader,
     ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain1, gain2);
     const std::complex<float> g = ComputeGain<GainEntry>(gain1, gain2);
 
-    const float weight = *weightIter * _scratchWeights[ch];
-    _metaDataCache->beamSum += (conj(g) * weight * g).real();
+    const float weight = *weightIter * _scratchImageWeights[ch];
+    _metaDataCache->correctionSum += (conj(g) * weight * g).real();
 
     // Only admissible PolarizationCount for applying the facet beam is 1.
     iter += PolarizationCount;
     weightIter += PolarizationCount;
   }
 }
+
+template <size_t PolarizationCount, DDGainMatrix GainEntry>
+void MSGridderBase::ApplyConjugatedFacetDdEffects(
+    MSReader& msReader, const std::vector<std::string>& antennaNames,
+    InversionRow& rowData, const aocommon::BandData& curBand,
+    const float* weightBuffer) {
+  MSProvider::MetaData metaData;
+  msReader.ReadMeta(metaData);
+
+  CacheBeamResponse(metaData.time, metaData.fieldId, curBand);
+  CacheParmResponse(metaData.time, antennaNames, curBand);
+
+  const size_t nparms =
+      (_correctType[_msIndex] == JonesParameters::CorrectType::FULLJONES) ? 4
+                                                                          : 2;
+  const size_t nchannels = curBand.ChannelCount();
+
+  // Conditional could be templated once C++ supports partial function
+  // specialization
+  std::complex<float>* iter = rowData.data;
+  const float* weightIter = weightBuffer;
+  if (nparms == 2) {
+    for (size_t ch = 0; ch < nchannels; ++ch) {
+      // Apply facet beam
+      const size_t beam_offset =
+          ch * _pointResponse->GetAllStationsBufferSize();
+      const size_t beam_offset1 = beam_offset + metaData.antenna1 * 4u;
+      const size_t beam_offset2 = beam_offset + metaData.antenna2 * 4u;
+
+      const aocommon::MC2x2F gain_b_1(&_cachedBeamResponse[beam_offset1]);
+      const aocommon::MC2x2F gain_b_2(&_cachedBeamResponse[beam_offset2]);
+      ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain_b_1,
+                                                        gain_b_2);
+      const std::complex<float> g_b =
+          ComputeGain<GainEntry>(gain_b_1, gain_b_2);
+
+      // Apply H5 solutions
+      // Column major indexing
+      const size_t h5_offset = (_timeOffset[_msIndex] * nchannels + ch) *
+                               antennaNames.size() * nparms;
+      const size_t h5_offset1 = h5_offset + metaData.antenna1 * nparms;
+      const size_t h5_offset2 = h5_offset + metaData.antenna2 * nparms;
+      const aocommon::MC2x2F gain_h5_1(
+          _cachedParmResponse[_msIndex][h5_offset1], 0, 0,
+          _cachedParmResponse[_msIndex][h5_offset1 + 1]);
+      const aocommon::MC2x2F gain_h5_2(
+          _cachedParmResponse[_msIndex][h5_offset2], 0, 0,
+          _cachedParmResponse[_msIndex][h5_offset2 + 1]);
+      ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain_h5_1,
+                                                        gain_h5_2);
+      const std::complex<float> g_h5 =
+          ComputeGain<GainEntry>(gain_h5_1, gain_h5_2);
+
+      const float weight = *weightIter * _scratchImageWeights[ch];
+      // h5Sum needed for the primary beam correction
+      _metaDataCache->h5Sum += (conj(g_h5) * weight * g_h5).real();
+      _metaDataCache->correctionSum +=
+          (conj(g_h5) * conj(g_b) * weight * g_b * g_h5).real();
+
+      // Only admissible PolarizationCount for applying gains from solution
+      // file is 1.
+      iter += PolarizationCount;
+      weightIter += PolarizationCount;
+    }
+  } else {
+    for (size_t ch = 0; ch < nchannels; ++ch) {
+      // Apply facet beam
+      const size_t beam_offset =
+          ch * _pointResponse->GetAllStationsBufferSize();
+      const size_t beam_offset1 = beam_offset + metaData.antenna1 * 4u;
+      const size_t beam_offset2 = beam_offset + metaData.antenna2 * 4u;
+
+      const aocommon::MC2x2F gain_b_1(&_cachedBeamResponse[beam_offset1]);
+      const aocommon::MC2x2F gain_b_2(&_cachedBeamResponse[beam_offset2]);
+      ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain_b_1,
+                                                        gain_b_2);
+      const std::complex<float> g_b =
+          ComputeGain<GainEntry>(gain_b_1, gain_b_2);
+
+      // Apply h5
+      // Column major indexing
+      const size_t offset_h5 = (_timeOffset[_msIndex] * nchannels + ch) *
+                               antennaNames.size() * nparms;
+      const size_t offset_h5_1 = offset_h5 + metaData.antenna1 * nparms;
+      const size_t offset_h5_2 = offset_h5 + metaData.antenna2 * nparms;
+      const aocommon::MC2x2F gain_h5_1(
+          &_cachedParmResponse[_msIndex][offset_h5_1]);
+      const aocommon::MC2x2F gain_h5_2(
+          &_cachedParmResponse[_msIndex][offset_h5_2]);
+      ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain_h5_1,
+                                                        gain_h5_2);
+      const std::complex<float> g_h5 =
+          ComputeGain<GainEntry>(gain_h5_1, gain_h5_2);
+
+      // Compute weight
+      const float weight = *weightIter * _scratchImageWeights[ch];
+      // h5Sum needed for the primary beam correction
+      _metaDataCache->h5Sum += (conj(g_h5) * weight * g_h5).real();
+      _metaDataCache->correctionSum +=
+          (conj(g_h5) * conj(g_b) * weight * g_b * g_h5).real();
+
+      // Only admissible PolarizationCount for applying gains from solution
+      // file is 1.
+      iter += PolarizationCount;
+      weightIter += PolarizationCount;
+    }
+  }
+}
+
 #endif
 
 template <size_t PolarizationCount, DDGainMatrix GainEntry>
 void MSGridderBase::ApplyConjugatedH5Parm(
     MSReader& msReader, const std::vector<std::string>& antennaNames,
-    InversionRow& rowData, const BandData& curBand, float* weightBuffer) {
+    InversionRow& rowData, const aocommon::BandData& curBand,
+    const float* weightBuffer) {
   MSProvider::MetaData metaData;
   msReader.ReadMeta(metaData);
+
+  CacheParmResponse(metaData.time, antennaNames, curBand);
 
   const size_t nparms =
       (_correctType[_msIndex] == JonesParameters::CorrectType::FULLJONES) ? 4
                                                                           : 2;
-
-  // Only extract DD solutions if the corresponding cache entry is empty.
-  if (_cachedParmResponse[_msIndex].empty()) {
-    const std::vector<double> freqs(curBand.begin(), curBand.end());
-    const size_t responseSize = _cachedMSTimes[_msIndex].size() * freqs.size() *
-                                antennaNames.size() * nparms;
-    const std::string dirName = _h5parms[_msIndex]->GetNearestSource(
-        _facetDirectionRA, _facetDirectionDec);
-    const size_t dirIndex = _h5SolTabs[_msIndex].first->GetDirIndex(dirName);
-    JonesParameters jonesParameters(
-        freqs, _cachedMSTimes[_msIndex], antennaNames, _correctType[_msIndex],
-        JonesParameters::InterpolationType::NEAREST, dirIndex,
-        _h5SolTabs[_msIndex].first, _h5SolTabs[_msIndex].second, false, 0.0f,
-        0u, JonesParameters::MissingAntennaBehavior::kUnit);
-    // parms (Casacore::Cube) is column major
-    const auto parms = jonesParameters.GetParms();
-    _cachedParmResponse[_msIndex].assign(&parms(0, 0, 0),
-                                         &parms(0, 0, 0) + responseSize);
-  }
-
   const size_t nchannels = curBand.ChannelCount();
-  auto it = std::find(_cachedMSTimes[_msIndex].begin() + _timeOffset[_msIndex],
-                      _cachedMSTimes[_msIndex].end(), metaData.time);
-  if (it != _cachedMSTimes[_msIndex].end()) {
-    // Update _timeOffset value with index
-    _timeOffset[_msIndex] = std::distance(_cachedMSTimes[_msIndex].begin(), it);
-  } else {
-    throw std::runtime_error(
-        "Time not found in cached times. A potential reason could be that the "
-        "time values in the provided MS are not in ascending order.");
-  }
 
   // Conditional could be templated once C++ supports partial function
   // specialization
   std::complex<float>* iter = rowData.data;
-  float* weightIter = weightBuffer;
+  const float* weightIter = weightBuffer;
   if (nparms == 2) {
     for (size_t ch = 0; ch < nchannels; ++ch) {
       // Column major indexing
@@ -949,8 +1067,8 @@ void MSGridderBase::ApplyConjugatedH5Parm(
       ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain1, gain2);
       const std::complex<float> g = ComputeGain<GainEntry>(gain1, gain2);
 
-      const float weight = *weightIter * _scratchWeights[ch];
-      _metaDataCache->h5Sum += (conj(g) * weight * g).real();
+      const float weight = *weightIter * _scratchImageWeights[ch];
+      _metaDataCache->correctionSum += (conj(g) * weight * g).real();
 
       // Only admissible PolarizationCount for applying gains from solution
       // file is 1.
@@ -969,8 +1087,8 @@ void MSGridderBase::ApplyConjugatedH5Parm(
       ApplyConjugatedGain<PolarizationCount, GainEntry>(iter, gain1, gain2);
       const std::complex<float> g = ComputeGain<GainEntry>(gain1, gain2);
 
-      const float weight = *weightIter * _scratchWeights[ch];
-      _metaDataCache->h5Sum += (conj(g) * weight * g).real();
+      const float weight = *weightIter * _scratchImageWeights[ch];
+      _metaDataCache->correctionSum += (conj(g) * weight * g).real();
 
       // Only admissible PolarizationCount for applying gains from solution
       // file is 1.
@@ -983,8 +1101,9 @@ void MSGridderBase::ApplyConjugatedH5Parm(
 template <size_t PolarizationCount, DDGainMatrix GainEntry>
 void MSGridderBase::readAndWeightVisibilities(
     MSReader& msReader, const std::vector<std::string>& antennaNames,
-    InversionRow& rowData, const BandData& curBand, float* weightBuffer,
-    std::complex<float>* modelBuffer, const bool* isSelected) {
+    InversionRow& rowData, const aocommon::BandData& curBand,
+    float* weightBuffer, std::complex<float>* modelBuffer,
+    const bool* isSelected) {
   const std::size_t dataSize = curBand.ChannelCount() * PolarizationCount;
   if (DoImagePSF()) {
     std::fill_n(rowData.data, dataSize, 1.0);
@@ -1017,8 +1136,8 @@ void MSGridderBase::readAndWeightVisibilities(
   // Any visibilities that are not gridded in this pass
   // should not contribute to the weight sum, so set these
   // to have zero weight.
-  for (size_t ch = 0; ch != dataSize; ++ch) {
-    if (!isSelected[ch]) weightBuffer[ch] = 0.0;
+  for (size_t i = 0; i != dataSize; ++i) {
+    if (!isSelected[i]) weightBuffer[i] = 0.0;
   }
 
   switch (GetVisibilityWeightingMode()) {
@@ -1027,36 +1146,36 @@ void MSGridderBase::readAndWeightVisibilities(
       break;
     case VisibilityWeightingMode::SquaredVisibilityWeighting:
       // Square the visibility weights
-      for (size_t chp = 0; chp != dataSize; ++chp)
-        weightBuffer[chp] *= weightBuffer[chp];
+      for (size_t i = 0; i != dataSize; ++i) weightBuffer[i] *= weightBuffer[i];
       break;
     case VisibilityWeightingMode::UnitVisibilityWeighting:
       // Set the visibility weights to one
-      for (size_t chp = 0; chp != dataSize; ++chp) {
-        if (weightBuffer[chp] != 0.0) weightBuffer[chp] = 1.0f;
+      for (size_t i = 0; i != dataSize; ++i) {
+        if (weightBuffer[i] != 0.0) weightBuffer[i] = 1.0f;
       }
       break;
   }
 
   // Precompute imaging weights
-  _scratchWeights.resize(curBand.ChannelCount());
+  _scratchImageWeights.resize(curBand.ChannelCount());
   for (size_t ch = 0; ch != curBand.ChannelCount(); ++ch) {
     const double u = rowData.uvw[0] / curBand.ChannelWavelength(ch);
     const double v = rowData.uvw[1] / curBand.ChannelWavelength(ch);
-    _scratchWeights[ch] = GetImageWeights()->GetWeight(u, v);
+    _scratchImageWeights[ch] = GetImageWeights()->GetWeight(u, v);
   }
   if (StoreImagingWeights())
-    msReader.WriteImagingWeights(_scratchWeights.data());
+    msReader.WriteImagingWeights(_scratchImageWeights.data());
 
   if (!DoImagePSF()) {
+    if (_settings.applyFacetBeam && !_h5parms.empty()) {
 #ifdef HAVE_EVERYBEAM
-    if (_settings.applyFacetBeam && !_settings.facetRegionFilename.empty()) {
+      ApplyConjugatedFacetDdEffects<PolarizationCount, GainEntry>(
+          msReader, antennaNames, rowData, curBand, weightBuffer);
+    } else if (_settings.applyFacetBeam) {
       ApplyConjugatedFacetBeam<PolarizationCount, GainEntry>(
           msReader, rowData, curBand, weightBuffer);
-    }
-#endif
-
-    if (!_h5parms.empty()) {
+#endif  // HAVE_EVERYBEAM
+    } else if (!_h5parms.empty()) {
       ApplyConjugatedH5Parm<PolarizationCount, GainEntry>(
           msReader, antennaNames, rowData, curBand, weightBuffer);
     }
@@ -1067,7 +1186,7 @@ void MSGridderBase::readAndWeightVisibilities(
   float* weightIter = weightBuffer;
   for (size_t ch = 0; ch != curBand.ChannelCount(); ++ch) {
     for (size_t p = 0; p != PolarizationCount; ++p) {
-      const double cumWeight = *weightIter * _scratchWeights[ch];
+      const double cumWeight = *weightIter * _scratchImageWeights[ch];
       if (p == 0 && cumWeight != 0.0) {
         // Visibility weight sum is the sum of weights excluding imaging weights
         _visibilityWeightSum += *weightIter;
@@ -1077,7 +1196,7 @@ void MSGridderBase::readAndWeightVisibilities(
         _totalWeight += cumWeight;
       }
       *weightIter = cumWeight;
-      *dataIter *= *weightIter;
+      *dataIter *= cumWeight;
       ++dataIter;
       ++weightIter;
     }
@@ -1086,26 +1205,36 @@ void MSGridderBase::readAndWeightVisibilities(
 
 template void MSGridderBase::readAndWeightVisibilities<1, DDGainMatrix::kXX>(
     MSReader& msReader, const std::vector<std::string>& antennaNames,
-    InversionRow& newItem, const BandData& curBand, float* weightBuffer,
-    std::complex<float>* modelBuffer, const bool* isSelected);
+    InversionRow& newItem, const aocommon::BandData& curBand,
+    float* weightBuffer, std::complex<float>* modelBuffer,
+    const bool* isSelected);
 
 template void MSGridderBase::readAndWeightVisibilities<1, DDGainMatrix::kYY>(
     MSReader& msReader, const std::vector<std::string>& antennaNames,
-    InversionRow& newItem, const BandData& curBand, float* weightBuffer,
-    std::complex<float>* modelBuffer, const bool* isSelected);
+    InversionRow& newItem, const aocommon::BandData& curBand,
+    float* weightBuffer, std::complex<float>* modelBuffer,
+    const bool* isSelected);
 
 template void MSGridderBase::readAndWeightVisibilities<1, DDGainMatrix::kTrace>(
     MSReader& msReader, const std::vector<std::string>& antennaNames,
-    InversionRow& newItem, const BandData& curBand, float* weightBuffer,
-    std::complex<float>* modelBuffer, const bool* isSelected);
+    InversionRow& newItem, const aocommon::BandData& curBand,
+    float* weightBuffer, std::complex<float>* modelBuffer,
+    const bool* isSelected);
+
+template void MSGridderBase::readAndWeightVisibilities<2, DDGainMatrix::kFull>(
+    MSReader& msReader, const std::vector<std::string>& antennaNames,
+    InversionRow& newItem, const aocommon::BandData& curBand,
+    float* weightBuffer, std::complex<float>* modelBuffer,
+    const bool* isSelected);
 
 template void MSGridderBase::readAndWeightVisibilities<4, DDGainMatrix::kFull>(
     MSReader& msReader, const std::vector<std::string>& antennaNames,
-    InversionRow& newItem, const BandData& curBand, float* weightBuffer,
-    std::complex<float>* modelBuffer, const bool* isSelected);
+    InversionRow& newItem, const aocommon::BandData& curBand,
+    float* weightBuffer, std::complex<float>* modelBuffer,
+    const bool* isSelected);
 
 template <size_t PolarizationCount>
-void MSGridderBase::rotateVisibilities(const BandData& bandData,
+void MSGridderBase::rotateVisibilities(const aocommon::BandData& bandData,
                                        double shiftFactor,
                                        std::complex<float>* dataIter) {
   for (size_t ch = 0; ch != bandData.ChannelCount(); ++ch) {
@@ -1119,8 +1248,11 @@ void MSGridderBase::rotateVisibilities(const BandData& bandData,
 }
 
 template void MSGridderBase::rotateVisibilities<1>(
-    const BandData& bandData, double shiftFactor,
+    const aocommon::BandData& bandData, double shiftFactor,
+    std::complex<float>* dataIter);
+template void MSGridderBase::rotateVisibilities<2>(
+    const aocommon::BandData& bandData, double shiftFactor,
     std::complex<float>* dataIter);
 template void MSGridderBase::rotateVisibilities<4>(
-    const BandData& bandData, double shiftFactor,
+    const aocommon::BandData& bandData, double shiftFactor,
     std::complex<float>* dataIter);

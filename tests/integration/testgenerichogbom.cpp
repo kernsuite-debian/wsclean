@@ -1,12 +1,11 @@
-#include "fftwmanager.h"
 #include <aocommon/fits/fitswriter.h>
 #include <aocommon/uvector.h>
 #include "wsclean/imagingtable.h"
 #include "deconvolution/imageset.h"
 #include "deconvolution/genericclean.h"
 #include "stopwatch.h"
-#include "wsclean/logger.h"
 
+#include <aocommon/logger.h>
 #include <aocommon/fits/fitsreader.h>
 
 int main(int argc, char* argv[]) {
@@ -16,7 +15,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  Logger::SetVerbosity(Logger::VerboseVerbosity);
+  aocommon::Logger::SetVerbosity(aocommon::Logger::kVerboseVerbosity);
 
   bool useClark = true;
   int argi = 1;
@@ -85,8 +84,7 @@ int main(int argc, char* argv[]) {
 
   modelSet = 0.0;
 
-  FFTWManager fftw;
-  GenericClean clean(fftw, useClark);
+  GenericClean clean(useClark);
 
   aocommon::UVector<const double*> psfVec(psfs.size());
   for (size_t i = 0; i != psfs.size(); ++i) psfVec[i] = psfs[i].data();

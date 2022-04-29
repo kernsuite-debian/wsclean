@@ -3,14 +3,21 @@
 
 #include "imageset.h"
 
-#include "../structures/image.h"
-
+#include <aocommon/image.h>
 #include <aocommon/uvector.h>
 
 #include <vector>
 
 class ComponentList {
  public:
+  ComponentList()
+      : _width(0),
+        _height(0),
+        _nFrequencies(0),
+        _componentsAddedSinceLastMerge(0),
+        _maxComponentsBeforeMerge(0),
+        _listPerScale() {}
+
   /**
    * Constructor for single-scale clean
    */
@@ -36,6 +43,11 @@ class ComponentList {
         _maxComponentsBeforeMerge(100000),
         _listPerScale(nScales) {}
 
+  struct Position {
+    Position(size_t _x, size_t _y) : x(_x), y(_y) {}
+    size_t x, y;
+  };
+
   void Add(size_t x, size_t y, size_t scaleIndex, const float* values) {
     _listPerScale[scaleIndex].values.push_back(values, values + _nFrequencies);
     _listPerScale[scaleIndex].positions.emplace_back(x, y);
@@ -45,9 +57,7 @@ class ComponentList {
   }
 
   void Add(const ComponentList& other, int offsetX, int offsetY) {
-    if (other._nFrequencies != _nFrequencies)
-      throw std::runtime_error(
-          "Add(ComponentList...) called with incorrect frequency count");
+    assert(other._nFrequencies == _nFrequencies);
     if (other.NScales() > NScales()) SetNScales(other.NScales());
     for (size_t scale = 0; scale != other.NScales(); ++scale) {
       const ScaleList& list = other._listPerScale[scale];
@@ -58,22 +68,29 @@ class ComponentList {
     }
   }
 
+  /**
+   * @brief Write component lists over all scales, typically
+   * used for writing components of a multiscale clean.
+   */
   void Write(const std::string& filename,
              const class MultiScaleAlgorithm& multiscale,
              long double pixelScaleX, long double pixelScaleY,
-             long double phaseCentreRA, long double phaseCentreDec);
+             long double phaseCentreRA, long double phaseCentreDec) const;
 
   void WriteSingleScale(const std::string& filename,
                         const class DeconvolutionAlgorithm& algorithm,
                         long double pixelScaleX, long double pixelScaleY,
-                        long double phaseCentreRA, long double phaseCentreDec);
+                        long double phaseCentreRA,
+                        long double phaseCentreDec) const;
 
   void MergeDuplicates() {
-    for (size_t scaleIndex = 0; scaleIndex != _listPerScale.size();
-         ++scaleIndex) {
-      mergeDuplicates(scaleIndex);
+    if (_componentsAddedSinceLastMerge != 0) {
+      for (size_t scaleIndex = 0; scaleIndex != _listPerScale.size();
+           ++scaleIndex) {
+        mergeDuplicates(scaleIndex);
+      }
+      _componentsAddedSinceLastMerge = 0;
     }
-    _componentsAddedSinceLastMerge = 0;
   }
 
   void Clear() {
@@ -92,23 +109,43 @@ class ComponentList {
 
   void GetComponent(size_t scaleIndex, size_t index, size_t& x, size_t& y,
                     float* values) const {
+    assert(scaleIndex < _listPerScale.size());
+    assert(index < _listPerScale[scaleIndex].positions.size());
     x = _listPerScale[scaleIndex].positions[index].x;
     y = _listPerScale[scaleIndex].positions[index].y;
     for (size_t f = 0; f != _nFrequencies; ++f)
       values[f] = _listPerScale[scaleIndex].values[index * _nFrequencies + f];
   }
 
-  void CorrectForBeam(class PrimaryBeamImageSet& beam, size_t channel);
+  /**
+   * @brief Multiply the components for a given scale index, position index and
+   * channel index with corresponding (primary beam) correction factors.
+   */
+  inline void MultiplyScaleComponent(size_t scaleIndex, size_t positionIndex,
+                                     size_t channel, double correctionFactor) {
+    assert(scaleIndex < _listPerScale.size());
+    assert(positionIndex < _listPerScale[scaleIndex].positions.size());
+    assert(channel < _nFrequencies);
+    float& value = _listPerScale[scaleIndex]
+                       .values[channel + positionIndex * _nFrequencies];
+    value *= correctionFactor;
+  }
+
+  /**
+   * @brief Get vector of positions per scale index.
+   */
+  const aocommon::UVector<Position>& GetPositions(size_t scaleIndex) const {
+    assert(scaleIndex < _listPerScale.size());
+    return _listPerScale[scaleIndex].positions;
+  }
 
   size_t NScales() const { return _listPerScale.size(); }
+
+  size_t NFrequencies() const { return _nFrequencies; }
 
   void SetNScales(size_t nScales) { _listPerScale.resize(nScales); }
 
  private:
-  struct Position {
-    Position(size_t _x, size_t _y) : x(_x), y(_y) {}
-    size_t x, y;
-  };
   struct ScaleList {
     /**
      * This list contains nFrequencies values for each
@@ -120,10 +157,10 @@ class ComponentList {
   };
 
   void write(const std::string& filename,
-             const class DeconvolutionAlgorithm& algorithm,
+             const schaapcommon::fitters::SpectralFitter& fitter,
              const aocommon::UVector<double>& scaleSizes,
              long double pixelScaleX, long double pixelScaleY,
-             long double phaseCentreRA, long double phaseCentreDec);
+             long double phaseCentreRA, long double phaseCentreDec) const;
 
   void loadFromImageSet(ImageSet& imageSet, size_t scaleIndex);
 
@@ -132,8 +169,9 @@ class ComponentList {
     aocommon::UVector<float> newValues;
     aocommon::UVector<Position> newPositions;
 
-    std::vector<Image> images(_nFrequencies);
-    for (Image& image : images) image = Image(_width, _height, 0.0);
+    std::vector<aocommon::Image> images(_nFrequencies);
+    for (aocommon::Image& image : images)
+      image = aocommon::Image(_width, _height, 0.0);
     size_t valueIndex = 0;
     for (size_t index = 0; index != list.positions.size(); ++index) {
       size_t position =
@@ -148,7 +186,7 @@ class ComponentList {
     list.positions.clear();
 
     for (size_t imageIndex = 0; imageIndex != images.size(); ++imageIndex) {
-      Image& image = images[imageIndex];
+      aocommon::Image& image = images[imageIndex];
       size_t posIndex = 0;
       for (size_t y = 0; y != _height; ++y) {
         for (size_t x = 0; x != _width; ++x) {
@@ -166,7 +204,9 @@ class ComponentList {
     std::swap(_listPerScale[scaleIndex].values, newValues);
     std::swap(_listPerScale[scaleIndex].positions, newPositions);
   }
-  const size_t _width, _height;
+
+  size_t _width;
+  size_t _height;
   size_t _nFrequencies;
   size_t _componentsAddedSinceLastMerge;
   size_t _maxComponentsBeforeMerge;

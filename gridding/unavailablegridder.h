@@ -3,6 +3,9 @@
 
 #include "msgridderbase.h"
 
+#include <aocommon/image.h>
+#include <aocommon/fits/fitswriter.h>
+
 #include <stdexcept>
 #include <string>
 
@@ -16,14 +19,14 @@ class UnavailableGridder final : public MSGridderBase {
 
   virtual void Invert() override { doThrow(); }
 
-  virtual void Predict(std::vector<Image>&&) override { doThrow(); }
+  virtual void Predict(std::vector<aocommon::Image>&&) override { doThrow(); }
 
-  virtual std::vector<Image> ResultImages() override {
+  virtual std::vector<aocommon::Image> ResultImages() override {
     doThrow();
-    return {Image()};
+    return {aocommon::Image()};
   }
 
-  static void SavePBCorrectedImages(class FitsWriter& /*writer*/,
+  static void SavePBCorrectedImages(aocommon::FitsWriter& /*writer*/,
                                     class ImageFilename& /*filename*/,
                                     const std::string& /*filenameKind*/,
                                     const Settings&) {}
@@ -31,7 +34,14 @@ class UnavailableGridder final : public MSGridderBase {
   static void SaveBeamImage(const struct ImagingTableEntry& /*entry*/,
                             class ImageFilename& /*filename*/, const Settings&,
                             double, double, double, double,
-                            const MetaDataCache&) {}
+                            const AverageBeam&) {}
+
+  void SetAverageBeam(std::unique_ptr<AverageBeam>) { doThrow(); }
+
+  std::unique_ptr<AverageBeam> ReleaseAverageBeam() {
+    doThrow();
+    return {};
+  }
 
  private:
   virtual size_t getSuggestedWGridSize() const override {

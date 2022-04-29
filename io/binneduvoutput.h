@@ -3,12 +3,13 @@
 
 #include "imagebufferallocator.h"
 
-#include "../fftresampler.h"
-#include "../image.h"
 #include "../rmsimage.h"
 
+#include <aocommon/image.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/fits/fitswriter.h>
+
+#include <schaapcommon/fft/resampler.h>
 
 #include <fstream>
 
@@ -23,9 +24,10 @@ class BinnedUVOutput {
     aocommon::FitsReader uvCoverageReader(uvCoveragePrefix + "-psf.fits");
     const size_t width = dirtyReader.ImageWidth(),
                  height = dirtyReader.ImageHeight();
-    Image dirty(width, height, allocator), psf(width, height, allocator),
-        uvCovPsf(width, height, allocator), realUV(width, height, allocator),
-        imagUV(width, height, allocator), realPsfUV(width, height, allocator),
+    aocommon::Image dirty(width, height, allocator),
+        psf(width, height, allocator), uvCovPsf(width, height, allocator),
+        realUV(width, height, allocator), imagUV(width, height, allocator),
+        realPsfUV(width, height, allocator),
         imagPsfUV(width, height, allocator),
         realPsfUVCoverage(width, height, allocator),
         imagPsfUVCoverage(width, height, allocator),
@@ -55,7 +57,7 @@ class BinnedUVOutput {
     dirty *= normF * nVis / (2.0 * sqrt(width * height) * vwSum);
     psf *= normF * nVis / (2.0 * sqrt(width * height) * vwSum);
     uvCovPsf *= normFUVC * nVisUVC / (2.0 * sqrt(width * height) * vwSumUVC);
-    FFTResampler fft(width, height, width, height, 1, false);
+    schaapcommon::fft::Resampler fft(width, height, width, height, 1, false);
     fft.SingleFT(dirty.data(), realUV.data(), imagUV.data());
     fft.SingleFT(psf.data(), realPsfUV.data(), imagPsfUV.data());
     fft.SingleFT(uvCovPsf.data(), realPsfUVCoverage.data(),

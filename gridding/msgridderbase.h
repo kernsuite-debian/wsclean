@@ -4,12 +4,12 @@
 #include "gridmode.h"
 
 #include <aocommon/banddata.h>
+#include <aocommon/image.h>
 #include <aocommon/polarization.h>
 #include <aocommon/imagecoordinates.h>
 
 #include "../structures/observationinfo.h"
 #include "../structures/msselection.h"
-#include "../structures/image.h"
 #include "../structures/weightmode.h"
 
 #include "visibilityweightingmode.h"
@@ -54,6 +54,7 @@ class MSGridderBase {
 
   size_t ImageWidth() const { return _imageWidth; }
   size_t ImageHeight() const { return _imageHeight; }
+  double ImagePadding() const { return _imagePadding; }
   double PixelSizeX() const { return _pixelSizeX; }
   double PixelSizeY() const { return _pixelSizeY; }
   size_t ActualWGridSize() const { return _actualWGridSize; }
@@ -81,7 +82,7 @@ class MSGridderBase {
   bool SmallInversion() const { return _smallInversion; }
   aocommon::PolarizationEnum Polarization() const { return _polarization; }
   WeightMode Weighting() const { return _weighting; }
-  const class ImageWeights* GetImageWeights() const {
+  const ImageWeights* GetImageWeights() const {
     return _precalculatedWeightInfo;
   }
   bool IsComplex() const { return _isComplex; }
@@ -107,6 +108,7 @@ class MSGridderBase {
     _actualWGridSize = actualWGridSize;
   }
   void SetDoImagePSF(bool doImagePSF) { _doImagePSF = doImagePSF; }
+  void SetImagePadding(double imagePadding) { _imagePadding = imagePadding; }
   void SetPolarization(aocommon::PolarizationEnum polarization) {
     _polarization = polarization;
   }
@@ -138,9 +140,9 @@ class MSGridderBase {
 
   virtual void Invert() = 0;
 
-  virtual void Predict(std::vector<Image>&& images) = 0;
+  virtual void Predict(std::vector<aocommon::Image>&& images) = 0;
 
-  virtual std::vector<Image> ResultImages() = 0;
+  virtual std::vector<aocommon::Image> ResultImages() = 0;
 
   void SetPhaseCentreRA(const double phaseCentreRA) {
     _phaseCentreRA = phaseCentreRA;
@@ -175,9 +177,6 @@ class MSGridderBase {
    * ImageReal/ImageResult().
    */
   virtual void FreeImagingData() {}
-
-  virtual size_t ActualInversionWidth() const { return _imageWidth; }
-  virtual size_t ActualInversionHeight() const { return _imageHeight; }
 
   GridMode GetGridMode() const { return _gridMode; }
   void SetGridMode(GridMode gridMode) { _gridMode = gridMode; }
@@ -230,6 +229,11 @@ class MSGridderBase {
   }
 
  protected:
+  size_t ActualInversionWidth() const { return _actualInversionWidth; }
+  size_t ActualInversionHeight() const { return _actualInversionHeight; }
+  double ActualPixelSizeX() const { return _actualPixelSizeX; }
+  double ActualPixelSizeY() const { return _actualPixelSizeY; }
+
   int64_t getAvailableMemory(double memFraction, double absMemLimit);
 
   struct MSData {
@@ -239,7 +243,7 @@ class MSGridderBase {
     ~MSData() = default;
     MSData& operator=(const MSData& source) = delete;
 
-    class MSProvider* msProvider;
+    MSProvider* msProvider;
     size_t msIndex;
     size_t dataDescId;
     aocommon::BandData bandData;
@@ -285,7 +289,8 @@ class MSGridderBase {
    * values, they still need to provide an already allocated buffer. This is to
    * avoid having to allocate memory within this method.
    * @tparam PolarizationCount Normally set to one when imaging a single
-   * polarization, but set to 4 for IDG as it images all polarizations at once.
+   * polarization, but set to 2 or 4 for IDG as it images multiple polarizations
+   * at once.
    * @tparam DDGainMatrix Selects which entry or entries in the gain matrix
    * (provided by EveryBeam and/or an h5 solution) file to use for correcting
    * the visibilities. Can be kXX for the XX-entry, kYY for the YY-entry, kTrace
@@ -314,7 +319,7 @@ class MSGridderBase {
   /**
    * @brief Write (modelled) visibilities to MS, provides an interface to
    * MSProvider::WriteModel(). Method can be templated on the number of
-   * polarizations (1 or 4), and the DDGainMatrix which can be used to
+   * polarizations (1, 2 or 4), and the DDGainMatrix which can be used to
    * select an entry or entries from the gain matrix that should be used for the
    * correction (XX-pol: kXX, YY-pol: kYY, Trace: kTrace, Full Jones: kFull)
    */
@@ -325,8 +330,6 @@ class MSGridderBase {
                          std::complex<float>* buffer);
 
   double _maxW, _minW;
-  size_t _actualInversionWidth, _actualInversionHeight;
-  double _actualPixelSizeX, _actualPixelSizeY;
 
   virtual size_t getSuggestedWGridSize() const = 0;
 
@@ -341,7 +344,7 @@ class MSGridderBase {
 
   void initializeMSDataVector(std::vector<MSData>& msDataVector);
 
-  std::unique_ptr<struct MetaDataCache> _metaDataCache;
+  std::unique_ptr<MetaDataCache> _metaDataCache;
 
   template <size_t PolarizationCount>
   static void rotateVisibilities(const aocommon::BandData& bandData,
@@ -351,8 +354,32 @@ class MSGridderBase {
   const Settings& _settings;
 
  private:
+  size_t _actualInversionWidth;
+  size_t _actualInversionHeight;
+  double _actualPixelSizeX;
+  double _actualPixelSizeY;
+
   static std::vector<std::string> getAntennaNames(
       const casacore::MSAntenna& msAntenna);
+
+#ifdef HAVE_EVERYBEAM
+  /**
+   * @brief Compute and cache the beam response if no cached response
+   * present for the provided time.
+   */
+  void CacheBeamResponse(double time, size_t fieldId,
+                         const aocommon::BandData& curBand);
+#endif
+
+  /**
+   * @brief Cache the solutions from a h5 solution file and update the
+   * associated time.
+   */
+  void CacheParmResponse(double time,
+                         const std::vector<std::string>& antennaNames,
+                         const aocommon::BandData& curBand);
+
+  void SetH5Parms();
 
   void resetMetaData() { _hasFrequencies = false; }
 
@@ -389,16 +416,29 @@ class MSGridderBase {
   void initializePredictReader(MSProvider& msProvider);
 
   template <size_t PolarizationCount, DDGainMatrix GainEntry>
-  void ApplyConjugatedFacetBeam(MSReader& msReader, InversionRow& rowData,
-                                const aocommon::BandData& curBand,
-                                float* weightBuffer);
-
-  template <size_t PolarizationCount, DDGainMatrix GainEntry>
   void ApplyConjugatedH5Parm(MSReader& msReader,
                              const std::vector<std::string>& antennaNames,
                              InversionRow& rowData,
                              const aocommon::BandData& curBand,
-                             float* weightBuffer);
+                             const float* weightBuffer);
+
+#ifdef HAVE_EVERYBEAM
+  template <size_t PolarizationCount, DDGainMatrix GainEntry>
+  void ApplyConjugatedFacetBeam(MSReader& msReader, InversionRow& rowData,
+                                const aocommon::BandData& curBand,
+                                const float* weightBuffer);
+
+  /**
+   * @brief Applies both the conjugated facet beam and the conjugated h5 parm
+   * solutions to the visibilities and computes the weight corresponding to the
+   * combined effect.
+   */
+  template <size_t PolarizationCount, DDGainMatrix GainEntry>
+  void ApplyConjugatedFacetDdEffects(
+      MSReader& msReader, const std::vector<std::string>& antennaNames,
+      InversionRow& rowData, const aocommon::BandData& curBand,
+      const float* weightBuffer);
+#endif  // HAVE_EVERYBEAM
 
   double _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
   double _facetDirectionRA, _facetDirectionDec;
@@ -411,6 +451,7 @@ class MSGridderBase {
   size_t _msIndex;
   /// @see SetAdditivePredict()
   bool _additivePredict;
+  double _imagePadding;
   size_t _imageWidth, _imageHeight;
   size_t _trimWidth, _trimHeight;
   double _pixelSizeX, _pixelSizeY;
@@ -440,7 +481,7 @@ class MSGridderBase {
   double _maxGriddedWeight;
   double _visibilityWeightSum;
 
-  aocommon::UVector<float> _scratchWeights;
+  aocommon::UVector<float> _scratchImageWeights;
 
   std::unique_ptr<MSReader> _predictReader;
   WriterLockManager* _writerLockManager;

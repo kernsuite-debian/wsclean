@@ -1,6 +1,10 @@
 #ifndef WSCLEAN_H
 #define WSCLEAN_H
 
+#include <aocommon/image.h>
+#include <aocommon/fits/fitsreader.h>
+#include <aocommon/fits/fitswriter.h>
+#include <aocommon/multibanddata.h>
 #include <aocommon/polarization.h>
 #include <schaapcommon/facets/facet.h>
 
@@ -13,7 +17,6 @@
 
 #include "../structures/imagingtable.h"
 #include "../structures/msselection.h"
-#include "../structures/multibanddata.h"
 #include "../structures/observationinfo.h"
 #include "../structures/outputchannelinfo.h"
 #include "../structures/weightmode.h"
@@ -25,6 +28,7 @@
 #include "stopwatch.h"
 #include "settings.h"
 
+#include <optional>
 #include <set>
 
 namespace schaapcommon {
@@ -97,8 +101,6 @@ class WSClean {
                               const ImagingTableEntry& entry,
                               aocommon::PolarizationEnum polarization,
                               bool isImaginary, const float* image);
-  bool selectChannels(MSSelection& selection, size_t msIndex, size_t dataDescId,
-                      const ImagingTableEntry& entry);
   MSSelection selectInterval(MSSelection& fullSelection, size_t intervalIndex);
 
   void makeImagingTable(size_t outputIntervalIndex);
@@ -131,7 +133,7 @@ class WSClean {
    * The boolean return value indicates whether the gridder needs
    * to be reset.
    */
-  bool overrideImageSettings(const FitsReader& reader);
+  bool overrideImageSettings(const aocommon::FitsReader& reader);
   GriddingResult loadExistingImage(ImagingTableEntry& entry, bool isPSF);
   void loadExistingPSF(ImagingTableEntry& entry);
   void loadExistingDirty(ImagingTableEntry& entry, bool updateBeamInfo);
@@ -148,10 +150,10 @@ class WSClean {
 
   void predict(const ImagingTableEntry& entry);
 
-  void saveUVImage(const Image& image, const ImagingTableEntry& entry,
+  void saveUVImage(const aocommon::Image& image, const ImagingTableEntry& entry,
                    bool isImaginary, const std::string& prefix) const;
 
-  void processFullPSF(Image& image, const ImagingTableEntry& entry);
+  void processFullPSF(aocommon::Image& image, const ImagingTableEntry& entry);
 
   /**
    * @brief Stitch facets for all FacetGroups
@@ -169,7 +171,7 @@ class WSClean {
    */
   void stitchSingleGroup(const ImagingTable& facetGroup, size_t imageIndex,
                          CachedImageSet& imageCache, bool writeDirty,
-                         bool isPSF, Image& fullImage,
+                         bool isPSF, aocommon::Image& fullImage,
                          schaapcommon::facets::FacetImage& facetImage,
                          size_t nFacetGroups);
   /**
@@ -181,7 +183,8 @@ class WSClean {
    * Partition image into facets for a single (Facet)Group
    */
   void partitionSingleGroup(const ImagingTable& facetGroup, size_t imageIndex,
-                            CachedImageSet& imageCache, const Image& fullImage,
+                            CachedImageSet& imageCache,
+                            const aocommon::Image& fullImage,
                             schaapcommon::facets::FacetImage& facetImage,
                             bool isPredictOnly);
 
@@ -208,6 +211,9 @@ class WSClean {
                        const ImageFilename& imageName,
                        const std::string& filenameKind) const;
 
+  void storeAverageBeam(const ImagingTableEntry& entry,
+                        std::unique_ptr<AverageBeam>& averageBeam);
+
   /**
    * @brief Compute the total amount of MSProviders that will be generated.
    * This number is needed to initialize the writer locks in the prediction
@@ -220,6 +226,18 @@ class WSClean {
     size_t msCount = 0;
     for (const auto& msBand : _msBands) msCount += msBand.DataDescCount();
     return msCount;
+  }
+
+  /**
+   * Determines if IDG uses diagonal instrumental or full instrumental
+   * polarizations.
+   */
+  aocommon::PolarizationEnum getIdgPolarization() const {
+    return _settings.polarizations ==
+                   std::set<aocommon::PolarizationEnum>{
+                       aocommon::Polarization::StokesI}
+               ? aocommon::Polarization::DiagonalInstrumental
+               : aocommon::Polarization::Instrumental;
   }
 
   MSSelection _globalSelection;
@@ -236,10 +254,15 @@ class WSClean {
   Stopwatch _inversionWatch, _predictingWatch, _deconvolutionWatch;
   bool _isFirstInversion;
   size_t _majorIterationNr;
-  CachedImageSet _psfImages, _modelImages, _residualImages;
+  CachedImageSet _psfImages;
+  CachedImageSet _modelImages;
+  CachedImageSet _residualImages;
+  CachedImageSet _scalarBeamImages;
+  CachedImageSet _matrixBeamImages;
   std::vector<PartitionedMS::Handle> _partitionedMSHandles;
-  std::vector<MultiBandData> _msBands;
-  Deconvolution _deconvolution;
+  std::vector<aocommon::MultiBandData> _msBands;
+  // Deconvolution object only needed in RunClean runs.
+  std::optional<Deconvolution> _deconvolution;
   ImagingTable _imagingTable;
   ObservationInfo _observationInfo;
   std::vector<std::shared_ptr<schaapcommon::facets::Facet>> _facets;

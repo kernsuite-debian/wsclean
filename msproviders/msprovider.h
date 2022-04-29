@@ -3,11 +3,11 @@
 
 #include "synchronizedms.h"
 
-#include <casacore/casa/Arrays/Array.h>
-
-#include <casacore/tables/Tables/ArrayColumn.h>
-
+#include <aocommon/multibanddata.h>
 #include <aocommon/polarization.h>
+
+#include <casacore/casa/Arrays/Array.h>
+#include <casacore/tables/Tables/ArrayColumn.h>
 
 #include <complex>
 #include <set>
@@ -100,9 +100,9 @@ class MSProvider {
 
   /**
    * Polarization that this msprovider provides.
-   * Be aware that it may return 'Instrumental', which means it provides
-   * all polarizations that are provided by the underlying measurement set /
-   * data.
+   * Be aware that it may return 'DiagonalInstrumental' or 'Instrumental',
+   * which means it provides 2 or 4 polarizations that are provided by the
+   * underlying measurement set / data.
    */
   virtual aocommon::PolarizationEnum Polarization() = 0;
 
@@ -132,6 +132,13 @@ class MSProvider {
    * MS, as in most cases each pol is provided by a separate msprovider.
    */
   virtual size_t NPolarizations() = 0;
+
+  /**
+   * Get the band information that this MSProvider covers. The BandData
+   * includes all channels in the original data, even when not all
+   * channels are selected (@sa NChannels()).
+   */
+  virtual const aocommon::BandData& Band() = 0;
 
   /**
    * Get a list of polarizations in the measurement set.

@@ -4,13 +4,12 @@
 #include "msgridderbase.h"
 #include "wstackinggridder.h"
 
-#include "../structures/multibanddata.h"
-#include "../structures/image.h"
-
 #include <casacore/casa/Arrays/Array.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 
+#include <aocommon/image.h>
 #include <aocommon/lane.h>
+#include <aocommon/multibanddata.h>
 
 #include <complex>
 #include <memory>
@@ -25,21 +24,14 @@ class WSMSGridder final : public MSGridderBase {
 
   virtual void Invert() override;
 
-  virtual void Predict(std::vector<Image>&& images) override;
+  virtual void Predict(std::vector<aocommon::Image>&& images) override;
 
-  virtual std::vector<Image> ResultImages() override {
+  virtual std::vector<aocommon::Image> ResultImages() override {
     if (IsComplex())
       return {std::move(_realImage), std::move(_imaginaryImage)};
     else
       return {std::move(_realImage)};
   }
-  virtual size_t ActualInversionWidth() const override {
-    return _actualInversionWidth;
-  }
-  virtual size_t ActualInversionHeight() const override {
-    return _actualInversionHeight;
-  }
-
   virtual void FreeImagingData() override { _gridder.reset(); }
 
   size_t AntialiasingKernelSize() const { return _antialiasingKernelSize; }
@@ -85,11 +77,12 @@ class WSMSGridder final : public MSGridderBase {
 
   void predictCalcThread(aocommon::Lane<PredictionWorkItem>* inputLane,
                          aocommon::Lane<PredictionWorkItem>* outputLane,
-                         const BandData* bandData);
+                         const aocommon::BandData* bandData);
 
   template <DDGainMatrix GainEntry>
   void predictWriteThread(aocommon::Lane<PredictionWorkItem>* samplingWorkLane,
-                          const MSData* msData, const BandData* bandData);
+                          const MSData* msData,
+                          const aocommon::BandData* bandData);
 
   std::unique_ptr<GridderType> _gridder;
   std::vector<aocommon::Lane<InversionWorkSample>> _inversionCPULanes;
@@ -100,7 +93,8 @@ class WSMSGridder final : public MSGridderBase {
   size_t _antialiasingKernelSize, _overSamplingFactor;
   size_t _cpuCount, _laneBufferSize;
   int64_t _memSize;
-  Image _realImage, _imaginaryImage;
+  aocommon::Image _realImage;
+  aocommon::Image _imaginaryImage;
 };
 
 #endif

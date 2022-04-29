@@ -1,18 +1,15 @@
 #include "subminorloop.h"
 
-#include "../deconvolution/spectralfitter.h"
 #include "../deconvolution/componentlist.h"
 
-#include "../math/fftconvolver.h"
+#include <schaapcommon/fft/convolution.h>
 
-#include "../structures/image.h"
-
-#include "../io/logger.h"
+using aocommon::Image;
 
 template <bool AllowNegatives>
 size_t SubMinorModel::GetMaxComponent(Image& scratch, float& maxValue) const {
   _residual->GetLinearIntegrated(scratch);
-  if (!_rmsFactorImage.empty()) {
+  if (!_rmsFactorImage.Empty()) {
     for (size_t i = 0; i != size(); ++i) scratch[i] *= _rmsFactorImage[i];
   }
   size_t maxComponent = 0;
@@ -33,26 +30,26 @@ size_t SubMinorModel::GetMaxComponent(Image& scratch, float& maxValue) const {
   return maxComponent;
 }
 
-boost::optional<float> SubMinorLoop::Run(
+std::optional<float> SubMinorLoop::Run(
     ImageSet& convolvedResidual,
-    const aocommon::UVector<const float*>& twiceConvolvedPsfs) {
+    const std::vector<aocommon::Image>& twiceConvolvedPsfs) {
   _subMinorModel = SubMinorModel(_width, _height);
 
   findPeakPositions(convolvedResidual);
 
   _subMinorModel.MakeSets(convolvedResidual);
-  if (!_rmsFactorImage.empty())
+  if (!_rmsFactorImage.Empty())
     _subMinorModel.MakeRMSFactorImage(_rmsFactorImage);
   _logReceiver.Debug << "Number of components selected > " << _threshold << ": "
                      << _subMinorModel.size() << '\n';
 
-  if (_subMinorModel.size() == 0) return boost::optional<float>();
+  if (_subMinorModel.size() == 0) return std::optional<float>();
 
   Image scratch(_subMinorModel.size(), 1);
   float maxValue;
   size_t maxComponent = _subMinorModel.GetMaxComponent(
       scratch, maxValue, _allowNegativeComponents);
-  aocommon::UVector<float> fittingScratch;
+  std::vector<float> fittingScratch;
 
   while (std::fabs(maxValue) > _threshold &&
          _currentIteration < _maxIterations &&
@@ -72,7 +69,7 @@ boost::optional<float> SubMinorLoop::Run(
 
     for (size_t imgIndex = 0; imgIndex != _subMinorModel.Model().size();
          ++imgIndex)
-      _subMinorModel.Model()[imgIndex][maxComponent] +=
+      _subMinorModel.Model().Data(imgIndex)[maxComponent] +=
           componentValues[imgIndex];
 
     /*
@@ -84,8 +81,8 @@ boost::optional<float> SubMinorLoop::Run(
     */
     for (size_t imgIndex = 0; imgIndex != _subMinorModel.Residual().size();
          ++imgIndex) {
-      float* image = _subMinorModel.Residual()[imgIndex];
-      const float* psf =
+      float* image = _subMinorModel.Residual().Data(imgIndex);
+      const aocommon::Image& psf =
           twiceConvolvedPsfs[_subMinorModel.Residual().PSFIndex(imgIndex)];
       float psfFactor = componentValues[imgIndex];
       for (size_t px = 0; px != _subMinorModel.size(); ++px) {
@@ -104,15 +101,12 @@ boost::optional<float> SubMinorLoop::Run(
 }
 
 void SubMinorModel::MakeSets(const ImageSet& residualSet) {
-  _residual.reset(
-      new ImageSet(&residualSet.Table(), residualSet.Settings(), size(), 1));
-  _model.reset(
-      new ImageSet(&residualSet.Table(), residualSet.Settings(), size(), 1));
+  _residual = std::make_unique<ImageSet>(residualSet, size(), 1);
+  _model = std::make_unique<ImageSet>(residualSet, size(), 1);
+  *_model = 0.0;
   for (size_t imgIndex = 0; imgIndex != _model->size(); ++imgIndex) {
-    std::fill((*_model)[imgIndex], (*_model)[imgIndex] + size(), 0.0);
-
-    const float* sourceResidual = residualSet[imgIndex];
-    float* destResidual = (*_residual)[imgIndex];
+    const float* sourceResidual = residualSet[imgIndex].Data();
+    float* destResidual = _residual->Data(imgIndex);
     for (size_t pxIndex = 0; pxIndex != size(); ++pxIndex) {
       size_t srcIndex =
           _positions[pxIndex].second * _width + _positions[pxIndex].first;
@@ -134,7 +128,7 @@ void SubMinorLoop::findPeakPositions(ImageSet& convolvedResidual) {
   Image integratedScratch(_width, _height);
   convolvedResidual.GetLinearIntegrated(integratedScratch);
 
-  if (!_rmsFactorImage.empty()) {
+  if (!_rmsFactorImage.Empty()) {
     integratedScratch *= _rmsFactorImage;
   }
 
@@ -146,7 +140,7 @@ void SubMinorLoop::findPeakPositions(ImageSet& convolvedResidual) {
   if (_mask) {
     for (size_t y = yiStart; y != yiEnd; ++y) {
       const bool* maskPtr = _mask + y * _width;
-      float* imagePtr = integratedScratch.data() + y * _width;
+      float* imagePtr = integratedScratch.Data() + y * _width;
       for (size_t x = xiStart; x != xiEnd; ++x) {
         float value;
         if (_allowNegativeComponents)
@@ -158,7 +152,7 @@ void SubMinorLoop::findPeakPositions(ImageSet& convolvedResidual) {
     }
   } else {
     for (size_t y = yiStart; y != yiEnd; ++y) {
-      float* imagePtr = integratedScratch.data() + y * _width;
+      float* imagePtr = integratedScratch.Data() + y * _width;
       for (size_t x = xiStart; x != xiEnd; ++x) {
         float value;
         if (_allowNegativeComponents)
@@ -174,22 +168,21 @@ void SubMinorLoop::findPeakPositions(ImageSet& convolvedResidual) {
 void SubMinorLoop::GetFullIndividualModel(size_t imageIndex,
                                           float* individualModelImg) const {
   std::fill(individualModelImg, individualModelImg + _width * _height, 0.0);
-  const float* data = _subMinorModel.Model()[imageIndex];
+  const float* data = _subMinorModel.Model()[imageIndex].Data();
   for (size_t px = 0; px != _subMinorModel.size(); ++px) {
     individualModelImg[_subMinorModel.FullIndex(px)] = data[px];
   }
 }
 
-void SubMinorLoop::CorrectResidualDirty(class FFTWManager& fftw,
-                                        float* scratchA, float* scratchB,
+void SubMinorLoop::CorrectResidualDirty(float* scratchA, float* scratchB,
                                         float* scratchC, size_t imageIndex,
                                         float* residual,
                                         const float* singleConvolvedPsf) const {
   // Get padded kernel in scratchB
   Image::Untrim(scratchA, _paddedWidth, _paddedHeight, singleConvolvedPsf,
                 _width, _height);
-  FFTConvolver::PrepareKernel(scratchB, scratchA, _paddedWidth, _paddedHeight,
-                              _threadCount);
+  schaapcommon::fft::PrepareConvolutionKernel(scratchB, scratchA, _paddedWidth,
+                                              _paddedHeight, _threadCount);
 
   // Get padded model image in scratchA
   GetFullIndividualModel(imageIndex, scratchC);
@@ -197,8 +190,8 @@ void SubMinorLoop::CorrectResidualDirty(class FFTWManager& fftw,
                 _height);
 
   // Convolve and store in scratchA
-  FFTConvolver::ConvolveSameSize(fftw, scratchA, scratchB, _paddedWidth,
-                                 _paddedHeight, _threadCount);
+  schaapcommon::fft::Convolve(scratchA, scratchB, _paddedWidth, _paddedHeight,
+                              _threadCount);
 
   // Trim the result into scratchC
   Image::Trim(scratchC, _width, _height, scratchA, _paddedWidth, _paddedHeight);
@@ -209,7 +202,7 @@ void SubMinorLoop::CorrectResidualDirty(class FFTWManager& fftw,
 void SubMinorLoop::UpdateAutoMask(bool* mask) const {
   for (size_t imageIndex = 0; imageIndex != _subMinorModel.Model().size();
        ++imageIndex) {
-    const float* image = _subMinorModel.Model()[imageIndex];
+    const aocommon::Image& image = _subMinorModel.Model()[imageIndex];
     for (size_t px = 0; px != _subMinorModel.size(); ++px) {
       if (image[px] != 0.0) mask[_subMinorModel.FullIndex(px)] = true;
     }

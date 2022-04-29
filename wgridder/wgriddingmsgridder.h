@@ -3,6 +3,8 @@
 
 #include "../gridding/msgridderbase.h"
 
+#include <aocommon/image.h>
+
 #include <memory>
 
 class WGriddingMSGridder final : public MSGridderBase {
@@ -11,17 +13,10 @@ class WGriddingMSGridder final : public MSGridderBase {
 
   virtual void Invert() override;
 
-  virtual void Predict(std::vector<Image>&& images) override;
+  virtual void Predict(std::vector<aocommon::Image>&& images) override;
 
-  virtual std::vector<Image> ResultImages() override {
+  virtual std::vector<aocommon::Image> ResultImages() override {
     return {std::move(_image)};
-  }
-
-  virtual size_t ActualInversionWidth() const override {
-    return _actualInversionWidth;
-  }
-  virtual size_t ActualInversionHeight() const override {
-    return _actualInversionHeight;
   }
 
   virtual void FreeImagingData() override {}
@@ -29,7 +24,7 @@ class WGriddingMSGridder final : public MSGridderBase {
   virtual size_t getSuggestedWGridSize() const override { return 1; }
 
  private:
-  Image _image;
+  aocommon::Image _image;
 
   template <DDGainMatrix GainEntry>
   void gridMeasurementSet(MSData& msData);
@@ -39,7 +34,7 @@ class WGriddingMSGridder final : public MSGridderBase {
 
   size_t calculateMaxNRowsInMemory(size_t channelCount) const;
 
-  void getTrimmedSize(size_t& trimmedWidth, size_t& trimmedHeight) const;
+  void getActualTrimmedSize(size_t& trimmedWidth, size_t& trimmedHeight) const;
 
   size_t _cpuCount;
   int64_t _memSize;

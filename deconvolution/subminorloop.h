@@ -2,13 +2,13 @@
 #define SUB_MINOR_LOOP_H
 
 #include <cstring>
+#include <optional>
 #include <vector>
 
-#include <boost/optional/optional.hpp>
-
-#include "../structures/image.h"
-
 #include "../deconvolution/imageset.h"
+
+#include <aocommon/image.h>
+#include <aocommon/logger.h>
 
 /**
  * In multi-scale, a subminor optimized loop looks like this:
@@ -59,7 +59,7 @@ class SubMinorModel {
   size_t size() const { return _positions.size(); }
 
   void MakeSets(const ImageSet& templateSet);
-  void MakeRMSFactorImage(Image& rmsFactorImage);
+  void MakeRMSFactorImage(aocommon::Image& rmsFactorImage);
 
   ImageSet& Residual() { return *_residual; }
   const ImageSet& Residual() const { return *_residual; }
@@ -71,8 +71,8 @@ class SubMinorModel {
   size_t Y(size_t index) const { return _positions[index].second; }
   size_t FullIndex(size_t index) const { return X(index) + Y(index) * _width; }
   template <bool AllowNegatives>
-  size_t GetMaxComponent(Image& scratch, float& maxValue) const;
-  size_t GetMaxComponent(Image& scratch, float& maxValue,
+  size_t GetMaxComponent(aocommon::Image& scratch, float& maxValue) const;
+  size_t GetMaxComponent(aocommon::Image& scratch, float& maxValue,
                          bool allowNegatives) const {
     if (allowNegatives)
       return GetMaxComponent<true>(scratch, maxValue);
@@ -83,14 +83,14 @@ class SubMinorModel {
  private:
   std::vector<std::pair<size_t, size_t>> _positions;
   std::unique_ptr<ImageSet> _residual, _model;
-  Image _rmsFactorImage;
+  aocommon::Image _rmsFactorImage;
   size_t _width;
 };
 
 class SubMinorLoop {
  public:
   SubMinorLoop(size_t width, size_t height, size_t convolutionWidth,
-               size_t convolutionHeight, LogReceiver& logReceiver)
+               size_t convolutionHeight, aocommon::LogReceiver& logReceiver)
       : _width(width),
         _height(height),
         _paddedWidth(convolutionWidth),
@@ -140,7 +140,9 @@ class SubMinorLoop {
     _stopOnNegativeComponent = stopOnNegativeComponent;
   }
 
-  void SetSpectralFitter(const SpectralFitter* fitter) { _fitter = fitter; }
+  void SetSpectralFitter(const schaapcommon::fitters::SpectralFitter* fitter) {
+    _fitter = fitter;
+  }
 
   void SetCleanBorders(size_t horizontalBorder, size_t verticalBorder) {
     _horizontalBorder = horizontalBorder;
@@ -149,7 +151,9 @@ class SubMinorLoop {
 
   void SetMask(const bool* mask) { _mask = mask; }
 
-  void SetRMSFactorImage(const Image& image) { _rmsFactorImage = image; }
+  void SetRMSFactorImage(const aocommon::Image& image) {
+    _rmsFactorImage = image;
+  }
 
   void SetThreadCount(size_t threadCount) { _threadCount = threadCount; }
 
@@ -157,9 +161,9 @@ class SubMinorLoop {
 
   float FluxCleaned() const { return _fluxCleaned; }
 
-  boost::optional<float> Run(
+  std::optional<float> Run(
       ImageSet& convolvedResidual,
-      const aocommon::UVector<const float*>& twiceConvolvedPsfs);
+      const std::vector<aocommon::Image>& twiceConvolvedPsfs);
 
   /**
    * The produced model is convolved with the given psf, and the result is
@@ -169,9 +173,8 @@ class SubMinorLoop {
    * (_untrimmedWidth x _untrimmedHeight). scratchC only needs to store the
    * trimmed size (_width x _height).
    */
-  void CorrectResidualDirty(class FFTWManager& fftw, float* scratchA,
-                            float* scratchB, float* scratchC, size_t imageIndex,
-                            float* residual,
+  void CorrectResidualDirty(float* scratchA, float* scratchB, float* scratchC,
+                            size_t imageIndex, float* residual,
                             const float* singleConvolvedPsf) const;
 
   void GetFullIndividualModel(size_t imageIndex,
@@ -190,11 +193,11 @@ class SubMinorLoop {
   size_t _currentIteration, _maxIterations;
   bool _allowNegativeComponents, _stopOnNegativeComponent;
   const bool* _mask;
-  const SpectralFitter* _fitter;
+  const schaapcommon::fitters::SpectralFitter* _fitter;
   SubMinorModel _subMinorModel;
   float _fluxCleaned;
-  Image _rmsFactorImage;
-  LogReceiver& _logReceiver;
+  aocommon::Image _rmsFactorImage;
+  aocommon::LogReceiver& _logReceiver;
   size_t _threadCount;
 };
 

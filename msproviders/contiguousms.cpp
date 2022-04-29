@@ -1,16 +1,19 @@
 #include "contiguousms.h"
 #include "msreaders/contiguousmsreader.h"
-#include "../io/logger.h"
+
+#include <aocommon/logger.h>
+
 #include <casacore/measures/Measures/MEpoch.h>
 #include <casacore/measures/TableMeasures/ScalarMeasColumn.h>
 #include <casacore/tables/Tables/TableLocker.h>
-#include <boost/make_unique.hpp>
+
+#include <memory>
 
 ContiguousMS::ContiguousMS(const string& msPath,
                            const std::string& dataColumnName,
                            const MSSelection& selection,
-                           aocommon::PolarizationEnum polOut, size_t dataDescId,
-                           bool useMPI)
+                           aocommon::PolarizationEnum outputPolarization,
+                           size_t dataDescId, bool useMPI)
     : _currentOutputRow(0),
       _currentOutputTimestep(0),
       _currentOutputTime(0.0),
@@ -19,15 +22,15 @@ ContiguousMS::ContiguousMS(const string& msPath,
       _nAntenna(0),
       _isModelColumnPrepared(false),
       _selection(selection),
-      _polOut(polOut),
+      _outputPolarization(outputPolarization),
       _msPath(msPath),
       _dataColumnName(dataColumnName) {
   open();
 }
 
 void ContiguousMS::open() {
-  Logger::Info << "Opening " << _msPath << ", spw " << _dataDescId
-               << " with contiguous MS reader.\n";
+  aocommon::Logger::Info << "Opening " << _msPath << ", spw " << _dataDescId
+                         << " with contiguous MS reader.\n";
 
   _ms = SynchronizedMS(_msPath, _useMPI ? casacore::TableLock::UserNoReadLocking
                                         : casacore::TableLock::DefaultLocking);
@@ -55,7 +58,7 @@ void ContiguousMS::open() {
   _weightSpectrumArray = casacore::Array<float>(shape);
   _imagingWeightSpectrumArray = casacore::Array<float>(shape);
   _flagArray = casacore::Array<bool>(shape);
-  _bandData = MultiBandData(*_ms);
+  _bandData = aocommon::MultiBandData(*_ms);
 
   if (_bandData.BandCount() > 1) {
     throw std::runtime_error(
@@ -130,7 +133,16 @@ size_t ContiguousMS::NChannels() {
     return _bandData[_dataDescId].ChannelCount();
 }
 
-size_t ContiguousMS::NPolarizations() { return _inputPolarizations.size(); }
+size_t ContiguousMS::NPolarizations() {
+  switch (_outputPolarization) {
+    case aocommon::Polarization::Instrumental:
+      return 4;
+    case aocommon::Polarization::DiagonalInstrumental:
+      return 2;
+    default:
+      return 1;
+  }
+}
 
 void ContiguousMS::prepareModelColumn() {
   InitializeModelColumn(*_ms);
@@ -143,12 +155,11 @@ void ContiguousMS::prepareModelColumn() {
 
 void ContiguousMS::WriteModel(const std::complex<float>* buffer, bool addToMS) {
   std::unique_ptr<casacore::TableLocker> lock;
-
   if (_useMPI) {
     // When using different MPI processes, automatic casacore locks do not work.
     // -> Use UserNoReadLocking with explicit write locks.
-    lock = boost::make_unique<casacore::TableLocker>(
-        *_ms, casacore::FileLocker::Write);
+    lock = std::make_unique<casacore::TableLocker>(*_ms,
+                                                   casacore::FileLocker::Write);
 
     // This resync() is required for synchronizing different MPI processes.
     _ms->resync();
@@ -168,10 +179,10 @@ void ContiguousMS::WriteModel(const std::complex<float>* buffer, bool addToMS) {
   _modelColumn.get(_currentOutputRow, _modelArray);
   if (addToMS) {
     ReverseCopyData<true>(_modelArray, startChannel, endChannel,
-                          _inputPolarizations, buffer, _polOut);
+                          _inputPolarizations, buffer, _outputPolarization);
   } else {
     ReverseCopyData<false>(_modelArray, startChannel, endChannel,
-                           _inputPolarizations, buffer, _polOut);
+                           _inputPolarizations, buffer, _outputPolarization);
   }
   _modelColumn.put(_currentOutputRow, _modelArray);
 }

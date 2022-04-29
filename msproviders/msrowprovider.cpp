@@ -1,8 +1,7 @@
 #include "directmsrowprovider.h"
 #include "msprovider.h"
 
-#include "../io/logger.h"
-#include "../system/throwruntimeerror.h"
+#include <aocommon/throwruntimeerror.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
@@ -29,7 +28,7 @@ MSRowProvider::MSRowProvider(
 
 void MSRowProvider::Initialize() {
   if (MsHasBdaData(Ms()))
-    ThrowRuntimeError(
+    aocommon::ThrowRuntimeError(
         "Measurement set contains BDA data, but isn't opened for BDA "
         "processing.");
 
@@ -62,9 +61,9 @@ void MSRowProvider::Initialize() {
 
   _currentRow = BeginRow();
   _currentTimestep = _startTimestep;
-  _currentTime = columns.time(BeginRow());
-  _currentUVWArray = columns.uvw(BeginRow());
-  _currentDataDescId = columns.data_description_id(BeginRow());
+  _currentTime = columns.time(_currentRow);
+  _currentUVWArray = columns.uvw(_currentRow);
+  _currentDataDescId = columns.data_description_id(_currentRow);
 
   // If this row is not selected, it is necessary to continue to the first
   // selected row.
@@ -101,8 +100,8 @@ bool MSRowProvider::isCurrentRowSelected(int fieldId, int a1, int a2) const {
   std::map<size_t, size_t>::const_iterator dataDescIdIter =
       _selectedDataDescIds.find(_currentDataDescId);
   bool isDataDescIdSelected = dataDescIdIter != _selectedDataDescIds.end();
-  return _selection.IsSelected(fieldId, _currentTimestep, a1, a2,
-                               _currentUVWArray) &&
+  return Selection().IsSelected(fieldId, _currentTimestep, a1, a2,
+                                _currentUVWArray) &&
          isDataDescIdSelected;
 }
 
