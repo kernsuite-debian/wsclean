@@ -2,21 +2,21 @@
 
 #include "griddingresult.h"
 
-#include "../io/logger.h"
-
 #include "../main/settings.h"
 
 #include "../distributed/mpibig.h"
 #include "../distributed/taskmessage.h"
 
+#include <aocommon/logger.h>
 #include <aocommon/io/serialostream.h>
 #include <aocommon/io/serialistream.h>
-
-#include <boost/make_unique.hpp>
 
 #include <mpi.h>
 
 #include <cassert>
+#include <memory>
+
+using aocommon::Logger;
 
 MPIScheduler::MPIScheduler(const Settings &settings)
     : GriddingTaskManager(settings),
@@ -42,10 +42,10 @@ MPIScheduler::MPIScheduler(const Settings &settings)
       throw std::runtime_error(
           "Master was told not to work, but no other workers available");
     if (settings.masterDoesWork) {
-      _writerLock = boost::make_unique<MasterWriterLock>(*this);
+      _writerLock = std::make_unique<MasterWriterLock>(*this);
     }
   } else {
-    _writerLock = boost::make_unique<WorkerWriterLock>();
+    _writerLock = std::make_unique<WorkerWriterLock>();
   }
 }
 
@@ -110,7 +110,7 @@ void MPIScheduler::runTaskOnNode0(GriddingTask &&task) {
   GriddingResult result = RunDirect(std::move(task));
   Logger::Info << "Main node has finished a gridding task.\n";
   std::unique_lock<std::mutex> lock(_mutex);
-  _readyList.emplace_back(std::move(result), _nodes[0].second);
+  _readyList.emplace_back(std::move(result), std::move(_nodes[0].second));
   _nodes[0].first = NodeState::kAvailable;
   lock.unlock();
   _notify.notify_all();

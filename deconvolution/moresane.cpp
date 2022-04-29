@@ -1,26 +1,28 @@
 #include "moresane.h"
 
+#include <aocommon/image.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/fits/fitswriter.h>
+#include <aocommon/logger.h>
 
-#include "../math/fftconvolver.h"
+#include <schaapcommon/fft/convolution.h>
 
 #include "../system/application.h"
 
-#include "../io/logger.h"
-
-void MoreSane::ExecuteMajorIteration(float* dataImage, float* modelImage,
-                                     const float* psfImage, size_t width,
-                                     size_t height) {
+void MoreSane::ExecuteMajorIteration(float* residualData, float* modelData,
+                                     const aocommon::Image& psfImage) {
+  const size_t width = psfImage.Width();
+  const size_t height = psfImage.Height();
   if (_iterationNumber != 0) {
-    Logger::Info << "Convolving model with psf...\n";
-    Image preparedPsf(width, height);
-    FFTConvolver::PrepareKernel(preparedPsf.data(), psfImage, width, height,
+    aocommon::Logger::Info << "Convolving model with psf...\n";
+    aocommon::Image preparedPsf(width, height);
+    schaapcommon::fft::PrepareConvolutionKernel(
+        preparedPsf.Data(), psfImage.Data(), width, height, _threadCount);
+    schaapcommon::fft::Convolve(modelData, preparedPsf.Data(), width, height,
                                 _threadCount);
-    FFTConvolver::ConvolveSameSize(_fftwManager, modelImage, preparedPsf.data(),
-                                   width, height, _threadCount);
-    Logger::Info << "Adding model back to residual...\n";
-    for (size_t i = 0; i != width * height; ++i) dataImage[i] += modelImage[i];
+    aocommon::Logger::Info << "Adding model back to residual...\n";
+    for (size_t i = 0; i != width * height; ++i)
+      residualData[i] += modelData[i];
   }
   std::ostringstream outputStr;
   outputStr << _prefixName << "-tmp-moresaneoutput" << _iterationNumber;
@@ -30,14 +32,14 @@ void MoreSane::ExecuteMajorIteration(float* dataImage, float* modelImage,
       outputName(outputStr.str());
   aocommon::FitsWriter writer;
   writer.SetImageDimensions(width, height);
-  if (this->_cleanMask != 0) writer.WriteMask(maskName, _cleanMask);
-  writer.Write(dirtyName, dataImage);
-  writer.Write(psfName, psfImage);
+  if (_cleanMask != nullptr) writer.WriteMask(maskName, _cleanMask);
+  writer.Write(dirtyName, residualData);
+  writer.Write(psfName, psfImage.Data());
 
   std::ostringstream commandLine;
   commandLine << "time python \"" << _moresaneLocation << "\" ";
   if (!_allowNegativeComponents) commandLine << "-ep ";
-  if (this->_cleanMask != 0) commandLine << "-m \"" << maskName + "\" ";
+  if (_cleanMask != nullptr) commandLine << "-m \"" << maskName + "\" ";
   if (!_moresaneArguments.empty()) commandLine << _moresaneArguments << ' ';
   commandLine << "\"" << dirtyName << "\" \"" << psfName << "\" \""
               << outputName << '\"';
@@ -51,9 +53,9 @@ void MoreSane::ExecuteMajorIteration(float* dataImage, float* modelImage,
   Application::Run(commandLine.str());
 
   aocommon::FitsReader modelReader(outputName + "_model.fits");
-  modelReader.Read(modelImage);
+  modelReader.Read(modelData);
   aocommon::FitsReader residualReader(outputName + "_residual.fits");
-  residualReader.Read(dataImage);
+  residualReader.Read(residualData);
 
   unlink(dirtyName.c_str());
   unlink(psfName.c_str());
@@ -64,13 +66,13 @@ void MoreSane::ExecuteMajorIteration(float* dataImage, float* modelImage,
 
 float MoreSane::ExecuteMajorIteration(
     ImageSet& dataImage, ImageSet& modelImage,
-    const aocommon::UVector<const float*>& psfImages, size_t width,
-    size_t height, bool& reachedMajorThreshold) {
+    const std::vector<aocommon::Image>& psfImages,
+    bool& reachedMajorThreshold) {
   for (size_t i = 0; i != dataImage.size(); ++i) {
-    float* residualData = dataImage[i];
-    float* modelData = modelImage[i];
-    ExecuteMajorIteration(residualData, modelData,
-                          psfImages[dataImage.PSFIndex(i)], width, height);
+    float* residualData = dataImage.Data(i);
+    float* modelData = modelImage.Data(i);
+    const aocommon::Image psfImage = psfImages[dataImage.PSFIndex(i)];
+    ExecuteMajorIteration(residualData, modelData, psfImage);
   }
 
   ++_iterationNumber;

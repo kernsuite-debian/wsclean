@@ -5,26 +5,30 @@
 
 #include "../msproviders/msreaders/msreader.h"
 
-#include "../io/logger.h"
-
-#include "../math/fftresampler.h"
-
 #include "../msproviders/msprovider.h"
 
 #include "../system/buffered_lane.h"
 
 #include "../structures/imageweights.h"
-#include "../structures/image.h"
+
+#include <aocommon/image.h>
+#include <aocommon/logger.h>
+
+#include <schaapcommon/fft/resampler.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
+
+using aocommon::Image;
+using aocommon::Logger;
 
 WGriddingMSGridder::WGriddingMSGridder(const Settings& settings)
     : MSGridderBase(settings),
       _cpuCount(_settings.threadCount),
       _accuracy(_settings.wgridderAccuracy) {
   _memSize = getAvailableMemory(_settings.memFraction, _settings.absMemLimit);
-  // It may happen that several FFTResamplers are created concurrently, so we
-  // must make sure that the FFTW planner can deal with this.
+  // It may happen that several schaapcommon::fft::Resamplers are created
+  // concurrently, so we must make sure that the FFTW planner can deal with
+  // this.
   fftwf_make_planner_thread_safe();
 }
 
@@ -179,13 +183,23 @@ template void WGriddingMSGridder::predictMeasurementSet<DDGainMatrix::kYY>(
 template void WGriddingMSGridder::predictMeasurementSet<DDGainMatrix::kTrace>(
     MSData& msData);
 
-void WGriddingMSGridder::getTrimmedSize(size_t& trimmedWidth,
-                                        size_t& trimmedHeight) const {
-  double padding = double(ImageWidth()) / TrimWidth();
-  trimmedWidth = std::floor(_actualInversionWidth / padding);
-  trimmedHeight = std::floor(_actualInversionHeight / padding);
-  if (trimmedWidth & 1) --trimmedWidth;
-  if (trimmedHeight & 1) --trimmedHeight;
+void WGriddingMSGridder::getActualTrimmedSize(size_t& trimmedWidth,
+                                              size_t& trimmedHeight) const {
+  trimmedWidth = std::ceil(ActualInversionWidth() / ImagePadding());
+  trimmedHeight = std::ceil(ActualInversionHeight() / ImagePadding());
+
+  // In facet-based imaging, the alignment is 4, see wsclean.cpp. Also for
+  // monolithic imaging - in which just an even number would suffice -
+  // the trimmedWidth and trimmedHeight are defined to be divisable by 4.
+  const size_t alignment = 4;
+  if (trimmedWidth % alignment != 0) {
+    trimmedWidth += alignment - (trimmedWidth % alignment);
+  }
+  if (trimmedHeight % alignment != 0) {
+    trimmedHeight += alignment - (trimmedHeight % alignment);
+  }
+  trimmedWidth = std::min(trimmedWidth, ActualInversionWidth());
+  trimmedHeight = std::min(trimmedHeight, ActualInversionHeight());
 }
 
 void WGriddingMSGridder::Invert() {
@@ -193,11 +207,11 @@ void WGriddingMSGridder::Invert() {
   initializeMSDataVector(msDataVector);
 
   size_t trimmedWidth, trimmedHeight;
-  getTrimmedSize(trimmedWidth, trimmedHeight);
+  getActualTrimmedSize(trimmedWidth, trimmedHeight);
 
   _gridder.reset(new WGriddingGridder_Simple(
-      _actualInversionWidth, _actualInversionHeight, trimmedWidth,
-      trimmedHeight, _actualPixelSizeX, _actualPixelSizeY, PhaseCentreDL(),
+      ActualInversionWidth(), ActualInversionHeight(), trimmedWidth,
+      trimmedHeight, ActualPixelSizeX(), ActualPixelSizeY(), PhaseCentreDL(),
       PhaseCentreDM(), _cpuCount, _accuracy));
   _gridder->InitializeInversion();
 
@@ -229,15 +243,16 @@ void WGriddingMSGridder::Invert() {
     for (size_t i = 0; i < imageFloat.size(); ++i) _image[i] = imageFloat[i];
   }
 
-  if (ImageWidth() != _actualInversionWidth ||
-      ImageHeight() != _actualInversionHeight) {
+  if (ImageWidth() != ActualInversionWidth() ||
+      ImageHeight() != ActualInversionHeight()) {
     // Interpolate the image
-    // The input is of size _actualInversionWidth x _actualInversionHeight
-    FFTResampler resampler(_actualInversionWidth, _actualInversionHeight,
-                           ImageWidth(), ImageHeight(), _cpuCount);
+    // The input is of size ActualInversionWidth() x ActualInversionHeight()
+    schaapcommon::fft::Resampler resampler(
+        ActualInversionWidth(), ActualInversionHeight(), ImageWidth(),
+        ImageHeight(), _cpuCount);
 
     Image resized(ImageWidth(), ImageHeight());
-    resampler.Resample(_image.data(), resized.data());
+    resampler.Resample(_image.Data(), resized.Data());
     _image = std::move(resized);
   }
 
@@ -246,7 +261,7 @@ void WGriddingMSGridder::Invert() {
                   << " -> " << TrimWidth() << " x " << TrimHeight() << '\n';
 
     Image trimmed(TrimWidth(), TrimHeight());
-    Image::Trim(trimmed.data(), TrimWidth(), TrimHeight(), _image.data(),
+    Image::Trim(trimmed.Data(), TrimWidth(), TrimHeight(), _image.Data(),
                 ImageWidth(), ImageHeight());
     _image = std::move(trimmed);
   }
@@ -257,34 +272,35 @@ void WGriddingMSGridder::Predict(std::vector<Image>&& images) {
   initializeMSDataVector(msDataVector);
 
   size_t trimmedWidth, trimmedHeight;
-  getTrimmedSize(trimmedWidth, trimmedHeight);
+  getActualTrimmedSize(trimmedWidth, trimmedHeight);
 
   _gridder.reset(new WGriddingGridder_Simple(
-      _actualInversionWidth, _actualInversionHeight, trimmedWidth,
-      trimmedHeight, _actualPixelSizeX, _actualPixelSizeY, PhaseCentreDL(),
+      ActualInversionWidth(), ActualInversionHeight(), trimmedWidth,
+      trimmedHeight, ActualPixelSizeX(), ActualPixelSizeY(), PhaseCentreDL(),
       PhaseCentreDM(), _cpuCount, _accuracy));
 
   if (TrimWidth() != ImageWidth() || TrimHeight() != ImageHeight()) {
     Image untrimmedImage(ImageWidth(), ImageHeight());
     Logger::Debug << "Untrimming " << TrimWidth() << " x " << TrimHeight()
                   << " -> " << ImageWidth() << " x " << ImageHeight() << '\n';
-    Image::Untrim(untrimmedImage.data(), ImageWidth(), ImageHeight(),
-                  images[0].data(), TrimWidth(), TrimHeight());
+    Image::Untrim(untrimmedImage.Data(), ImageWidth(), ImageHeight(),
+                  images[0].Data(), TrimWidth(), TrimHeight());
     images[0] = std::move(untrimmedImage);
   }
 
-  if (ImageWidth() != _actualInversionWidth ||
-      ImageHeight() != _actualInversionHeight) {
+  if (ImageWidth() != ActualInversionWidth() ||
+      ImageHeight() != ActualInversionHeight()) {
     Image resampledImage(ImageWidth(), ImageHeight());
-    FFTResampler resampler(ImageWidth(), ImageHeight(), _actualInversionWidth,
-                           _actualInversionHeight, _cpuCount);
+    schaapcommon::fft::Resampler resampler(ImageWidth(), ImageHeight(),
+                                           ActualInversionWidth(),
+                                           ActualInversionHeight(), _cpuCount);
 
-    resampler.Resample(images[0].data(), resampledImage.data());
+    resampler.Resample(images[0].Data(), resampledImage.Data());
     images[0] = std::move(resampledImage);
   }
 
-  _gridder->InitializePrediction(images[0].data());
-  images[0].reset();
+  _gridder->InitializePrediction(images[0].Data());
+  images[0].Reset();
 
   for (MSData& msData : msDataVector) {
     if (Polarization() == aocommon::Polarization::XX) {

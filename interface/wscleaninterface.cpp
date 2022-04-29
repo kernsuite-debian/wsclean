@@ -3,15 +3,16 @@
 #include "../main/commandline.h"
 #include "../main/wsclean.h"
 
-#include "../units/angle.h"
-
 #include <aocommon/banddata.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/fits/fitswriter.h>
+#include <aocommon/units/angle.h>
 
 #include <string>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
+
+using aocommon::units::Angle;
 
 struct WSCleanUserData {
   std::string msPath;
@@ -71,7 +72,7 @@ void wsclean_initialize(void** userData, const imaging_parameters* parameters,
                                             casacore::MSMainEnums::ANTENNA1));
   casacore::ScalarColumn<int> a2Col(ms, casacore::MeasurementSet::columnName(
                                             casacore::MSMainEnums::ANTENNA2));
-  BandData bandData(ms.spectralWindow());
+  aocommon::BandData bandData(ms.spectralWindow());
   size_t nChannel = bandData.ChannelCount();
   size_t selectedRows = 0;
   for (size_t row = 0; row != ms.nrow(); ++row) {
@@ -112,7 +113,7 @@ void wsclean_read(void* userData, DCOMPLEX* data, double* weights) {
   std::lock_guard<std::mutex> lock(wscUserData->mutex);
 
   casacore::MeasurementSet ms(wscUserData->msPath);
-  BandData bandData(ms.spectralWindow());
+  aocommon::BandData bandData(ms.spectralWindow());
   size_t nChannels = bandData.ChannelCount();
 
   casacore::ScalarColumn<int> a1Col(ms, casacore::MeasurementSet::columnName(
@@ -175,12 +176,12 @@ void wsclean_write(void* userData, const char* filename, const double* image) {
   std::lock_guard<std::mutex> lock(wscUserData->mutex);
 
   std::cout << "wsclean_write() : Writing " << filename << "...\n";
-  FitsWriter writer;
+  aocommon::FitsWriter writer;
   writer.SetImageDimensions(wscUserData->width, wscUserData->height,
                             wscUserData->pixelScaleX, wscUserData->pixelScaleY);
   if (wscUserData->nAtCalls != 0) {
-    FitsReader reader("tmp-operator-At-0-image.fits");
-    writer = FitsWriter(reader);
+    aocommon::FitsReader reader("tmp-operator-At-0-image.fits");
+    writer = aocommon::FitsWriter(reader);
   }
   writer.Write(filename, image);
 }
@@ -241,7 +242,7 @@ void wsclean_operator_A(void* userData, DCOMPLEX* dataOut,
   filenameStr << "tmp-operator-A-" << wscUserData->nACalls;
 
   // Write dataIn to a fits file
-  FitsWriter writer;
+  aocommon::FitsWriter writer;
   writer.SetImageDimensions(wscUserData->width, wscUserData->height,
                             wscUserData->pixelScaleX, wscUserData->pixelScaleY);
   writer.Write(filenameStr.str() + "-model.fits", dataIn);
@@ -258,7 +259,7 @@ void wsclean_operator_A(void* userData, DCOMPLEX* dataOut,
 
   // Read MODEL_DATA into dataOut
   casacore::MeasurementSet ms(wscUserData->msPath);
-  BandData bandData(ms.spectralWindow());
+  aocommon::BandData bandData(ms.spectralWindow());
   size_t nChannels = bandData.ChannelCount();
 
   casacore::ScalarColumn<int> a1Col(ms, casacore::MeasurementSet::columnName(
@@ -311,7 +312,7 @@ void wsclean_operator_At(void* userData, double* dataOut,
             << ", pixelscale=" << Angle::ToNiceString(wscUserData->pixelScaleX)
             << "," << Angle::ToNiceString(wscUserData->pixelScaleY) << '\n';
   casacore::MeasurementSet ms(wscUserData->msPath, casacore::Table::Update);
-  BandData bandData(ms.spectralWindow());
+  aocommon::BandData bandData(ms.spectralWindow());
   size_t nChannels = bandData.ChannelCount();
 
   casacore::ScalarColumn<int> a1Col(ms, casacore::MeasurementSet::columnName(
@@ -358,7 +359,7 @@ void wsclean_operator_At(void* userData, double* dataOut,
   wsclean_main(commandline);
 
   // Read dirty image and store in dataOut
-  FitsReader reader(prefixName.str() + "-image.fits");
+  aocommon::FitsReader reader(prefixName.str() + "-image.fits");
   reader.Read(dataOut);
   if (wscUserData->doNormalize == 0) {
     size_t n = wscUserData->width * wscUserData->height;
@@ -377,5 +378,5 @@ void wsclean_operator_At(void* userData, double* dataOut,
 }
 
 double wsclean_parse_angle(const char* angle) {
-  return Angle::Parse(angle, "angle", Angle::Degrees);
+  return Angle::Parse(angle, "angle", Angle::kDegrees);
 }

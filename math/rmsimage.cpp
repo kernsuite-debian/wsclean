@@ -1,24 +1,28 @@
 #include "rmsimage.h"
 
-#include "modelrenderer.h"
+#include "renderer.h"
 
+#include <aocommon/image.h>
 #include <aocommon/staticfor.h>
+
+#include <schaapcommon/fft/restoreimage.h>
+
+using aocommon::Image;
 
 void RMSImage::Make(Image& rmsOutput, const Image& inputImage,
                     double windowSize, long double beamMaj, long double beamMin,
                     long double beamPA, long double pixelScaleL,
                     long double pixelScaleM, size_t threadCount) {
   Image image(inputImage);
+  image.Square();
   rmsOutput = Image(image.Width(), image.Height(), 0.0);
 
-  for (auto& val : image) val *= val;
+  schaapcommon::fft::RestoreImage(rmsOutput.Data(), image.Data(), image.Width(),
+                                  image.Height(), beamMaj * windowSize,
+                                  beamMin * windowSize, beamPA, pixelScaleL,
+                                  pixelScaleM, threadCount);
 
-  ModelRenderer::Restore(rmsOutput.data(), image.data(), image.Width(),
-                         image.Height(), beamMaj * windowSize,
-                         beamMin * windowSize, beamPA, pixelScaleL, pixelScaleM,
-                         threadCount);
-
-  double s = std::sqrt(2.0 * M_PI);
+  const double s = std::sqrt(2.0 * M_PI);
   const long double sigmaMaj = beamMaj / (2.0L * sqrtl(2.0L * logl(2.0L)));
   const long double sigmaMin = beamMin / (2.0L * sqrtl(2.0L * logl(2.0L)));
   const double norm = 1.0 / (s * sigmaMaj / pixelScaleL * windowSize * s *
@@ -62,6 +66,14 @@ void RMSImage::SlidingMinimum(Image& output, const Image& input,
   });
 }
 
+void RMSImage::SlidingMaximum(Image& output, const Image& input,
+                              size_t windowSize, size_t threadCount) {
+  Image flipped(input);
+  flipped.Negate();
+  SlidingMinimum(output, flipped, windowSize, threadCount);
+  output.Negate();
+}
+
 void RMSImage::MakeWithNegativityLimit(
     Image& rmsOutput, const Image& inputImage, double windowSize,
     long double beamMaj, long double beamMin, long double beamPA,
@@ -72,7 +84,7 @@ void RMSImage::MakeWithNegativityLimit(
   double beamInPixels = std::max(beamMaj / pixelScaleL, 1.0L);
   SlidingMinimum(slidingMinimum, inputImage, windowSize * beamInPixels,
                  threadCount);
-  for (size_t i = 0; i != rmsOutput.size(); ++i) {
+  for (size_t i = 0; i != rmsOutput.Size(); ++i) {
     rmsOutput[i] = std::max<float>(rmsOutput[i],
                                    std::abs(slidingMinimum[i]) * (1.5 / 5.0));
   }

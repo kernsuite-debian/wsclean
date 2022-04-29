@@ -6,19 +6,8 @@
 #include "msrowprovider.h"
 #include "noisemsrowprovider.h"
 
-#include "../system/system.h"
-
-#include "../io/logger.h"
-
 #include "../main/progressbar.h"
 #include "../main/settings.h"
-
-#include <sys/mman.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-
-#include <errno.h>
-#include <fcntl.h>
 
 #include <cstdio>
 #include <fstream>
@@ -26,11 +15,15 @@
 #include <memory>
 #include <vector>
 
+#include <aocommon/logger.h>
+
 #include <boost/filesystem/path.hpp>
 
 #include <casacore/measures/Measures/MEpoch.h>
 
 #include <casacore/measures/TableMeasures/ScalarMeasColumn.h>
+
+using aocommon::Logger;
 
 /**
  * MAP_NORESERVE is unsuported AND not defined on hurd-i386, so
@@ -40,20 +33,28 @@
 #define MAP_NORESERVE 0
 #endif
 
+namespace {
+struct PartitionFiles {
+  std::unique_ptr<std::ofstream> data;
+  std::unique_ptr<std::ofstream> weight;
+  std::unique_ptr<std::ofstream> model;
+};
+}  // namespace
+
 PartitionedMS::PartitionedMS(const Handle& handle, size_t partIndex,
                              aocommon::PolarizationEnum polarization,
                              size_t dataDescId)
     : _handle(handle),
       _partIndex(partIndex),
-      _modelFileMap(0),
+      _dataDescId(dataDescId),
       _currentOutputRow(0),
       _polarization(polarization),
       _polarizationCountInFile(
-          _polarization == aocommon::Polarization::Instrumental ? 4 : 1) {
+          aocommon::Polarization::GetVisibilityCount(_polarization)) {
   std::ifstream metaFile(getMetaFilename(
       handle._data->_msPath, handle._data->_temporaryDirectory, dataDescId));
 
-  metaFile.read(reinterpret_cast<char*>(&_metaHeader), sizeof(MetaHeader));
+  _metaHeader.Read(metaFile);
   std::vector<char> msPath(_metaHeader.filenameLength + 1, char(0));
   metaFile.read(msPath.data(), _metaHeader.filenameLength);
   Logger::Info << "Opening reordered part " << partIndex << " spw "
@@ -66,46 +67,22 @@ PartitionedMS::PartitionedMS(const Handle& handle, size_t partIndex,
   if (!dataFile.good())
     throw std::runtime_error("Error opening temporary data file '" +
                              partPrefix + ".tmp'");
-  dataFile.read(reinterpret_cast<char*>(&_partHeader), sizeof(PartHeader));
+  _partHeader.Read(dataFile);
   if (!dataFile.good())
     throw std::runtime_error("Error reading header from file '" + partPrefix +
                              ".tmp'");
 
   if (_partHeader.hasModel) {
-    _fd = open((partPrefix + "-m.tmp").c_str(), O_RDWR);
-    if (_fd == -1)
-      throw std::runtime_error("Error opening temporary model data file '" +
-                               partPrefix + "-m.tmp'");
-    size_t length = _partHeader.channelCount * _metaHeader.selectedRowCount *
-                    _polarizationCountInFile * sizeof(std::complex<float>);
-    if (length == 0)
-      _modelFileMap = nullptr;
-    else {
-      _modelFileMap =
-          reinterpret_cast<char*>(mmap(NULL, length, PROT_READ | PROT_WRITE,
-                                       MAP_SHARED | MAP_NORESERVE, _fd, 0));
-      if (_modelFileMap == MAP_FAILED) {
-        std::string msg = System::StrError(errno);
-        _modelFileMap = 0;
-        throw std::runtime_error(
-            std::string("Error creating memory map to temporary model file: "
-                        "mmap() returned MAP_FAILED with error message: ") +
-            msg);
-      }
-    }
+    const size_t length =
+        _partHeader.channelCount * _metaHeader.selectedRowCount *
+        _polarizationCountInFile * sizeof(std::complex<float>);
+    _modelFile = MappedFile(partPrefix + "-m.tmp", length);
   }
   metaFile.close();
   dataFile.close();
 }
 
-PartitionedMS::~PartitionedMS() {
-  if (_modelFileMap != 0) {
-    size_t length = _partHeader.channelCount * _metaHeader.selectedRowCount *
-                    _polarizationCountInFile * sizeof(std::complex<float>);
-    if (length != 0) munmap(_modelFileMap, length);
-  }
-  if (_partHeader.hasModel) close(_fd);
-}
+PartitionedMS::~PartitionedMS() {}
 
 std::unique_ptr<MSReader> PartitionedMS::MakeReader() {
   std::unique_ptr<MSReader> reader(new PartitionedMSReader(this));
@@ -123,7 +100,7 @@ void PartitionedMS::WriteModel(const std::complex<float>* buffer,
   size_t rowLength = _partHeader.channelCount * _polarizationCountInFile *
                      sizeof(std::complex<float>);
   std::complex<float>* modelWritePtr = reinterpret_cast<std::complex<float>*>(
-      _modelFileMap + rowLength * _currentOutputRow);
+      _modelFile.Data() + rowLength * _currentOutputRow);
 
   // In case the value was not sampled in this pass, it has been set to infinite
   // and should not overwrite the current value in the set.
@@ -187,11 +164,6 @@ string PartitionedMS::getMetaFilename(const string& msPathStr,
   return s.str();
 }
 
-// should be private but is not allowed on older compilers
-struct PartitionFiles {
-  std::unique_ptr<std::ofstream> data, weight, model;
-};
-
 /*
  * When partitioned:
  * One global file stores:
@@ -213,13 +185,20 @@ PartitionedMS::Handle PartitionedMS::Partition(
     bool initialModelRequired, const Settings& settings) {
   const bool modelUpdateRequired = settings.modelUpdateRequired;
   std::set<aocommon::PolarizationEnum> polsOut;
-  if (settings.useIDG)
-    polsOut.insert(aocommon::Polarization::Instrumental);
-  else
+  if (settings.useIDG) {
+    if (settings.polarizations.size() == 1) {
+      polsOut.insert(aocommon::Polarization::DiagonalInstrumental);
+    } else {
+      polsOut.insert(aocommon::Polarization::Instrumental);
+    }
+  } else {
     polsOut = settings.polarizations;
+  }
+  const size_t polarizationsPerFile =
+      aocommon::Polarization::GetVisibilityCount(*polsOut.begin());
   const std::string& temporaryDirectory = settings.temporaryDirectory;
 
-  size_t channelParts = channels.size();
+  const size_t channelParts = channels.size();
 
   if (channelParts != 1) {
     Logger::Debug << "Partitioning in " << channels.size() << " channels:";
@@ -249,7 +228,7 @@ PartitionedMS::Handle PartitionedMS::Partition(
       f.weight.reset(new std::ofstream(partPrefix + "-w.tmp"));
       if (initialModelRequired)
         f.model.reset(new std::ofstream(partPrefix + "-m.tmp"));
-      f.data->seekp(sizeof(PartHeader), std::ios::beg);
+      f.data->seekp(PartHeader::BINARY_SIZE, std::ios::beg);
 
       ++fileIndex;
     }
@@ -273,7 +252,7 @@ PartitionedMS::Handle PartitionedMS::Partition(
   } else {
     if (initialModelRequired)
       throw std::runtime_error(
-          "Baseline-dependent averaging is enabled together with a model that "
+          "Baseline-dependent averaging is enabled together with a mode that "
           "requires the model data (e.g. -continue or -subtract-model). This "
           "is not possible.");
     rowProvider.reset(new AveragingMSRowProvider(
@@ -282,9 +261,10 @@ PartitionedMS::Handle PartitionedMS::Partition(
         initialModelRequired));
   }
 
-  std::vector<aocommon::PolarizationEnum> msPolarizations =
+  const std::vector<aocommon::PolarizationEnum> msPolarizations =
       GetMSPolarizations(rowProvider->Ms().polarization());
-  size_t nAntennas = rowProvider->Ms().antenna().nrow();
+  const size_t nAntennas = rowProvider->Ms().antenna().nrow();
+  const aocommon::MultiBandData bands(rowProvider->Ms());
 
   if (settings.parallelReordering == 1)
     Logger::Info << "Reordering " << msPath << " into " << channelParts << " x "
@@ -301,12 +281,10 @@ PartitionedMS::Handle PartitionedMS::Partition(
         getMetaFilename(msPath, temporaryDirectory, dataDescId);
     metaFiles[spwIndex].reset(new std::ofstream(metaFilename));
     MetaHeader metaHeader;
-    memset(&metaHeader, 0, sizeof(MetaHeader));
     metaHeader.selectedRowCount = 0;  // not yet known
     metaHeader.filenameLength = msPath.size();
     metaHeader.startTime = rowProvider->StartTime();
-    metaFiles[spwIndex]->write(reinterpret_cast<char*>(&metaHeader),
-                               sizeof(metaHeader));
+    metaHeader.Write(*metaFiles[spwIndex]);
     metaFiles[spwIndex]->write(msPath.c_str(), msPath.size());
     if (!metaFiles[spwIndex]->good())
       throw std::runtime_error("Error writing to temporary file " +
@@ -314,7 +292,6 @@ PartitionedMS::Handle PartitionedMS::Partition(
   }
 
   // Write actual data
-  const size_t polarizationsPerFile = settings.useIDG ? 4 : 1;
   std::vector<std::complex<float>> dataBuffer(polarizationsPerFile *
                                               maxChannels);
   std::vector<float> weightBuffer(polarizationsPerFile * maxChannels);
@@ -337,7 +314,6 @@ PartitionedMS::Handle PartitionedMS::Partition(
                              rowProvider->TotalProgress());
 
     MetaRecord meta;
-    memset(&meta, 0, sizeof(MetaRecord));
 
     double time;
     uint32_t dataDescId, antenna1, antenna2, fieldId;
@@ -352,7 +328,7 @@ PartitionedMS::Handle PartitionedMS::Partition(
     ++selectedRowCountPerSpwIndex[spwIndex];
     ++selectedRowsTotal;
     std::ofstream& metaFile = *metaFiles[spwIndex];
-    meta.write(metaFile);
+    meta.Write(metaFile);
     if (!metaFile.good())
       throw std::runtime_error("Error writing to temporary file");
 
@@ -411,19 +387,16 @@ PartitionedMS::Handle PartitionedMS::Partition(
   for (std::pair<const size_t, size_t>& p : selectedDataDescIds) {
     size_t spwIndex = p.second;
     MetaHeader metaHeader;
-    memset(&metaHeader, 0, sizeof(MetaHeader));
     metaHeader.selectedRowCount = selectedRowCountPerSpwIndex[spwIndex];
     metaHeader.filenameLength = msPath.size();
     metaHeader.startTime = rowProvider->StartTime();
     metaFiles[spwIndex]->seekp(0);
-    metaFiles[spwIndex]->write(reinterpret_cast<char*>(&metaHeader),
-                               sizeof(metaHeader));
+    metaHeader.Write(*metaFiles[spwIndex]);
     metaFiles[spwIndex]->write(msPath.c_str(), msPath.size());
   }
 
   // Write header to parts and write empty model files (if requested)
   PartHeader header;
-  memset(&header, 0, sizeof(PartHeader));
   header.hasModel = includeModel;
   fileIndex = 0;
   dataBuffer.assign(maxChannels * polarizationsPerFile, 0.0);
@@ -439,7 +412,7 @@ PartitionedMS::Handle PartitionedMS::Partition(
          p != polsOut.end(); ++p) {
       PartitionFiles& f = files[fileIndex];
       f.data->seekp(0, std::ios::beg);
-      f.data->write(reinterpret_cast<char*>(&header), sizeof(PartHeader));
+      header.Write(*f.data);
       if (!f.data->good())
         throw std::runtime_error("Error writing to temporary data file");
 
@@ -470,7 +443,7 @@ PartitionedMS::Handle PartitionedMS::Partition(
 
   return Handle(msPath, dataColumnName, temporaryDirectory, channels,
                 initialModelRequired, modelUpdateRequired, polsOut, selection,
-                nAntennas);
+                bands, nAntennas);
 }
 
 void PartitionedMS::unpartition(
@@ -485,7 +458,7 @@ void PartitionedMS::unpartition(
     std::ifstream metaFile(getMetaFilename(
         handle._msPath, handle._temporaryDirectory, dataDescId.first));
     MetaHeader& metaHeader = metaHeaders[dataDescId.second];
-    metaFile.read(reinterpret_cast<char*>(&metaHeader), sizeof(MetaHeader));
+    metaHeader.Read(metaFile);
     std::vector<char> msPath(metaHeader.filenameLength + 1, char(0));
     metaFile.read(msPath.data(), metaHeader.filenameLength);
   }
@@ -499,8 +472,7 @@ void PartitionedMS::unpartition(
   if (!firstDataFile.good())
     throw std::runtime_error("Error opening temporary data file");
   PartHeader firstPartHeader;
-  firstDataFile.read(reinterpret_cast<char*>(&firstPartHeader),
-                     sizeof(PartHeader));
+  firstPartHeader.Read(firstDataFile);
   if (!firstDataFile.good())
     throw std::runtime_error("Error reading from temporary data file");
 
@@ -547,8 +519,8 @@ void PartitionedMS::unpartition(
     const casacore::IPosition shape(dataColumn.shape(0));
     size_t channelCount = shape[1];
 
-    size_t polarizationsPerFile =
-        (*pols.begin()) == aocommon::Polarization::Instrumental ? 4 : 1;
+    const size_t polarizationsPerFile =
+        aocommon::Polarization::GetVisibilityCount(*pols.begin());
     std::vector<std::complex<float>> modelDataBuffer(channelCount *
                                                      polarizationsPerFile);
     std::vector<float> weightBuffer(channelCount * polarizationsPerFile);

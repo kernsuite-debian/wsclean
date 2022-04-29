@@ -1,14 +1,10 @@
 #include "componentlist.h"
 
-#include "../system/dp3.h"
-
-#include "../io/imagefilename.h"
-
-#include "../structures/imagingtable.h"
-
-#include "../structures/primarybeamimageset.h"
+#include "../model/writemodel.h"
 
 #include "../multiscale/multiscalealgorithm.h"
+
+#include <aocommon/imagecoordinates.h>
 
 using aocommon::ImageCoordinates;
 
@@ -16,33 +12,37 @@ void ComponentList::Write(const std::string& filename,
                           const MultiScaleAlgorithm& multiscale,
                           long double pixelScaleX, long double pixelScaleY,
                           long double phaseCentreRA,
-                          long double phaseCentreDec) {
+                          long double phaseCentreDec) const {
   aocommon::UVector<double> scaleSizes(NScales());
   for (size_t scaleIndex = 0; scaleIndex != NScales(); ++scaleIndex)
     scaleSizes[scaleIndex] = multiscale.ScaleSize(scaleIndex);
-  write(filename, multiscale, scaleSizes, pixelScaleX, pixelScaleY,
+  write(filename, multiscale.Fitter(), scaleSizes, pixelScaleX, pixelScaleY,
         phaseCentreRA, phaseCentreDec);
 }
 
 void ComponentList::WriteSingleScale(
     const std::string& filename, const class DeconvolutionAlgorithm& algorithm,
     long double pixelScaleX, long double pixelScaleY, long double phaseCentreRA,
-    long double phaseCentreDec) {
+    long double phaseCentreDec) const {
   aocommon::UVector<double> scaleSizes(1, 0);
-  write(filename, algorithm, scaleSizes, pixelScaleX, pixelScaleY,
+  write(filename, algorithm.Fitter(), scaleSizes, pixelScaleX, pixelScaleY,
         phaseCentreRA, phaseCentreDec);
 }
 
 void ComponentList::write(const std::string& filename,
-                          const class DeconvolutionAlgorithm& algorithm,
+                          const schaapcommon::fitters::SpectralFitter& fitter,
                           const aocommon::UVector<double>& scaleSizes,
                           long double pixelScaleX, long double pixelScaleY,
                           long double phaseCentreRA,
-                          long double phaseCentreDec) {
-  if (_componentsAddedSinceLastMerge != 0) MergeDuplicates();
+                          long double phaseCentreDec) const {
+  if (_componentsAddedSinceLastMerge != 0) {
+    throw std::runtime_error(
+        "ComponentList::write called while there are yet unmerged components. "
+        "Run ComponentList::MergeDuplicates() first.");
+  }
 
-  const SpectralFitter& fitter = algorithm.Fitter();
-  if (fitter.Mode() == SpectralFittingMode::NoFitting && _nFrequencies > 1)
+  if (fitter.Mode() == schaapcommon::fitters::SpectralFittingMode::NoFitting &&
+      _nFrequencies > 1)
     throw std::runtime_error(
         "Can't write component list, because you have not specified a spectral "
         "fitting method. You probably want to add '-fit-spectral-pol'.");
@@ -50,18 +50,19 @@ void ComponentList::write(const std::string& filename,
   std::ofstream file(filename);
   bool useLogSI = false;
   switch (fitter.Mode()) {
-    case SpectralFittingMode::NoFitting:
-    case SpectralFittingMode::Polynomial:
+    case schaapcommon::fitters::SpectralFittingMode::NoFitting:
+    case schaapcommon::fitters::SpectralFittingMode::Polynomial:
       useLogSI = false;
       break;
-    case SpectralFittingMode::LogPolynomial:
+    case schaapcommon::fitters::SpectralFittingMode::LogPolynomial:
       useLogSI = true;
       break;
   }
-  DP3::WriteHeaderForSpectralTerms(file, fitter.ReferenceFrequency());
-  aocommon::UVector<float> terms;
+  wsclean::model::WriteHeaderForSpectralTerms(file,
+                                              fitter.ReferenceFrequency());
+  std::vector<float> terms;
   for (size_t scaleIndex = 0; scaleIndex != NScales(); ++scaleIndex) {
-    ScaleList& list = _listPerScale[scaleIndex];
+    const ScaleList& list = _listPerScale[scaleIndex];
     size_t componentIndex = 0;
     const double scale = scaleSizes[scaleIndex],
                  // Using the FWHM formula for a Gaussian
@@ -82,8 +83,6 @@ void ComponentList::write(const std::string& filename,
         terms.assign(1, spectrum[0]);
       else
         fitter.Fit(terms, spectrum.data(), x, y);
-      float stokesI = terms[0];
-      terms.erase(terms.begin());
       long double l, m;
       ImageCoordinates::XYToLM<long double>(x, y, pixelScaleX, pixelScaleY,
                                             _width, _height, l, m);
@@ -92,12 +91,12 @@ void ComponentList::write(const std::string& filename,
       std::ostringstream name;
       name << 's' << scaleIndex << 'c' << componentIndex;
       if (scale == 0.0)
-        DP3::WritePolynomialPointComponent(file, name.str(), ra, dec, stokesI,
-                                           useLogSI, terms,
-                                           fitter.ReferenceFrequency());
+        wsclean::model::WritePolynomialPointComponent(
+            file, name.str(), ra, dec, useLogSI, terms,
+            fitter.ReferenceFrequency());
       else {
-        DP3::WritePolynomialGaussianComponent(
-            file, name.str(), ra, dec, stokesI, useLogSI, terms,
+        wsclean::model::WritePolynomialGaussianComponent(
+            file, name.str(), ra, dec, useLogSI, terms,
             fitter.ReferenceFrequency(), scaleFWHML, scaleFWHMM, 0.0);
       }
       ++componentIndex;
@@ -126,18 +125,6 @@ void ComponentList::loadFromImageSet(ImageSet& imageSet, size_t scaleIndex) {
           _listPerScale[scaleIndex].values.push_back(
               imageSet[imageIndex][posIndex]);
       }
-    }
-  }
-}
-
-void ComponentList::CorrectForBeam(PrimaryBeamImageSet& beam, size_t channel) {
-  if (_componentsAddedSinceLastMerge != 0) MergeDuplicates();
-
-  for (ScaleList& list : _listPerScale) {
-    for (size_t i = 0; i != list.positions.size(); ++i) {
-      const Position& pos = list.positions[i];
-      float& value = list.values[channel + i * _nFrequencies];
-      value *= beam.GetUnpolarizedCorrectionFactor(pos.x, pos.y);
     }
   }
 }

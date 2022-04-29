@@ -1,9 +1,14 @@
 #include "imagingtable.h"
-#include "../io/logger.h"
+
+#include <aocommon/logger.h>
 
 #include <algorithm>
+#include <cassert>
 #include <iomanip>
 #include <map>
+#include <memory>
+
+using aocommon::Logger;
 
 ImagingTable::ImagingTable(const std::vector<EntryPtr>& entries)
     : _entries(entries),
@@ -92,4 +97,53 @@ void ImagingTable::AssignGridDataFromPolarization(
       }
     }
   }
+}
+
+std::unique_ptr<DeconvolutionTable> ImagingTable::CreateDeconvolutionTable(
+    int n_deconvolution_channels, CachedImageSet& psf_images,
+    CachedImageSet& model_images, CachedImageSet& residual_images) const {
+  // In a DeconvolutionTable the output channel indices range from
+  // 0 to (#channels - 1). In an ImagingTable that forms an indepent group,
+  // output channel indices may start at a higher index.
+
+  // Assume that the first entry has the lowest index and that the last entry
+  // has the highest output channel index.
+  const int channel_index_offset = _entries.front()->outputChannelIndex;
+  const int n_original_channels =
+      _entries.back()->outputChannelIndex + 1 - channel_index_offset;
+
+  auto table = std::make_unique<DeconvolutionTable>(
+      n_original_channels, n_deconvolution_channels, channel_index_offset);
+  int max_squared_index = -1;
+
+  for (const EntryPtr& entry_ptr : _entries) {
+    assert(entry_ptr);
+
+    if (entry_ptr->imageCount >= 1) {
+      CachedImageSet* psf_images_ptr = nullptr;
+
+      // Only set psf_images_ptr for the first entry of each squared group.
+      // This way, CreateDeconvolutionEntry() only creates psf accessors for
+      // those entries.
+      if (int(entry_ptr->squaredDeconvolutionIndex) > max_squared_index) {
+        max_squared_index = entry_ptr->squaredDeconvolutionIndex;
+        psf_images_ptr = &psf_images;
+      }
+
+      std::unique_ptr<DeconvolutionTableEntry> real_entry =
+          entry_ptr->CreateDeconvolutionEntry(channel_index_offset,
+                                              psf_images_ptr, model_images,
+                                              residual_images, false);
+      table->AddEntry(std::move(real_entry));
+    }
+
+    if (entry_ptr->imageCount == 2) {
+      std::unique_ptr<DeconvolutionTableEntry> imaginary_entry =
+          entry_ptr->CreateDeconvolutionEntry(channel_index_offset, nullptr,
+                                              model_images, residual_images,
+                                              true);
+      table->AddEntry(std::move(imaginary_entry));
+    }
+  }
+  return table;
 }

@@ -4,17 +4,12 @@
 #include <string>
 #include <cmath>
 
-#include "spectralfitter.h"
-
-#include "../structures/image.h"
-
+#include <aocommon/image.h>
+#include <aocommon/logger.h>
 #include <aocommon/polarization.h>
 #include <aocommon/uvector.h>
 
-namespace ao {
-template <typename T>
-class lane;
-}
+#include <schaapcommon/fitters/spectralfitter.h>
 
 class DeconvolutionAlgorithm {
  public:
@@ -22,8 +17,8 @@ class DeconvolutionAlgorithm {
 
   virtual float ExecuteMajorIteration(
       class ImageSet& dataImage, class ImageSet& modelImage,
-      const aocommon::UVector<const float*>& psfImages, size_t width,
-      size_t height, bool& reachedMajorThreshold) = 0;
+      const std::vector<aocommon::Image>& psfImages,
+      bool& reachedMajorThreshold) = 0;
 
   virtual std::unique_ptr<DeconvolutionAlgorithm> Clone() const = 0;
 
@@ -53,7 +48,9 @@ class DeconvolutionAlgorithm {
 
   void SetThreadCount(size_t threadCount) { _threadCount = threadCount; }
 
-  void SetLogReceiver(class LogReceiver& receiver) { _logReceiver = &receiver; }
+  void SetLogReceiver(aocommon::LogReceiver& receiver) {
+    _logReceiver = &receiver;
+  }
 
   size_t MaxNIter() const { return _maxIter; }
   float Threshold() const { return _threshold; }
@@ -90,11 +87,12 @@ class DeconvolutionAlgorithm {
     _spectralFitter = source._spectralFitter;
   }
 
-  void SetSpectralFittingMode(SpectralFittingMode mode, size_t nTerms) {
+  void SetSpectralFittingMode(schaapcommon::fitters::SpectralFittingMode mode,
+                              size_t nTerms) {
     _spectralFitter.SetMode(mode, nTerms);
   }
 
-  void SetSpectrallyForcedImages(std::vector<Image>&& images) {
+  void SetSpectrallyForcedImages(std::vector<aocommon::Image>&& images) {
     _spectralFitter.SetForcedImages(std::move(images));
   }
 
@@ -104,10 +102,14 @@ class DeconvolutionAlgorithm {
                                    frequencies.size());
   }
 
-  const SpectralFitter& Fitter() const { return _spectralFitter; }
+  const schaapcommon::fitters::SpectralFitter& Fitter() const {
+    return _spectralFitter;
+  }
 
-  void SetRMSFactorImage(Image&& image) { _rmsFactorImage = std::move(image); }
-  const Image& RMSFactorImage() const { return _rmsFactorImage; }
+  void SetRMSFactorImage(aocommon::Image&& image) {
+    _rmsFactorImage = std::move(image);
+  }
+  const aocommon::Image& RMSFactorImage() const { return _rmsFactorImage; }
 
  protected:
   DeconvolutionAlgorithm();
@@ -121,12 +123,12 @@ class DeconvolutionAlgorithm {
   size_t _maxIter, _iterationNumber, _threadCount;
   bool _allowNegativeComponents, _stopOnNegativeComponent;
   const bool* _cleanMask;
-  Image _rmsFactorImage;
-  mutable aocommon::UVector<float> _fittingScratch;
+  aocommon::Image _rmsFactorImage;
+  mutable std::vector<float> _fittingScratch;
 
-  class LogReceiver* _logReceiver;
+  aocommon::LogReceiver* _logReceiver;
 
-  SpectralFitter _spectralFitter;
+  schaapcommon::fitters::SpectralFitter _spectralFitter;
 };
 
 #endif

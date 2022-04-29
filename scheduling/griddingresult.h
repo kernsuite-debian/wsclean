@@ -2,25 +2,21 @@
 #define GRIDDING_RESULT_H
 
 #include "../scheduling/metadatacache.h"
-#include "../structures/image.h"
 
+#include <aocommon/image.h>
 #include <aocommon/io/serialstreamfwd.h>
 
 #include <string>
 
+class AverageBeam;
+
 struct GriddingResult {
-  GriddingResult()
-      : startTime(0.0),
-        beamSize(0.0),
-        imageWeight(0.0),
-        normalizationFactor(0.0),
-        actualWGridSize(0),
-        griddedVisibilityCount(0),
-        effectiveGriddedVisibilityCount(0),
-        visibilityWeightSum(0),
-        actualInversionWidth(0),
-        actualInversionHeight(0),
-        cache() {}
+  GriddingResult();
+  GriddingResult(const GriddingResult& source) = delete;
+  GriddingResult(GriddingResult&& source) noexcept;
+  ~GriddingResult();
+  GriddingResult& operator=(const GriddingResult& rhs) = delete;
+  GriddingResult& operator=(GriddingResult&& rhs) noexcept;
 
   /**
    * List of produced images. When performing complex images, images[0] will be
@@ -29,7 +25,7 @@ struct GriddingResult {
    * IDG, the list will contain all four images ordered IQUV. In all other
    * cases, this list will only hold one image.
    */
-  std::vector<Image> images;
+  std::vector<aocommon::Image> images;
   double startTime;
   double beamSize;
   double imageWeight;
@@ -38,8 +34,8 @@ struct GriddingResult {
   size_t griddedVisibilityCount;
   double effectiveGriddedVisibilityCount;
   double visibilityWeightSum;
-  size_t actualInversionWidth, actualInversionHeight;
   std::unique_ptr<MetaDataCache> cache;
+  std::unique_ptr<AverageBeam> averageBeam;
 
   void Serialize(aocommon::SerialOStream& stream) const;
   void Unserialize(aocommon::SerialIStream& stream);

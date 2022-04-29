@@ -3,6 +3,7 @@
 #include "../scheduling/griddingtask.h"
 #include "../idg/averagebeam.h"
 
+#include <aocommon/image.h>
 #include <aocommon/io/serialostream.h>
 #include <aocommon/io/serialistream.h>
 
@@ -79,54 +80,19 @@ BOOST_AUTO_TEST_CASE(msselection) {
 }
 
 BOOST_AUTO_TEST_CASE(image) {
-  Image a(12, 13);
+  aocommon::Image a(12, 13);
   for (size_t i = 0; i != 12 * 13; ++i) a[i] = i + 1;
 
   SerialOStream ostr;
   a.Serialize(ostr);
   BOOST_CHECK_NE(ostr.size(), 0u);
 
-  Image b;
+  aocommon::Image b;
   SerialIStream istr(std::move(ostr));
   b.Unserialize(istr);
   BOOST_CHECK_EQUAL(a.Width(), b.Width());
   BOOST_CHECK_EQUAL(a.Height(), b.Height());
   BOOST_CHECK_EQUAL_COLLECTIONS(a.begin(), a.end(), b.begin(), b.end());
-}
-
-BOOST_AUTO_TEST_CASE(average_beam_empty) {
-  AverageBeam a, b;
-
-  SerialOStream ostr;
-  a.Serialize(ostr);
-  BOOST_CHECK_NE(ostr.size(), 0u);
-
-  b.SetMatrixInverseBeam(
-      std::make_shared<std::vector<std::complex<float>>>(12, 3));
-  b.SetScalarBeam(std::make_shared<std::vector<float>>(11, 4));
-
-  SerialIStream istr(std::move(ostr));
-  b.Unserialize(istr);
-  BOOST_CHECK(!b.MatrixInverseBeam());
-  BOOST_CHECK(!b.ScalarBeam());
-}
-
-BOOST_AUTO_TEST_CASE(average_beam_filled) {
-  AverageBeam a, b;
-  a.SetMatrixInverseBeam(
-      std::make_shared<std::vector<std::complex<float>>>(12, 3));
-  a.SetScalarBeam(std::make_shared<std::vector<float>>(11, 4));
-
-  SerialOStream ostr;
-  a.Serialize(ostr);
-  BOOST_CHECK_NE(ostr.size(), 0u);
-
-  SerialIStream istr(std::move(ostr));
-  b.Unserialize(istr);
-  BOOST_CHECK_EQUAL(b.MatrixInverseBeam()->size(), 12u);
-  BOOST_CHECK_EQUAL(b.ScalarBeam()->size(), 11u);
-  BOOST_CHECK_EQUAL(b.MatrixInverseBeam()->at(8), std::complex<float>(3, 0));
-  BOOST_CHECK_EQUAL(b.ScalarBeam()->at(7), 4);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

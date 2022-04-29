@@ -9,13 +9,12 @@
 #include "../gridding/wsmsgridder.h"
 #include "../gridding/directmsgridder.h"
 
+#include "../idg/averagebeam.h"
 #include "../idg/idgmsgridder.h"
 
 #include <schaapcommon/facets/facet.h>
 
-#ifdef HAVE_WGRIDDER
 #include "../wgridder/wgriddingmsgridder.h"
-#endif
 
 GriddingTaskManager::GriddingTaskManager(const class Settings& settings)
     : _settings(settings) {}
@@ -58,6 +57,12 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
     msProviders.emplace_back(p->GetProvider());
     gridder.AddMeasurementSet(msProviders.back().get(), p->Selection());
   }
+  const bool has_input_average_beam(task.averageBeam);
+  if (has_input_average_beam) {
+    assert(dynamic_cast<IdgMsGridder*>(&gridder));
+    IdgMsGridder& idgGridder = static_cast<IdgMsGridder&>(gridder);
+    idgGridder.SetAverageBeam(std::move(task.averageBeam));
+  }
 
   gridder.SetFacetGroupIndex(task.facetGroupIndex);
   gridder.SetAdditivePredict(task.facet != nullptr);
@@ -75,6 +80,7 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
     gridder.SetTrimSize(_settings.trimmedImageWidth,
                         _settings.trimmedImageHeight);
   }
+  gridder.SetImagePadding(_settings.imagePadding);
   gridder.SetPhaseCentreDec(task.observationInfo.phaseCentreDec);
   gridder.SetPhaseCentreRA(task.observationInfo.phaseCentreRA);
   gridder.SetPhaseCentreDM(task.observationInfo.shiftM);
@@ -110,9 +116,14 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
   result.effectiveGriddedVisibilityCount =
       gridder.EffectiveGriddedVisibilityCount();
   result.visibilityWeightSum = gridder.VisibilityWeightSum();
-  result.actualInversionWidth = gridder.ActualInversionWidth();
-  result.actualInversionHeight = gridder.ActualInversionHeight();
   result.cache = gridder.AcquireMetaDataCache();
+
+  // If the average beam already exists on input, IDG will not recompute it, so
+  // in that case there is no need to return the unchanged average beam.
+  IdgMsGridder* idgGridder = dynamic_cast<IdgMsGridder*>(&gridder);
+  if (idgGridder && !has_input_average_beam) {
+    result.averageBeam = idgGridder->ReleaseAverageBeam();
+  }
   return result;
 }
 
@@ -120,22 +131,9 @@ std::unique_ptr<MSGridderBase> GriddingTaskManager::constructGridder() const {
   if (_settings.useIDG) {
     return std::unique_ptr<MSGridderBase>(new IdgMsGridder(_settings));
   } else if (_settings.useWGridder) {
-#ifdef HAVE_WGRIDDER
     return std::unique_ptr<MSGridderBase>(new WGriddingMSGridder(_settings));
-#else
-    throw std::runtime_error(
-        "WGridder cannot be used: WGridder requires a C++17 compiler, which "
-        "was not found during compilation. Update your compiler and recompile "
-        "wsclean.");
-#endif
   } else if (_settings.directFT) {
     switch (_settings.directFTPrecision) {
-      case DirectFTPrecision::Half:
-        throw std::runtime_error("Half precision is not implemented");
-        // return std::unique_ptr<MSGridderBase>(new
-        // DirectMSGridder<half_float::half>(&_imageAllocator,
-        // _settings.threadCount));
-        break;
       case DirectFTPrecision::Float:
         return std::unique_ptr<MSGridderBase>(
             new DirectMSGridder<float>(_settings));

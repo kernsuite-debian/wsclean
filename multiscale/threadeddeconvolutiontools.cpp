@@ -4,7 +4,11 @@
 #include "../deconvolution/peakfinder.h"
 #include "../deconvolution/simpleclean.h"
 
-#include <boost/make_unique.hpp>
+#include <aocommon/image.h>
+
+#include <memory>
+
+using aocommon::Image;
 
 ThreadedDeconvolutionTools::ThreadedDeconvolutionTools(size_t threadCount)
     : _taskLanes(threadCount),
@@ -26,21 +30,19 @@ ThreadedDeconvolutionTools::~ThreadedDeconvolutionTools() {
   for (std::thread& t : _threadGroup) t.join();
 }
 
-void ThreadedDeconvolutionTools::SubtractImage(float* image, const float* psf,
-                                               size_t width, size_t height,
+void ThreadedDeconvolutionTools::SubtractImage(float* image,
+                                               const aocommon::Image& psf,
                                                size_t x, size_t y,
                                                float factor) {
   for (size_t thr = 0; thr != _threadCount; ++thr) {
-    auto task = boost::make_unique<SubtractionTask>();
+    auto task = std::make_unique<SubtractionTask>();
     task->image = image;
-    task->psf = psf;
-    task->width = width;
-    task->height = height;
+    task->psf = &psf;
     task->x = x;
     task->y = y;
     task->factor = factor;
-    task->startY = height * thr / _threadCount;
-    task->endY = height * (thr + 1) / _threadCount;
+    task->startY = psf.Height() * thr / _threadCount;
+    task->endY = psf.Height() * (thr + 1) / _threadCount;
     if (thr == _threadCount - 1) {
       (*task)();
     } else {
@@ -55,8 +57,8 @@ void ThreadedDeconvolutionTools::SubtractImage(float* image, const float* psf,
 
 std::unique_ptr<ThreadedDeconvolutionTools::ThreadResult>
 ThreadedDeconvolutionTools::SubtractionTask::operator()() {
-  SimpleClean::PartialSubtractImage(image, psf, width, height, x, y, factor,
-                                    startY, endY);
+  SimpleClean::PartialSubtractImage(image, psf->Data(), psf->Width(),
+                                    psf->Height(), x, y, factor, startY, endY);
   return std::unique_ptr<ThreadedDeconvolutionTools::ThreadResult>();
 }
 
@@ -74,19 +76,21 @@ void ThreadedDeconvolutionTools::FindMultiScalePeak(
   results.resize(scales.size());
 
   size_t size = std::min(scales.size(), _threadCount);
-  std::unique_ptr<Image::Ptr[]> imageData(new Image::Ptr[size]);
-  std::unique_ptr<Image::Ptr[]> scratchData(new Image::Ptr[size]);
+  std::vector<Image> imageData;
+  std::vector<Image> scratchData;
+  imageData.reserve(size);
+  scratchData.reserve(size);
   for (size_t i = 0; i != size; ++i) {
-    imageData[i] = Image::Make(msTransforms->Width(), msTransforms->Height());
-    scratchData[i] = Image::Make(msTransforms->Width(), msTransforms->Height());
+    imageData.emplace_back(msTransforms->Width(), msTransforms->Height());
+    scratchData.emplace_back(msTransforms->Width(), msTransforms->Height());
   }
 
   while (imageIndex < scales.size()) {
     std::unique_ptr<FindMultiScalePeakTask> task(new FindMultiScalePeakTask());
     task->msTransforms = msTransforms;
-    (*imageData[nextThread]) = image;
-    task->image = imageData[nextThread].get();
-    task->scratch = scratchData[nextThread].get();
+    imageData[nextThread] = image;
+    task->image = &imageData[nextThread];
+    task->scratch = &scratchData[nextThread];
     task->scale = scales[imageIndex];
     task->allowNegativeComponents = allowNegativeComponents;
     if (scaleMasks.empty())
@@ -150,29 +154,29 @@ ThreadedDeconvolutionTools::FindMultiScalePeakTask::operator()() {
     result->rms = RMS(*image, width * height);
   else
     result->rms = -1.0;
-  if (rmsFactorImage->empty()) {
-    if (mask == 0)
+  if (rmsFactorImage->Empty()) {
+    if (mask == nullptr)
       result->unnormalizedValue = PeakFinder::Find(
-          image->data(), width, height, result->x, result->y,
+          image->Data(), width, height, result->x, result->y,
           allowNegativeComponents, 0, height, horBorderSize, vertBorderSize);
     else
       result->unnormalizedValue =
-          PeakFinder::FindWithMask(image->data(), width, height, result->x,
+          PeakFinder::FindWithMask(image->Data(), width, height, result->x,
                                    result->y, allowNegativeComponents, 0,
                                    height, mask, horBorderSize, vertBorderSize);
 
     result->normalizedValue = result->unnormalizedValue;
   } else {
-    for (size_t i = 0; i != rmsFactorImage->size(); ++i)
+    for (size_t i = 0; i != rmsFactorImage->Size(); ++i)
       (*scratch)[i] = (*image)[i] * (*rmsFactorImage)[i];
 
-    if (mask == 0)
+    if (mask == nullptr)
       result->unnormalizedValue = PeakFinder::Find(
-          scratch->data(), width, height, result->x, result->y,
+          scratch->Data(), width, height, result->x, result->y,
           allowNegativeComponents, 0, height, horBorderSize, vertBorderSize);
     else
       result->unnormalizedValue =
-          PeakFinder::FindWithMask(scratch->data(), width, height, result->x,
+          PeakFinder::FindWithMask(scratch->Data(), width, height, result->x,
                                    result->y, allowNegativeComponents, 0,
                                    height, mask, horBorderSize, vertBorderSize);
 
@@ -181,7 +185,7 @@ ThreadedDeconvolutionTools::FindMultiScalePeakTask::operator()() {
           (*result->unnormalizedValue) /
           (*rmsFactorImage)[result->x + result->y * width];
     } else {
-      result->normalizedValue = boost::optional<float>();
+      result->normalizedValue.reset();
     }
   }
   return result;

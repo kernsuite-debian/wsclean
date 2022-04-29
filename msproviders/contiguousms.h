@@ -4,7 +4,8 @@
 #include "msprovider.h"
 
 #include "../structures/msselection.h"
-#include "../structures/multibanddata.h"
+
+#include <aocommon/multibanddata.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
@@ -22,7 +23,6 @@ class ContiguousMS final : public MSProvider {
   ContiguousMS(const string& msPath, const std::string& dataColumnName,
                const MSSelection& selection, aocommon::PolarizationEnum polOut,
                size_t dataDescIndex, bool useMPI);
-  virtual ~ContiguousMS(){};
 
   ContiguousMS(const ContiguousMS&) = delete;
 
@@ -46,7 +46,9 @@ class ContiguousMS final : public MSProvider {
 
   void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow) override;
 
-  aocommon::PolarizationEnum Polarization() override { return _polOut; }
+  aocommon::PolarizationEnum Polarization() override {
+    return _outputPolarization;
+  }
 
   size_t DataDescId() override { return _dataDescId; }
 
@@ -55,6 +57,8 @@ class ContiguousMS final : public MSProvider {
   size_t NPolarizations() override;
 
   size_t NAntennas() override { return _nAntenna; }
+
+  const aocommon::BandData& Band() override { return _bandData[_dataDescId]; }
 
  private:
   void open();
@@ -71,10 +75,10 @@ class ContiguousMS final : public MSProvider {
   std::vector<size_t> _idToMSRow;
   std::vector<aocommon::PolarizationEnum> _inputPolarizations;
   MSSelection _selection;
-  aocommon::PolarizationEnum _polOut;
+  aocommon::PolarizationEnum _outputPolarization;
   std::string _msPath;
   SynchronizedMS _ms;
-  MultiBandData _bandData;
+  aocommon::MultiBandData _bandData;
   bool _msHasWeightSpectrum;
 
   casacore::ScalarColumn<int> _antenna1Column, _antenna2Column, _fieldIdColumn,

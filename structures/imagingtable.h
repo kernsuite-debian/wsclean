@@ -2,6 +2,7 @@
 #define WSCLEAN_IMAGING_TABLE_H
 
 #include "imagingtableentry.h"
+#include "../deconvolution/deconvolutiontable.h"
 
 #include <functional>
 #include <memory>
@@ -71,6 +72,15 @@ class ImagingTable {
 
   size_t FacetGroupCount() const { return _facetGroups.size(); }
 
+  // When an imagingtable is split into different tables, a facetGroupIndex may
+  // be greater-equal than FacetGroupCount(). Since facetGroupIndices are used
+  // for acquiring scheduler locks, always use (MaxFacetGroupIndex() + 1) for
+  // determining the number of scheduler locks.
+  size_t MaxFacetGroupIndex() const {
+    // _facetGroups is sorted, since Update() converts a sorted map to it.
+    return _facetGroups.back().front()->facetGroupIndex;
+  }
+
   ImagingTable GetFacetGroup(size_t index) const {
     return ImagingTable(_facetGroups[index]);
   }
@@ -130,6 +140,10 @@ class ImagingTable {
    * polarization to all other polarizations.
    */
   void AssignGridDataFromPolarization(aocommon::PolarizationEnum polarization);
+
+  std::unique_ptr<DeconvolutionTable> CreateDeconvolutionTable(
+      int n_deconvolution_channels, CachedImageSet& psf_images,
+      CachedImageSet& model_images, CachedImageSet& residual_images) const;
 
  private:
   explicit ImagingTable(const Group& entries);

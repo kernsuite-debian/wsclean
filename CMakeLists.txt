@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.3)
+cmake_minimum_required(VERSION 3.8)
 
 project(wsclean)
 
@@ -11,7 +11,8 @@ include(CMakeVersionInfo.txt)
 
 # Using pybind11 requires using -fvisibility=hidden.
 # See https://pybind11.readthedocs.io/en/stable/faq.html
-add_compile_options(-O3 -Wall -fvisibility=hidden)
+add_compile_options(-O3 -Wall -Wzero-as-null-pointer-constant
+                    -fvisibility=hidden)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(STATUS "Debug build selected: setting linking flag --no-undefined")
   string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--no-undefined")
@@ -19,30 +20,14 @@ else()
   add_compile_options(-DNDEBUG)
 endif()
 
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-std=c++17" COMPILER_HAS_CXX17)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED YES)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(DISABLE_CXX17 "Do not use C++17 for compilation" OFF)
 option(PORTABLE "Generate portable code" OFF)
 option(BUILD_PACKAGES "Build Debian packages" OFF)
 
-if(COMPILER_HAS_CXX17 AND NOT DISABLE_CXX17)
-  add_compile_options(-std=c++17)
-  add_definitions(-DHAVE_WGRIDDER)
-  set(WGRIDDER_FILES
-      wgridder/wgriddingmsgridder.cpp
-      external/wgridder/ducc0/infra/threading.cc
-      wgridder/wgriddinggridder_simple.cpp)
-  include_directories(external/wgridder)
-else()
-  add_compile_options(-std=c++11)
-  message(
-    WARNING
-      "Selected compiler does not support the C++17 standard. This will disable the 'wgridder' gridder, which requires C++17."
-  )
-  set(WGRIDDER_FILES)
-endif()
-
+include(CheckCXXCompilerFlag)
 if(PORTABLE)
   if(DEFINED TARGET_CPU)
     message(WARNING "You have selected to build PORTABLE binaries. "
@@ -62,6 +47,19 @@ else()
     endif()
   endif()
 endif()
+
+set(ExternalSubmoduleDirectories aocommon pybind11 schaapcommon)
+foreach(ExternalSubmodule ${ExternalSubmoduleDirectories})
+  if(NOT EXISTS ${CMAKE_SOURCE_DIR}/external/${ExternalSubmodule})
+    message(
+      FATAL_ERROR
+        "The external submodule '${ExternalSubmodule}' is missing in the external/ subdirectory. "
+        "This is likely the result of downloading a git tarball without submodules. "
+        "This is not supported: git tarballs do not provide the required versioning "
+        "information for the submodules. Please perform a git clone of this repository."
+    )
+  endif()
+endforeach()
 
 # Find and include git submodules
 find_package(Git QUIET)
@@ -91,6 +89,8 @@ include_directories("${CMAKE_SOURCE_DIR}/external/aocommon/include/")
 add_subdirectory("${CMAKE_SOURCE_DIR}/external/schaapcommon")
 include_directories("${CMAKE_SOURCE_DIR}/external/schaapcommon/include")
 
+include_directories(external/wgridder)
+
 # Casacore has a separate CMake file in this directory
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/CMake)
 
@@ -98,6 +98,7 @@ find_package(
   HDF5
   COMPONENTS C CXX
   REQUIRED)
+add_definitions(${HDF5_DEFINITIONS})
 
 set(CASACORE_MAKE_REQUIRED_EXTERNALS_OPTIONAL TRUE)
 find_package(Casacore REQUIRED COMPONENTS casa ms tables measures fits)
@@ -191,18 +192,28 @@ endif(${EVERYBEAM_FOUND})
 
 find_package(IDGAPI NO_MODULE QUIET)
 
-if(IDGAPI_LIBRARIES AND IDGAPI_INCLUDE_DIRS)
-  set(IDG_FILES idg/idgmsgridder.cpp)
-  include_directories(${IDGAPI_INCLUDE_DIRS})
-  add_definitions(-DHAVE_IDG)
-  message("Image domain gridder libraries found.")
-else(IDGAPI_LIBRARIES AND IDGAPI_INCLUDE_DIRS)
+if(IDGAPI_FOUND)
+  if(${IDGAPI_VERSION} VERSION_LESS "0.8.1" OR ${EVERYBEAM_VERSION}
+                                               VERSION_GREATER_EQUAL "0.9")
+    message(STATUS "IDG version is incompatible")
+    message(
+      FATAL_ERROR
+        "WSClean needs IDG version 0.8.x - with x >= 1 - but found version ${IDGAPI_VERSION}"
+    )
+  else()
+    set(IDG_FILES idg/idgmsgridder.cpp)
+    include_directories(${IDGAPI_INCLUDE_DIRS})
+    add_definitions(-DHAVE_IDG)
+    message(STATUS "Image domain gridder libraries found.")
+  endif()
+else()
   set(IDGAPI_LIBRARIES)
   set(IDG_FILES)
   message(
-    "Image domain gridder libraries NOT found. This gridder will not be available."
+    STATUS
+      "Image domain gridder libraries NOT found. This gridder will not be available."
   )
-endif(IDGAPI_LIBRARIES AND IDGAPI_INCLUDE_DIRS)
+endif()
 
 include_directories(SYSTEM ${CASACORE_INCLUDE_DIRS})
 include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
@@ -257,6 +268,7 @@ add_library(
   deconvolution/componentlist.cpp
   deconvolution/deconvolution.cpp
   deconvolution/deconvolutionalgorithm.cpp
+  deconvolution/deconvolutiontable.cpp
   deconvolution/genericclean.cpp
   deconvolution/imageset.cpp
   deconvolution/moresane.cpp
@@ -264,7 +276,6 @@ add_library(
   deconvolution/peakfinder.cpp
   deconvolution/pythondeconvolution.cpp
   deconvolution/simpleclean.cpp
-  deconvolution/spectralfitter.cpp
   deconvolution/subminorloop.cpp
   gridding/directmsgridder.cpp
   gridding/msgridderbase.cpp
@@ -272,23 +283,17 @@ add_library(
   gridding/wstackinggridder.cpp
   idg/averagebeam.cpp
   interface/wscleaninterface.cpp
+  io/componentlistwriter.cpp
   io/facetreader.cpp
-  io/logger.cpp
   io/parsetreader.cpp
   io/wscfitswriter.cpp
   iuwt/imageanalysis.cpp
   iuwt/iuwtdecomposition.cpp
   iuwt/iuwtdeconvolutionalgorithm.cpp
   iuwt/iuwtmask.cpp
-  math/fftkernels.cpp
-  math/fftconvolver.cpp
-  math/fftresampler.cpp
-  math/gaussianfitter.cpp
   math/imageoperations.cpp
-  math/modelrenderer.cpp
-  math/nlplfitter.cpp
+  math/renderer.cpp
   math/polynomialchannelfitter.cpp
-  math/polynomialfitter.cpp
   math/rmsimage.cpp
   model/model.cpp
   msproviders/averagingmsrowprovider.cpp
@@ -304,7 +309,6 @@ add_library(
   msproviders/partitionedms.cpp
   msproviders/timestepbuffer.cpp
   msproviders/synchronizedms.cpp
-  msproviders/msreaders/msreader.cpp
   msproviders/msreaders/contiguousmsreader.cpp
   msproviders/msreaders/partitionedmsreader.cpp
   msproviders/msreaders/timestepbufferreader.cpp
@@ -317,19 +321,18 @@ add_library(
   scheduling/griddingtask.cpp
   scheduling/metadatacache.cpp
   scheduling/threadedscheduler.cpp
-  structures/image.cpp
   structures/imageweights.cpp
   structures/imagingtable.cpp
   structures/imagingtableentry.cpp
   structures/msselection.cpp
-  structures/multibanddata.cpp
   structures/observationinfo.cpp
   structures/primarybeam.cpp
-  system/fftwmanager.cpp
-  system/system.cpp
+  system/pythonfilepath.cpp
+  wgridder/wgriddingmsgridder.cpp
+  wgridder/wgriddinggridder_simple.cpp
+  external/wgridder/ducc0/infra/threading.cc
   ${IDG_FILES}
-  ${MPI_CPP_FILES}
-  ${WGRIDDER_FILES})
+  ${MPI_CPP_FILES})
 
 # A number of files perform the 'core' high-performance floating point
 # operations. In these files, NaNs are avoided and thus -ffast-math is
@@ -340,7 +343,6 @@ set_source_files_properties(
   deconvolution/genericclean.cpp
   deconvolution/imageset.cpp
   deconvolution/simpleclean.cpp
-  deconvolution/spectralfitter.cpp
   multiscale/multiscalealgorithm.cpp
   multiscale/multiscaletransforms.cpp
   multiscale/threadeddeconvolutiontools.cpp
@@ -393,8 +395,7 @@ if(MPI_FOUND)
   target_link_libraries(wsclean-mp wsclean-lib)
 endif(MPI_FOUND)
 
-add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp
-                         structures/multibanddata.cpp)
+add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp)
 target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
                       ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
 
@@ -403,16 +404,14 @@ add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp
 target_link_libraries(wsuvbinning ${ALL_LIBRARIES})
 
 add_executable(
-  wspredictionexample EXCLUDE_FROM_ALL
-  gridding/examples/wspredictionexample.cpp gridding/wstackinggridder.cpp
-  system/fftwmanager.cpp)
+  wspredictionexample EXCLUDE_FROM_ALL gridding/examples/wspredictionexample.cpp
+                                       gridding/wstackinggridder.cpp)
 target_link_libraries(wspredictionexample ${ALL_LIBRARIES})
 
 add_executable(
   mscaleexample EXCLUDE_FROM_ALL
-  multiscale/mscaleexample.cpp math/fftconvolver.cpp
-  multiscale/multiscalealgorithm.cpp multiscale/multiscaletransforms.cpp
-  deconvolution/simpleclean.cpp)
+  multiscale/mscaleexample.cpp multiscale/multiscalealgorithm.cpp
+  multiscale/multiscaletransforms.cpp deconvolution/simpleclean.cpp)
 target_link_libraries(mscaleexample ${ALL_LIBRARIES})
 
 install(TARGETS wsclean DESTINATION bin)
@@ -457,7 +456,8 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
   else()
     message(
-      "Boost testing framework not found (not required for wsclean: only required for running tests)."
+      STATUS
+        "Boost testing framework not found (not required for wsclean: only required for running tests)."
     )
   endif()
 endif()

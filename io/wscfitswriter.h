@@ -7,21 +7,22 @@
 #include "../structures/outputchannelinfo.h"
 #include "../structures/imagingtable.h"
 
+#include "../deconvolution/deconvolution.h"
+
 #include "../main/settings.h"
 
+#include <aocommon/fits/fitsreader.h>
 #include <aocommon/fits/fitswriter.h>
 #include <aocommon/polarization.h>
 
+#include <optional>
 #include <string>
-
-using aocommon::FitsReader;
-using aocommon::FitsWriter;
 
 class WSCFitsWriter {
  public:
   WSCFitsWriter(const ImagingTableEntry& entry, bool isImaginary,
                 const Settings& settings,
-                const class Deconvolution& deconvolution,
+                const std::optional<Deconvolution>& deconvolution,
                 const ObservationInfo& observationInfo, size_t majorIterationNr,
                 const std::string& commandLine,
                 const OutputChannelInfo& channelInfo, bool isModel,
@@ -30,15 +31,15 @@ class WSCFitsWriter {
   WSCFitsWriter(const ImagingTableEntry& entry,
                 aocommon::PolarizationEnum polarization, bool isImaginary,
                 const Settings& settings,
-                const class Deconvolution& deconvolution,
+                const std::optional<Deconvolution>& deconvolution,
                 const ObservationInfo& observationInfo, size_t majorIterationNr,
                 const std::string& commandLine,
                 const OutputChannelInfo& channelInfo, bool isModel,
                 double startTime);
 
-  explicit WSCFitsWriter(FitsReader& templateReader);
+  explicit WSCFitsWriter(aocommon::FitsReader& templateReader);
 
-  FitsWriter& Writer() { return _writer; }
+  aocommon::FitsWriter& Writer() { return _writer; }
 
   template <typename NumT>
   void WriteImage(const std::string& suffix, const NumT* image);
@@ -56,7 +57,8 @@ class WSCFitsWriter {
 
   static void RestoreList(const class Settings& settings);
 
-  static ObservationInfo ReadObservationInfo(class FitsReader& reader);
+  static ObservationInfo ReadObservationInfo(
+      const aocommon::FitsReader& reader);
 
  private:
   void setSettingsKeywords(const Settings& settings,
@@ -75,10 +77,10 @@ class WSCFitsWriter {
                           aocommon::PolarizationEnum polarization,
                           const OutputChannelInfo& channelInfo);
 
-  void copyWSCleanKeywords(class FitsReader& reader);
+  void copyWSCleanKeywords(aocommon::FitsReader& reader);
 
  private:
-  FitsWriter _writer;
+  aocommon::FitsWriter _writer;
   std::string _filenamePrefix;
 };
 

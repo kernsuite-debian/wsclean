@@ -8,19 +8,20 @@
 #include <idg-api.h>
 
 #include <aocommon/fits/fitsreader.h>
+#include <aocommon/logger.h>
 
 #include "../msproviders/msprovider.h"
 #include "../msproviders/timestepbuffer.h"
 
 #include "../io/findmwacoefffile.h"
 #include "../io/imagefilename.h"
-#include "../io/logger.h"
 #include "../io/parsetreader.h"
 
 #include "../structures/imagingtable.h"
 
 #include "../main/settings.h"
 
+#include "averagebeam.h"
 #include "idgconfiguration.h"
 
 #ifdef HAVE_EVERYBEAM
@@ -35,6 +36,9 @@ using everybeam::aterms::ATermBeam;
 using everybeam::aterms::ATermConfig;
 using everybeam::coords::CoordinateSystem;
 #endif  // HAVE_EVERYBEAM
+
+using aocommon::Image;
+using aocommon::Logger;
 
 namespace {
 constexpr const size_t kGridderIndex = 0;
@@ -71,9 +75,12 @@ void IdgMsGridder::Invert() {
 
   _options["padded_size"] = untrimmedWidth;
 
-  if (!_metaDataCache->averageBeam)
-    _metaDataCache->averageBeam.reset(new AverageBeam());
-  _averageBeam = static_cast<AverageBeam*>(_metaDataCache->averageBeam.get());
+  const bool stokes_I_only =
+      (Polarization() == aocommon::Polarization::StokesI);
+  _options["stokes_I_only"] = stokes_I_only;
+  const size_t n_image_polarizations = stokes_I_only ? 1 : 4;
+
+  if (!_averageBeam) _averageBeam.reset(new AverageBeam());
 
   std::vector<MSData> msDataVector;
   initializeMSDataVector(msDataVector);
@@ -87,7 +94,7 @@ void IdgMsGridder::Invert() {
   const double shiftm = PhaseCentreDM();
   const double shiftp =
       std::sqrt(1.0 - shiftl * shiftl - shiftm * shiftm) - 1.0;
-  _bufferset->init(width, _actualPixelSizeX, max_w + 1.0, shiftl, shiftm,
+  _bufferset->init(width, ActualPixelSizeX(), max_w + 1.0, shiftl, shiftm,
                    shiftp, _options);
   Logger::Debug << "IDG subgrid size: " << _bufferset->get_subgridsize()
                 << '\n';
@@ -106,9 +113,11 @@ void IdgMsGridder::Invert() {
       gridMeasurementSet(msData);
     }
     _bufferset->finalize_compute_avg_beam();
-    _averageBeam->SetScalarBeam(_bufferset->get_scalar_beam());
-    _averageBeam->SetMatrixInverseBeam(_bufferset->get_matrix_inverse_beam());
-    _image.assign(4 * width * height, 0.0);
+    _averageBeam->SetScalarBeam(_bufferset->get_scalar_beam(), width, height);
+    _averageBeam->SetMatrixInverseBeam(_bufferset->get_matrix_inverse_beam(),
+                                       _bufferset->get_subgridsize(),
+                                       _bufferset->get_subgridsize());
+    _image.assign(n_image_polarizations * width * height, 0.0);
     _bufferset->get_image(_image.data());
 
     Logger::Debug << "Total weight: " << totalWeight() << '\n';
@@ -134,8 +143,10 @@ void IdgMsGridder::Invert() {
       }
       _bufferset->finalize_compute_avg_beam();
       Logger::Debug << "Finished computing average beam.\n";
-      _averageBeam->SetScalarBeam(_bufferset->get_scalar_beam());
-      _averageBeam->SetMatrixInverseBeam(_bufferset->get_matrix_inverse_beam());
+      _averageBeam->SetScalarBeam(_bufferset->get_scalar_beam(), width, height);
+      _averageBeam->SetMatrixInverseBeam(_bufferset->get_matrix_inverse_beam(),
+                                         _bufferset->get_subgridsize(),
+                                         _bufferset->get_subgridsize());
     }
 
     resetVisibilityCounters();
@@ -143,7 +154,7 @@ void IdgMsGridder::Invert() {
       // Adds the gridding result to _image member
       gridMeasurementSet(msData);
     }
-    _image.assign(4 * width * height, 0.0);
+    _image.assign(n_image_polarizations * width * height, 0.0);
     _bufferset->get_image(_image.data());
   }
 
@@ -167,12 +178,16 @@ void IdgMsGridder::gridMeasurementSet(const MSGridderBase::MSData& msData) {
 
   StartMeasurementSet(msData, false);
 
-  aocommon::UVector<float> weightBuffer(_selectedBand.ChannelCount() * 4);
+  const size_t n_vis_polarizations = msData.msProvider->NPolarizations();
+  constexpr size_t n_idg_polarizations = 4;
+  aocommon::UVector<float> weightBuffer(_selectedBand.ChannelCount() *
+                                        n_idg_polarizations);
   aocommon::UVector<std::complex<float>> modelBuffer(
-      _selectedBand.ChannelCount() * 4);
-  aocommon::UVector<bool> isSelected(_selectedBand.ChannelCount() * 4, true);
+      _selectedBand.ChannelCount() * n_idg_polarizations);
+  aocommon::UVector<bool> isSelected(
+      _selectedBand.ChannelCount() * n_idg_polarizations, true);
   aocommon::UVector<std::complex<float>> dataBuffer(
-      _selectedBand.ChannelCount() * 4);
+      _selectedBand.ChannelCount() * n_idg_polarizations);
 
   _griddingWatch.Start();
 
@@ -218,9 +233,31 @@ void IdgMsGridder::gridMeasurementSet(const MSGridderBase::MSData& msData) {
     rowData.antenna1 = metaData.antenna1;
     rowData.antenna2 = metaData.antenna2;
     rowData.timeIndex = timeIndex;
-    readAndWeightVisibilities<4, DDGainMatrix::kFull>(
-        *msReader, msData.antennaNames, rowData, _selectedBand,
-        weightBuffer.data(), modelBuffer.data(), isSelected.data());
+    if (n_vis_polarizations == 2) {
+      readAndWeightVisibilities<2, DDGainMatrix::kFull>(
+          *msReader, msData.antennaNames, rowData, _selectedBand,
+          weightBuffer.data(), modelBuffer.data(), isSelected.data());
+      // The data is placed in the first half of the buffers: reverse copy it
+      // and expand it to 4 polarizations. TODO at a later time, IDG should
+      // directly accept 2 pols instead of 4.
+      size_t source_index = dataBuffer.size() / 2;
+      for (size_t i = dataBuffer.size(); i != 0; i -= 4) {
+        rowData.data[i - 1] = rowData.data[source_index - 1];
+        rowData.data[i - 2] = 0.0;
+        rowData.data[i - 3] = 0.0;
+        rowData.data[i - 4] = rowData.data[source_index - 2];
+        weightBuffer[i - 1] = weightBuffer[source_index - 1];
+        weightBuffer[i - 2] = weightBuffer[source_index - 1];
+        weightBuffer[i - 3] = weightBuffer[source_index - 2];
+        weightBuffer[i - 4] = weightBuffer[source_index - 2];
+        source_index -= 2;
+      }
+    } else {
+      assert(n_vis_polarizations == 4);
+      readAndWeightVisibilities<4, DDGainMatrix::kFull>(
+          *msReader, msData.antennaNames, rowData, _selectedBand,
+          weightBuffer.data(), modelBuffer.data(), isSelected.data());
+    }
 
     rowData.uvw[1] = -metaData.vInM;  // DEBUG vdtol, flip axis
     rowData.uvw[2] = -metaData.wInM;  //
@@ -245,24 +282,27 @@ void IdgMsGridder::Predict(std::vector<Image>&& images) {
 
   _options["padded_size"] = untrimmedWidth;
 
-  _image.assign(4 * width * height, 0.0);
-  if (!_metaDataCache->averageBeam) {
-    Logger::Info << "no average_beam in cache, creating an empty one.\n";
-    _metaDataCache->averageBeam.reset(new AverageBeam());
-  }
-  _averageBeam = static_cast<AverageBeam*>(_metaDataCache->averageBeam.get());
+  const bool stokes_I_only =
+      (Polarization() == aocommon::Polarization::StokesI);
+  _options["stokes_I_only"] = stokes_I_only;
+  const size_t n_image_polarizations = stokes_I_only ? 1 : 4;
 
+  _image.assign(n_image_polarizations * width * height, 0.0);
+  if (!_averageBeam) {
+    Logger::Debug << "No average beam in cache, creating an empty one.\n";
+    _averageBeam.reset(new AverageBeam());
+  }
+
+  assert(images.size() == n_image_polarizations);
   if (Polarization() == aocommon::Polarization::FullStokes) {
-    assert(images.size() == 4);
-    for (size_t polIndex = 0; polIndex != 4; ++polIndex) {
-      std::copy_n(images[polIndex].data(), width * height,
+    for (size_t polIndex = 0; polIndex != n_image_polarizations; ++polIndex) {
+      std::copy_n(images[polIndex].Data(), width * height,
                   _image.data() + polIndex * width * height);
     }
   } else {
-    assert(images.size() == 1);
     const size_t stokesIndex =
         aocommon::Polarization::StokesToIndex(Polarization());
-    std::copy_n(images[0].data(), width * height,
+    std::copy_n(images[0].Data(), width * height,
                 _image.data() + stokesIndex * width * height);
   }
 
@@ -286,7 +326,7 @@ void IdgMsGridder::Predict(std::vector<Image>&& images) {
   const double shiftm = PhaseCentreDM();
   const double shiftp =
       std::sqrt(1.0 - shiftl * shiftl - shiftm * shiftm) - 1.0;
-  _bufferset->init(width, _actualPixelSizeX, max_w + 1.0, shiftl, shiftm,
+  _bufferset->init(width, ActualPixelSizeX(), max_w + 1.0, shiftl, shiftm,
                    shiftp, _options);
   _bufferset->set_image(_image.data(), do_scale);
 
@@ -327,8 +367,9 @@ void IdgMsGridder::predictMeasurementSet(const MSGridderBase::MSData& msData) {
   _outputProvider = msData.msProvider;
   StartMeasurementSet(msData, true);
 
+  constexpr size_t n_idg_polarizations = 4;
   aocommon::UVector<std::complex<float>> buffer(_selectedBand.ChannelCount() *
-                                                4);
+                                                n_idg_polarizations);
   _degriddingWatch.Start();
 
   int timeIndex = -1;
@@ -392,9 +433,23 @@ void IdgMsGridder::computePredictionBuffer(
     const std::vector<std::string>& antennaNames) {
   auto available_row_ids = _bufferset->get_degridder(kGridderIndex)->compute();
   Logger::Debug << "Computed " << available_row_ids.size() << " rows.\n";
-  for (auto i : available_row_ids) {
-    writeVisibilities<4, DDGainMatrix::kFull>(*_outputProvider, antennaNames,
-                                              _selectedBand, i.second);
+  const size_t n_vis_polarizations = _outputProvider->NPolarizations();
+  for (std::pair<long unsigned, std::complex<float>*>& row :
+       available_row_ids) {
+    if (n_vis_polarizations == 2) {
+      // Remove the XY/YX pols from the data and place the result in the first
+      // half of the array
+      for (size_t i = 0; i != _selectedBand.ChannelCount(); ++i) {
+        row.second[i * 2] = row.second[i * 4];
+        row.second[i * 2 + 1] = row.second[i * 4 + 3];
+      }
+      writeVisibilities<2, DDGainMatrix::kFull>(*_outputProvider, antennaNames,
+                                                _selectedBand, row.second);
+    } else {
+      assert(n_vis_polarizations == 4);
+      writeVisibilities<4, DDGainMatrix::kFull>(*_outputProvider, antennaNames,
+                                                _selectedBand, row.second);
+    }
   }
   _bufferset->get_degridder(kGridderIndex)->finished_reading();
   _degriddingWatch.Pause();
@@ -409,27 +464,30 @@ std::vector<Image> IdgMsGridder::ResultImages() {
     for (size_t polIndex = 0; polIndex != 4; ++polIndex) {
       images.emplace_back(width, height);
       std::copy_n(_image.data() + polIndex * width * height, width * height,
-                  images[polIndex].data());
+                  images[polIndex].Data());
     }
   } else {
     size_t polIndex = aocommon::Polarization::StokesToIndex(Polarization());
     images.emplace_back(width, height);
     std::copy_n(_image.data() + polIndex * width * height, width * height,
-                images[0].data());
+                images[0].Data());
   }
   return images;
+}
+
+void IdgMsGridder::SetAverageBeam(std::unique_ptr<AverageBeam> average_beam) {
+  _averageBeam = std::move(average_beam);
+}
+
+std::unique_ptr<AverageBeam> IdgMsGridder::ReleaseAverageBeam() {
+  return std::move(_averageBeam);
 }
 
 void IdgMsGridder::SaveBeamImage(const ImagingTableEntry& entry,
                                  ImageFilename& filename,
                                  const Settings& settings, double ra,
                                  double dec, double pdl, double pdm,
-                                 const MetaDataCache& cache) {
-  if (!cache.averageBeam || cache.averageBeam->Empty()) {
-    throw std::runtime_error(
-        "IDG gridder can not save the beam image. Beam has not been computed "
-        "yet.");
-  }
+                                 const AverageBeam& average_beam) {
   aocommon::FitsWriter writer;
   writer.SetImageDimensions(settings.trimmedImageWidth,
                             settings.trimmedImageHeight, ra, dec,
@@ -441,7 +499,7 @@ void IdgMsGridder::SaveBeamImage(const ImagingTableEntry& entry,
   writer.SetFrequency(entry.CentralFrequency(),
                       entry.bandEndFrequency - entry.bandStartFrequency);
   writer.Write(polName.GetBeamPrefix(settings) + ".fits",
-               cache.averageBeam->ScalarBeam()->data());
+               average_beam.ScalarBeam()->data());
 }
 
 void IdgMsGridder::SavePBCorrectedImages(aocommon::FitsWriter& writer,
@@ -453,7 +511,7 @@ void IdgMsGridder::SavePBCorrectedImages(aocommon::FitsWriter& writer,
   aocommon::FitsReader reader(beamName.GetBeamPrefix(settings) + ".fits");
 
   Image beam(reader.ImageWidth(), reader.ImageHeight());
-  reader.Read(beam.data());
+  reader.Read(beam.Data());
 
   Image image;
   for (size_t polIndex = 0; polIndex != 4; ++polIndex) {
@@ -463,8 +521,8 @@ void IdgMsGridder::SavePBCorrectedImages(aocommon::FitsWriter& writer,
     name.SetPolarization(pol);
     aocommon::FitsReader reader(name.GetPrefix(settings) + "-" + filenameKind +
                                 ".fits");
-    if (image.empty()) image = Image(reader.ImageWidth(), reader.ImageHeight());
-    reader.Read(image.data());
+    if (image.Empty()) image = Image(reader.ImageWidth(), reader.ImageHeight());
+    reader.Read(image.Data());
 
     for (size_t i = 0; i != reader.ImageWidth() * reader.ImageHeight(); ++i) {
       if (beam[i] > 1e-6)
@@ -475,7 +533,7 @@ void IdgMsGridder::SavePBCorrectedImages(aocommon::FitsWriter& writer,
 
     writer.SetPolarization(pol);
     writer.Write(name.GetPrefix(settings) + "-" + filenameKind + "-pb.fits",
-                 image.data());
+                 image.Data());
   }
 }
 
@@ -562,7 +620,6 @@ std::unique_ptr<class ATermBase> IdgMsGridder::getATermMaker(
     const MSGridderBase::MSData& msData) {
   SynchronizedMS ms = msData.msProvider->MS();
   size_t nr_stations = ms->antenna().nrow();
-  aocommon::UVector<std::complex<float>> aTermBuffer;
   if (!_settings.atermConfigFilename.empty() || _settings.gridWithBeam) {
     // IDG uses a flipped coordinate system which is moved by half a pixel:
     everybeam::coords::CoordinateSystem system;
@@ -600,7 +657,7 @@ std::unique_ptr<class ATermBase> IdgMsGridder::getATermMaker(
           new ATermConfig(nr_stations, system, aterm_settings));
       config->SetSaveATerms(_settings.saveATerms, _settings.prefixName);
       config->Read(*ms, parset_aterms, ms.Filename());
-      return std::move(config);
+      return config;
     } else {
       // If MWA MS, get the path to the coefficient file
       if (everybeam::GetTelescopeType(*ms) ==
@@ -619,7 +676,7 @@ std::unique_ptr<class ATermBase> IdgMsGridder::getATermMaker(
           elementResponseModel, _settings.beamMode);
       beam->SetSaveATerms(_settings.saveATerms, _settings.prefixName);
       beam->SetUpdateInterval(_settings.beamAtermUpdateTime);
-      return std::move(beam);
+      return beam;
     }
   } else {
     return std::unique_ptr<ATermBase>();

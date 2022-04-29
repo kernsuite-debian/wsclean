@@ -6,30 +6,25 @@
 
 #include "../gridding/directmsgridder.h"
 
+#include "../io/componentlistwriter.h"
 #include "../io/facetreader.h"
 #include "../io/imagefilename.h"
 #include "../io/imageweightcache.h"
-#include "../io/logger.h"
 #include "../io/wscfitswriter.h"
 
 #include "../scheduling/griddingtaskmanager.h"
 
-#include "../units/angle.h"
-
 #include "../system/application.h"
 
-#include "../structures/image.h"
 #include "../structures/imageweights.h"
 #include "../structures/msselection.h"
 
-#include "../deconvolution/deconvolutionalgorithm.h"
 #include "../deconvolution/imageset.h"
 
+#include "../idg/averagebeam.h"
 #include "../idg/idgmsgridder.h"
 
-#include "../math/fftresampler.h"
-#include "../math/modelrenderer.h"
-#include "../math/nlplfitter.h"
+#include "../math/renderer.h"
 
 #include "../model/model.h"
 
@@ -38,19 +33,26 @@
 
 #include "progressbar.h"
 
-#include <schaapcommon/facets/facetimage.h>
-
 #include <aocommon/fits/fitswriter.h>
+#include <aocommon/image.h>
+#include <aocommon/logger.h>
 #include <aocommon/uvector.h>
 #include <aocommon/parallelfor.h>
+#include <aocommon/units/angle.h>
 
 #include <schaapcommon/facets/facetimage.h>
+#include <schaapcommon/fft/resampler.h>
+#include <schaapcommon/fft/restoreimage.h>
+#include <schaapcommon/fitters/nlplfitter.h>
 
 #include <iostream>
 #include <memory>
 
+using aocommon::Image;
+using aocommon::Logger;
 using aocommon::Polarization;
 using aocommon::PolarizationEnum;
+using aocommon::units::Angle;
 
 WSClean::WSClean()
     : _globalSelection(),
@@ -60,7 +62,10 @@ WSClean::WSClean()
       _deconvolutionWatch(false),
       _isFirstInversion(true),
       _majorIterationNr(0),
-      _deconvolution(_settings),
+      _psfImages(),
+      _modelImages(),
+      _residualImages(),
+      _deconvolution(),
       _lastStartTime(0.0) {}
 
 WSClean::~WSClean() {}
@@ -74,26 +79,29 @@ void WSClean::multiplyImage(double factor, double* image) const {
 
 GriddingResult WSClean::loadExistingImage(ImagingTableEntry& entry,
                                           bool isPSF) {
-  size_t channelIndex = entry.outputChannelIndex;
-  Settings modifiedSettings(_settings);
-  modifiedSettings.prefixName = _settings.reusePsfPrefix;
   std::string name;
-  if (isPSF)
-    name = ImageFilename::GetPSFPrefix(modifiedSettings, channelIndex,
-                                       entry.outputIntervalIndex) +
-           "-psf.fits";
-  else
+  if (isPSF) {
+    Settings modifiedSettings(_settings);
+    modifiedSettings.prefixName = _settings.reusePsfPrefix;
+    name =
+        ImageFilename::GetPSFPrefix(modifiedSettings, entry.outputChannelIndex,
+                                    entry.outputIntervalIndex) +
+        "-psf.fits";
+  } else {
+    Settings modifiedSettings(_settings);
+    modifiedSettings.prefixName = _settings.reuseDirtyPrefix;
     name = ImageFilename::GetPrefix(modifiedSettings, entry.polarization,
-                                    channelIndex, entry.outputIntervalIndex,
-                                    false) +
+                                    entry.outputChannelIndex,
+                                    entry.outputIntervalIndex, false) +
            "-dirty.fits";
-  FitsReader reader(name);
+  }
+  aocommon::FitsReader reader(name);
   if (reader.ImageWidth() != _settings.trimmedImageWidth ||
       reader.ImageHeight() != _settings.trimmedImageHeight)
     throw std::runtime_error(
         "Image width and height of reused PSF don't match with given settings");
   Image psfImage(reader.ImageWidth(), reader.ImageHeight());
-  reader.Read(psfImage.data());
+  reader.Read(psfImage.Data());
 
   GriddingResult result;
   result.images = {std::move(psfImage)};
@@ -135,6 +143,18 @@ void WSClean::loadExistingDirty(ImagingTableEntry& entry, bool updateBeamInfo) {
   imageMainCallback(entry, result, updateBeamInfo, true);
 }
 
+void WSClean::storeAverageBeam(const ImagingTableEntry& entry,
+                               std::unique_ptr<AverageBeam>& averageBeam) {
+  if (averageBeam) {
+    _scalarBeamImages.SetFitsWriter(
+        createWSCFitsWriter(entry, false, false, true).Writer());
+    _matrixBeamImages.SetFitsWriter(
+        createWSCFitsWriter(entry, false, false, true).Writer());
+    averageBeam->Store(_scalarBeamImages, _matrixBeamImages,
+                       entry.outputChannelIndex);
+  }
+}
+
 void WSClean::imagePSF(ImagingTableEntry& entry) {
   Logger::Info.Flush();
   Logger::Info << " == Constructing PSF ==\n";
@@ -154,6 +174,8 @@ void WSClean::imagePSF(ImagingTableEntry& entry) {
   applyFacetPhaseShift(entry, task.observationInfo);
   initializeMSList(entry, task.msList);
   task.imageWeights = initializeImageWeights(entry, task.msList);
+  // during PSF imaging, the average beam will never exist, so it is not
+  // necessary to set task.averageBeam
 
   const bool writeBeamImage = true;
   _griddingTaskManager->Run(std::move(task),
@@ -184,7 +206,7 @@ void WSClean::imagePSFCallback(ImagingTableEntry& entry, GriddingResult& result,
 
   _psfImages.SetFitsWriter(
       createWSCFitsWriter(entry, false, false, false).Writer());
-  _psfImages.StoreFacet(result.images[0].data(),
+  _psfImages.StoreFacet(result.images[0].Data(),
                         *_settings.polarizations.begin(), channelIndex,
                         entry.facetIndex, entry.facet, false);
 
@@ -193,13 +215,20 @@ void WSClean::imagePSFCallback(ImagingTableEntry& entry, GriddingResult& result,
     Logger::Info << "Writing IDG beam image...\n";
     ImageFilename imageName(entry.outputChannelIndex,
                             entry.outputIntervalIndex);
+    if (!result.averageBeam || result.averageBeam->Empty()) {
+      throw std::runtime_error(
+          "Trying to write the IDG beam while the beam has not been computed "
+          "yet.");
+    }
     IdgMsGridder::SaveBeamImage(
         entry, imageName, _settings, _observationInfo.phaseCentreRA,
         _observationInfo.phaseCentreDec, _observationInfo.shiftL,
-        _observationInfo.shiftM, *_msGridderMetaCache[entry.index]);
+        _observationInfo.shiftM, *result.averageBeam);
   }
 
   _isFirstInversion = false;
+
+  storeAverageBeam(entry, result.averageBeam);
 }
 
 void WSClean::processFullPSF(Image& image, const ImagingTableEntry& entry) {
@@ -218,14 +247,14 @@ void WSClean::processFullPSF(Image& image, const ImagingTableEntry& entry) {
   Logger::Debug << "Normalized PSF by factor of " << normFactor << ".\n";
 
   DeconvolutionAlgorithm::RemoveNaNsInPSF(
-      image.data(), _settings.trimmedImageWidth, _settings.trimmedImageHeight);
+      image.Data(), _settings.trimmedImageWidth, _settings.trimmedImageHeight);
 
   double minPixelScale = std::min(_settings.pixelScaleX, _settings.pixelScaleY);
   double initialFitSize =
       std::max(_infoPerChannel[channelIndex].beamSizeEstimate, minPixelScale);
   double bMaj, bMin, bPA, bTheoretical;
   ImageOperations::DetermineBeamSize(_settings, bMaj, bMin, bPA, bTheoretical,
-                                     image.data(), initialFitSize);
+                                     image.Data(), initialFitSize);
   _infoPerChannel[channelIndex].theoreticBeamSize = bTheoretical;
   _infoPerChannel[channelIndex].beamMaj = bMaj;
   _infoPerChannel[channelIndex].beamMin = bMin;
@@ -242,7 +271,7 @@ void WSClean::processFullPSF(Image& image, const ImagingTableEntry& entry) {
                                   entry.outputIntervalIndex) +
       "-psf.fits");
   WSCFitsWriter fitsFile = createWSCFitsWriter(entry, false, false, true);
-  fitsFile.WritePSF(name, image.data());
+  fitsFile.WritePSF(name, image.Data());
   Logger::Info << "DONE\n";
 }
 
@@ -270,6 +299,9 @@ void WSClean::imageMain(ImagingTableEntry& entry, bool isFirstInversion,
   task.facet = entry.facet;
   task.facetIndex = entry.facetIndex;
   task.facetGroupIndex = entry.facetGroupIndex;
+  task.averageBeam = AverageBeam::Load(_scalarBeamImages, _matrixBeamImages,
+                                       entry.outputChannelIndex);
+
   applyFacetPhaseShift(entry, task.observationInfo);
 
   _griddingTaskManager->Run(
@@ -345,14 +377,14 @@ void WSClean::imageMainCallback(ImagingTableEntry& entry,
       if (!_settings.useIDG) images[i] *= psfFactor * entry.siCorrection;
       const bool isImaginary = i == 1;
       storeAndCombineXYandYX(_residualImages, joinedChannelIndex, entry,
-                             polarization, isImaginary, images[i].data());
+                             polarization, isImaginary, images[i].Data());
     }
 
     // If !_facets.empty(), these actions are performed in stitchFacets
     if (isInitialInversion && _facets.empty()) {
-      // nFacetGroups is always 1
-      const size_t nFacetGroups = 1;
-      initializeModelImages(entry, polarization, nFacetGroups);
+      // maxFacetGroupIndex is always 1
+      const size_t maxFacetGroupIndex = 1;
+      initializeModelImages(entry, polarization, maxFacetGroupIndex);
 
       _residualImages.SetFitsWriter(
           createWSCFitsWriter(entry, polarization, false, false, false)
@@ -366,14 +398,16 @@ void WSClean::imageMainCallback(ImagingTableEntry& entry,
                                                    isImaginary, false, false));
           Image dirtyImage(_settings.trimmedImageWidth,
                            _settings.trimmedImageHeight);
-          _residualImages.Load(dirtyImage.data(), polarization,
+          _residualImages.Load(dirtyImage.Data(), polarization,
                                entry.outputChannelIndex, isImaginary);
           Logger::Info << "Writing dirty image...\n";
-          writer.WriteImage("dirty.fits", dirtyImage.data());
+          writer.WriteImage("dirty.fits", dirtyImage.Data());
         }
       }
     }
   }
+
+  storeAverageBeam(entry, result.averageBeam);
 }
 
 void WSClean::storeAndCombineXYandYX(CachedImageSet& dest,
@@ -395,16 +429,16 @@ void WSClean::storeAndCombineXYandYX(CachedImageSet& dest,
           Image(_settings.trimmedImageWidth, _settings.trimmedImageHeight);
     }
 
-    dest.LoadFacet(xyImage.data(), Polarization::XY, joinedChannelIndex,
+    dest.LoadFacet(xyImage.Data(), Polarization::XY, joinedChannelIndex,
                    entry.facetIndex, entry.facet, isImaginary);
     if (isImaginary) {
-      for (size_t i = 0; i != xyImage.size(); ++i)
+      for (size_t i = 0; i != xyImage.Size(); ++i)
         xyImage[i] = (xyImage[i] - image[i]) * 0.5;
     } else {
-      for (size_t i = 0; i != xyImage.size(); ++i)
+      for (size_t i = 0; i != xyImage.Size(); ++i)
         xyImage[i] = (xyImage[i] + image[i]) * 0.5;
     }
-    dest.StoreFacet(xyImage.data(), Polarization::XY, joinedChannelIndex,
+    dest.StoreFacet(xyImage.Data(), Polarization::XY, joinedChannelIndex,
                     entry.facetIndex, entry.facet, isImaginary);
   } else {
     dest.StoreFacet(image, polarization, joinedChannelIndex, entry.facetIndex,
@@ -439,13 +473,13 @@ void WSClean::predict(const ImagingTableEntry& entry) {
     modelImages.emplace_back(width, height);
     bool isYX = polarization == Polarization::YX;
     const PolarizationEnum loadPol = isYX ? Polarization::XY : polarization;
-    _modelImages.LoadFacet(modelImages.back().data(), loadPol,
+    _modelImages.LoadFacet(modelImages.back().Data(), loadPol,
                            entry.outputChannelIndex, entry.facetIndex,
                            entry.facet, false);
     if (Polarization::IsComplex(polarization)) {  // XY or YX
       modelImages.emplace_back(width, height);
       // YX is never stored: it is always combined with XY and stored as XY
-      _modelImages.LoadFacet(modelImages.back().data(), Polarization::XY,
+      _modelImages.LoadFacet(modelImages.back().Data(), Polarization::XY,
                              entry.outputChannelIndex, entry.facetIndex,
                              entry.facet, true);
       if (isYX) {
@@ -467,6 +501,8 @@ void WSClean::predict(const ImagingTableEntry& entry) {
   task.facet = entry.facet;
   task.facetIndex = entry.facetIndex;
   task.facetGroupIndex = entry.facetGroupIndex;
+  task.averageBeam = AverageBeam::Load(_scalarBeamImages, _matrixBeamImages,
+                                       entry.outputChannelIndex);
   applyFacetPhaseShift(entry, task.observationInfo);
   _griddingTaskManager->Run(
       std::move(task), [this, &entry](GriddingResult& result) {
@@ -506,7 +542,7 @@ std::shared_ptr<ImageWeights> WSClean::initializeImageWeights(
     return _imageWeightCache->GetMFWeights();
   } else {
     std::shared_ptr<ImageWeights> weights = _imageWeightCache->Get(
-        msList, _msBands, entry.outputChannelIndex, entry.outputIntervalIndex);
+        msList, entry.outputChannelIndex, entry.outputIntervalIndex);
     if (_settings.isWeightImageSaved) {
       std::string prefix = ImageFilename::GetPSFPrefix(
           _settings, entry.outputChannelIndex, entry.outputIntervalIndex);
@@ -529,12 +565,11 @@ void WSClean::initializeMFSImageWeights() {
         for (size_t dataDescId = 0;
              dataDescId != _msBands[msIndex].DataDescCount(); ++dataDescId) {
           MSSelection partSelection(_globalSelection);
-          partSelection.SetBandId(dataDescId);
-          const bool hasSelection =
-              selectChannels(partSelection, msIndex, dataDescId, entry);
+          const bool hasSelection = partSelection.SelectMsChannels(
+              _msBands[msIndex], dataDescId, entry);
           if (hasSelection) {
-            PolarizationEnum pol = _settings.useIDG ? Polarization::Instrumental
-                                                    : entry.polarization;
+            const PolarizationEnum pol =
+                _settings.useIDG ? getIdgPolarization() : entry.polarization;
             PartitionedMS msProvider(_partitionedMSHandles[msIndex],
                                      ms.bands[dataDescId].partIndex, pol,
                                      dataDescId);
@@ -552,9 +587,9 @@ void WSClean::initializeMFSImageWeights() {
   } else {
     for (size_t i = 0; i != _settings.filenames.size(); ++i) {
       for (size_t d = 0; d != _msBands[i].DataDescCount(); ++d) {
-        PolarizationEnum pol = _settings.useIDG
-                                   ? Polarization::Instrumental
-                                   : *_settings.polarizations.begin();
+        const PolarizationEnum pol = _settings.useIDG
+                                         ? getIdgPolarization()
+                                         : *_settings.polarizations.begin();
         ContiguousMS msProvider(_settings.filenames[i],
                                 _settings.dataColumnName, _globalSelection, pol,
                                 d, _settings.useMPI);
@@ -605,7 +640,7 @@ void WSClean::performReordering(bool isPredictMode) {
         const ImagingTableEntry& entry = facetGroup.Front();
         for (size_t d = 0; d != _msBands[msIndex].DataDescCount(); ++d) {
           MSSelection selection(_globalSelection);
-          if (selectChannels(selection, msIndex, d, entry)) {
+          if (selection.SelectMsChannels(_msBands[msIndex], d, entry)) {
             if (entry.polarization == *_settings.polarizations.begin()) {
               PartitionedMS::ChannelRange r;
               r.dataDescId = d;
@@ -635,6 +670,7 @@ void WSClean::performReordering(bool isPredictMode) {
 }
 
 void WSClean::RunClean() {
+  _deconvolution.emplace(_settings.GetDeconvolutionSettings());
   _observationInfo = getObservationInfo();
   _facets = FacetReader::ReadFacets(_settings.facetRegionFilename);
 
@@ -820,10 +856,11 @@ std::unique_ptr<ImageWeightCache> WSClean::createWeightCache() {
       _settings.gaussianTaperBeamSize, _settings.tukeyTaperInLambda,
       _settings.tukeyInnerTaperInLambda, _settings.edgeTaperInLambda,
       _settings.edgeTukeyTaperInLambda);
-  return std::move(cache);
+  return cache;
 }
 
 void WSClean::RunPredict() {
+  assert(!_deconvolution.has_value());
   _observationInfo = getObservationInfo();
   _facets = FacetReader::ReadFacets(_settings.facetRegionFilename);
 
@@ -851,7 +888,11 @@ void WSClean::RunPredict() {
           ImageFilename::GetPrefix(_settings, _imagingTable[0].polarization,
                                    _imagingTable[0].outputChannelIndex,
                                    _imagingTable[0].outputIntervalIndex, false);
-      FitsReader reader(prefix + "-model.fits");
+      const std::string suffix =
+          (_settings.applyFacetBeam || !_settings.facetSolutionFiles.empty())
+              ? "-model-pb.fits"
+              : "-model.fits";
+      aocommon::FitsReader reader(prefix + suffix);
       overrideImageSettings(reader);
 
       for (std::shared_ptr<schaapcommon::facets::Facet>& facet : _facets) {
@@ -882,49 +923,6 @@ void WSClean::RunPredict() {
   }
 }
 
-bool WSClean::selectChannels(MSSelection& selection, size_t msIndex,
-                             size_t dataDescId,
-                             const ImagingTableEntry& entry) {
-  const BandData& band = _msBands[msIndex][dataDescId];
-  double firstCh = band.ChannelFrequency(0);
-  double lastCh = band.ChannelFrequency(band.ChannelCount() - 1);
-  // Some mses have decreasing (i.e. reversed) channel frequencies in them
-  bool isReversed = false;
-  if (firstCh > lastCh) {
-    std::swap(firstCh, lastCh);
-    isReversed = true;
-    Logger::Debug << "Warning: MS has reversed channel frequencies.\n";
-  }
-  if (band.ChannelCount() != 0 && entry.lowestFrequency <= lastCh &&
-      entry.highestFrequency >= firstCh) {
-    size_t newStart, newEnd;
-    if (isReversed) {
-      BandData::const_reverse_iterator lowPtr =
-          std::lower_bound(band.rbegin(), band.rend(), entry.lowestFrequency);
-      BandData::const_reverse_iterator highPtr =
-          std::lower_bound(lowPtr, band.rend(), entry.highestFrequency);
-
-      if (highPtr == band.rend()) --highPtr;
-      newStart = band.ChannelCount() - 1 - (highPtr - band.rbegin());
-      newEnd = band.ChannelCount() - (lowPtr - band.rbegin());
-    } else {
-      const double *lowPtr, *highPtr;
-      lowPtr =
-          std::lower_bound(band.begin(), band.end(), entry.lowestFrequency);
-      highPtr = std::lower_bound(lowPtr, band.end(), entry.highestFrequency);
-
-      if (highPtr == band.end()) --highPtr;
-      newStart = lowPtr - band.begin();
-      newEnd = highPtr - band.begin() + 1;
-    }
-
-    selection.SetChannelRange(newStart, newEnd);
-    return true;
-  } else {
-    return false;
-  }
-}
-
 double WSClean::minTheoreticalBeamSize(const ImagingTable& table) const {
   double beam = 0.0;
   for (const ImagingTableEntry& e : table) {
@@ -948,9 +946,16 @@ void WSClean::runIndependentGroup(ImagingTable& groupTable,
   _residualImages.Initialize(writer.Writer(), _settings.polarizations.size(),
                              _settings.channelsOut, _facets.size(),
                              _settings.prefixName + "-residual");
-  if (groupTable.Front().polarization == *_settings.polarizations.begin())
+  if (groupTable.Front().polarization == *_settings.polarizations.begin()) {
     _psfImages.Initialize(writer.Writer(), 1, groupTable.SquaredGroups().size(),
                           _facets.size(), _settings.prefixName + "-psf");
+    _scalarBeamImages.Initialize(
+        writer.Writer(), 1, groupTable.SquaredGroups().size(), _facets.size(),
+        _settings.prefixName + "-scalar-beam");
+    _matrixBeamImages.Initialize(
+        writer.Writer(), 2, groupTable.SquaredGroups().size(), _facets.size(),
+        _settings.prefixName + "-matrix-beam");
+  }
 
   // In the case of IDG we have to directly ask for all four polarizations.
   const bool requestPolarizationsAtOnce =
@@ -1012,17 +1017,17 @@ void WSClean::saveRestoredImagesForGroup(
         createWSCFitsWriter(tableEntry, isImaginary, false, true));
     Image restoredImage(_settings.trimmedImageWidth,
                         _settings.trimmedImageHeight);
-    _residualImages.Load(restoredImage.data(), curPol, currentChannelIndex,
+    _residualImages.Load(restoredImage.Data(), curPol, currentChannelIndex,
                          isImaginary);
 
     if (_settings.deconvolutionIterationCount != 0)
-      writer.WriteImage("residual.fits", restoredImage.data());
+      writer.WriteImage("residual.fits", restoredImage.Data());
 
     if (_settings.isUVImageSaved)
       saveUVImage(restoredImage, tableEntry, isImaginary, "uv");
 
     Image modelImage(_settings.trimmedImageWidth, _settings.trimmedImageHeight);
-    _modelImages.Load(modelImage.data(), curPol, currentChannelIndex,
+    _modelImages.Load(modelImage.Data(), curPol, currentChannelIndex,
                       isImaginary);
     double beamMaj = _infoPerChannel[currentChannelIndex].beamMaj;
     double beamMin, beamPA;
@@ -1041,18 +1046,18 @@ void WSClean::saveRestoredImagesForGroup(
     }
     Logger::Info << "Rendering sources to restored image " + beamStr + "... ";
     Logger::Info.Flush();
-    ModelRenderer::Restore(
-        restoredImage.data(), modelImage.data(), _settings.trimmedImageWidth,
+    schaapcommon::fft::RestoreImage(
+        restoredImage.Data(), modelImage.Data(), _settings.trimmedImageWidth,
         _settings.trimmedImageHeight, beamMaj, beamMin, beamPA,
         _settings.pixelScaleX, _settings.pixelScaleY, _settings.threadCount);
     Logger::Info << "DONE\n";
-    modelImage.reset();
+    modelImage.Reset();
 
     Logger::Info << "Writing restored image... ";
     Logger::Info.Flush();
-    writer.WriteImage("image.fits", restoredImage.data());
+    writer.WriteImage("image.fits", restoredImage.Data());
     Logger::Info << "DONE\n";
-    restoredImage.reset();
+    restoredImage.Reset();
 
     // H5 corrections will be applied on the beam images
     const bool applyH5OnBeamImages =
@@ -1113,14 +1118,14 @@ void WSClean::writeFirstResidualImages(const ImagingTable& groupTable) const {
   for (const ImagingTableEntry& entry : groupTable) {
     size_t ch = entry.outputChannelIndex;
     if (entry.polarization == Polarization::YX) {
-      _residualImages.Load(ptr.data(), Polarization::XY, ch, true);
+      _residualImages.Load(ptr.Data(), Polarization::XY, ch, true);
       WSCFitsWriter writer(
           createWSCFitsWriter(entry, Polarization::XY, true, false, false));
-      writer.WriteImage("first-residual.fits", ptr.data());
+      writer.WriteImage("first-residual.fits", ptr.Data());
     } else {
-      _residualImages.Load(ptr.data(), entry.polarization, ch, false);
+      _residualImages.Load(ptr.Data(), entry.polarization, ch, false);
       WSCFitsWriter writer(createWSCFitsWriter(entry, false, false, false));
-      writer.WriteImage("first-residual.fits", ptr.data());
+      writer.WriteImage("first-residual.fits", ptr.Data());
     }
   }
 }
@@ -1131,14 +1136,14 @@ void WSClean::writeModelImages(const ImagingTable& groupTable) const {
   for (const ImagingTableEntry& entry : groupTable) {
     size_t ch = entry.outputChannelIndex;
     if (entry.polarization == Polarization::YX) {
-      _modelImages.Load(ptr.data(), Polarization::XY, ch, true);
+      _modelImages.Load(ptr.Data(), Polarization::XY, ch, true);
       WSCFitsWriter writer(
           createWSCFitsWriter(entry, Polarization::XY, true, true, true));
-      writer.WriteImage("model.fits", ptr.data());
+      writer.WriteImage("model.fits", ptr.Data());
     } else {
-      _modelImages.Load(ptr.data(), entry.polarization, ch, false);
+      _modelImages.Load(ptr.Data(), entry.polarization, ch, false);
       WSCFitsWriter writer(createWSCFitsWriter(entry, false, true, true));
-      writer.WriteImage("model.fits", ptr.data());
+      writer.WriteImage("model.fits", ptr.Data());
     }
   }
 }
@@ -1157,7 +1162,7 @@ void WSClean::partitionModelIntoFacets(const ImagingTable& table,
          ++facetGroupIndex) {
       const ImagingTable clipGroup = table.GetFacetGroup(facetGroupIndex);
       const size_t imageCount = clipGroup.Front().imageCount;
-      _modelImages.Load(fullImage.data(), clipGroup.Front().polarization,
+      _modelImages.Load(fullImage.Data(), clipGroup.Front().polarization,
                         clipGroup.Front().outputChannelIndex, false);
       for (size_t imageIndex = 0; imageIndex != imageCount; ++imageIndex) {
         partitionSingleGroup(clipGroup, imageIndex, _modelImages, fullImage,
@@ -1176,17 +1181,13 @@ void WSClean::partitionSingleGroup(const ImagingTable& facetGroup,
   const bool isImaginary = (imageIndex == 1);
   for (const ImagingTableEntry& facetEntry : facetGroup) {
     facetImage.SetFacet(*facetEntry.facet, true);
-    facetImage.CopyToFacet({fullImage.data()});
+    facetImage.CopyToFacet({fullImage.Data()});
     if (!isPredictOnly) {
       if (_settings.applyFacetBeam || !_settings.facetSolutionFiles.empty()) {
         // Apply average direction dependent correction before storing
-        float m = 1.0;
-        if (_settings.applyFacetBeam)
-          m *= _msGridderMetaCache[facetEntry.index]->beamSum /
-               facetEntry.imageWeight;
-        if (!_settings.facetSolutionFiles.empty())
-          m *= _msGridderMetaCache[facetEntry.index]->h5Sum /
-               facetEntry.imageWeight;
+        const long double m =
+            _msGridderMetaCache[facetEntry.index]->correctionSum /
+            facetEntry.imageWeight;
         facetImage *= 1.0f / std::sqrt(m);
       }
     }
@@ -1198,22 +1199,22 @@ void WSClean::partitionSingleGroup(const ImagingTable& facetGroup,
 
 void WSClean::initializeModelImages(const ImagingTableEntry& entry,
                                     PolarizationEnum polarization,
-                                    size_t nFacetGroups) {
+                                    size_t maxFacetGroupIndex) {
   _modelImages.SetFitsWriter(
       createWSCFitsWriter(entry, polarization, false, true, false).Writer());
 
   if (_settings.continuedRun) {
-    readExistingModelImages(entry, polarization, nFacetGroups);
+    readExistingModelImages(entry, polarization, maxFacetGroupIndex);
   } else {
     // Set model to zero: already done if this is YX of XY/YX imaging combi
     if (!(polarization == Polarization::YX &&
           _settings.polarizations.count(Polarization::XY) != 0)) {
       Image modelImage(_settings.trimmedImageWidth,
                        _settings.trimmedImageHeight, 0.0f);
-      _modelImages.Store(modelImage.data(), polarization,
+      _modelImages.Store(modelImage.Data(), polarization,
                          entry.outputChannelIndex, false);
       if (Polarization::IsComplex(polarization))
-        _modelImages.Store(modelImage.data(), polarization,
+        _modelImages.Store(modelImage.Data(), polarization,
                            entry.outputChannelIndex, true);
     }
   }
@@ -1221,13 +1222,19 @@ void WSClean::initializeModelImages(const ImagingTableEntry& entry,
 
 void WSClean::readExistingModelImages(const ImagingTableEntry& entry,
                                       PolarizationEnum polarization,
-                                      size_t nFacetGroups) {
+                                      size_t maxFacetGroupIndex) {
   // load image(s) from disk and store them in the model-image cache.
   for (size_t i = 0; i != entry.imageCount; ++i) {
     std::string prefix = ImageFilename::GetPrefix(
         _settings, polarization, entry.outputChannelIndex,
         entry.outputIntervalIndex, i == 1);
-    FitsReader reader(prefix + "-model.fits");
+
+    const std::string suffix =
+        (_settings.applyFacetBeam || !_settings.facetSolutionFiles.empty() ||
+         _settings.gridWithBeam || !_settings.atermConfigFilename.empty())
+            ? "-model-pb.fits"
+            : "-model.fits";
+    aocommon::FitsReader reader(prefix + suffix);
     Logger::Info << "Reading " << reader.Filename() << "...\n";
 
     const bool resetGridder = overrideImageSettings(reader);
@@ -1243,7 +1250,8 @@ void WSClean::readExistingModelImages(const ImagingTableEntry& entry,
         resetModelColumns(entry);
       }
       _griddingTaskManager = GriddingTaskManager::Make(_settings);
-      _griddingTaskManager->Start(getMaxNrMSProviders() * nFacetGroups);
+      _griddingTaskManager->Start(getMaxNrMSProviders() *
+                                  (maxFacetGroupIndex + 1));
     }
 
     if (!_imageWeightCache) {
@@ -1253,11 +1261,11 @@ void WSClean::readExistingModelImages(const ImagingTableEntry& entry,
       if (_settings.mfWeighting) initializeMFSImageWeights();
     }
 
-    FitsWriter writer(reader);
+    aocommon::FitsWriter writer(reader);
     _modelImages.SetFitsWriter(writer);
 
     Image buffer(_settings.trimmedImageWidth, _settings.trimmedImageHeight);
-    reader.Read(buffer.data());
+    reader.Read(buffer.Data());
     for (size_t j = 0;
          j != _settings.trimmedImageWidth * _settings.trimmedImageHeight; ++j) {
       if (!std::isfinite(buffer[j]))
@@ -1265,12 +1273,12 @@ void WSClean::readExistingModelImages(const ImagingTableEntry& entry,
             "The input image contains non-finite values -- can't predict "
             "from an image with non-finite values");
     }
-    _modelImages.Store(buffer.data(), polarization, entry.outputChannelIndex,
+    _modelImages.Store(buffer.Data(), polarization, entry.outputChannelIndex,
                        i == 1);
   }
 }
 
-bool WSClean::overrideImageSettings(const FitsReader& reader) {
+bool WSClean::overrideImageSettings(const aocommon::FitsReader& reader) {
   bool resetGridder = false;
   if (_settings.trimmedImageWidth == 0 && _settings.trimmedImageHeight == 0) {
     _settings.trimmedImageWidth = reader.ImageWidth();
@@ -1332,7 +1340,7 @@ void WSClean::predictGroup(const ImagingTable& groupTable) {
   resetModelColumns(groupTable);
   _predictingWatch.Start();
   _griddingTaskManager->Start(getMaxNrMSProviders() *
-                              groupTable.FacetGroupCount());
+                              (groupTable.MaxFacetGroupIndex() + 1));
 
   for (size_t groupIndex = 0; groupIndex != groupTable.IndependentGroupCount();
        ++groupIndex) {
@@ -1357,7 +1365,7 @@ void WSClean::predictGroup(const ImagingTable& groupTable) {
 
       readExistingModelImages(facetGroup.Front(),
                               facetGroup.Front().polarization,
-                              groupTable.FacetGroupCount());
+                              groupTable.MaxFacetGroupIndex());
       partitionModelIntoFacets(facetGroup, true);
     }
 
@@ -1387,15 +1395,15 @@ void WSClean::predictGroup(const ImagingTable& groupTable) {
 void WSClean::initializeMSList(
     const ImagingTableEntry& entry,
     std::vector<std::unique_ptr<MSDataDescription>>& msList) {
-  PolarizationEnum pol =
-      _settings.useIDG ? Polarization::Instrumental : entry.polarization;
+  const PolarizationEnum pol =
+      _settings.useIDG ? getIdgPolarization() : entry.polarization;
 
   msList.clear();
   for (size_t msIndex = 0; msIndex != _settings.filenames.size(); ++msIndex) {
     for (size_t dataDescId = 0; dataDescId != _msBands[msIndex].DataDescCount();
          ++dataDescId) {
       MSSelection selection(_globalSelection);
-      if (selectChannels(selection, msIndex, dataDescId, entry)) {
+      if (selection.SelectMsChannels(_msBands[msIndex], dataDescId, entry)) {
         std::unique_ptr<MSDataDescription> dataDescription;
         if (_settings.doReorder)
           dataDescription = MSDataDescription::ForPartitioned(
@@ -1511,20 +1519,22 @@ void WSClean::runMajorIterations(ImagingTable& groupTable,
                                  std::unique_ptr<PrimaryBeam>& primaryBeam,
                                  bool requestPolarizationsAtOnce,
                                  bool parallelizePolarizations) {
-  _deconvolution.InitializeDeconvolutionAlgorithm(
-      groupTable.GetFacet(0), *_settings.polarizations.begin(),
-      minTheoreticalBeamSize(groupTable), _settings.threadCount);
+  std::unique_ptr<DeconvolutionTable> deconvolution_table =
+      groupTable.GetFacet(0).CreateDeconvolutionTable(
+          _settings.deconvolutionChannelCount, _psfImages, _modelImages,
+          _residualImages);
+
+  _deconvolution->InitializeDeconvolutionAlgorithm(
+      std::move(deconvolution_table), minTheoreticalBeamSize(groupTable),
+      _settings.threadCount);
 
   if (_settings.deconvolutionIterationCount > 0) {
     // Start major cleaning loop
     _majorIterationNr = 1;
     bool reachedMajorThreshold = false;
     do {
-      _deconvolution.InitializeImages(_residualImages, _modelImages,
-                                      _psfImages);
       _deconvolutionWatch.Start();
-      _deconvolution.Perform(groupTable.GetFacet(0), reachedMajorThreshold,
-                             _majorIterationNr);
+      _deconvolution->Perform(reachedMajorThreshold, _majorIterationNr);
       _deconvolutionWatch.Pause();
 
       if (_majorIterationNr == 1 && _settings.deconvolutionMGain != 1.0 &&
@@ -1541,7 +1551,7 @@ void WSClean::runMajorIterations(ImagingTable& groupTable,
           resetModelColumns(groupTable);
           _predictingWatch.Start();
           _griddingTaskManager->Start(getMaxNrMSProviders() *
-                                      groupTable.FacetGroupCount());
+                                      (groupTable.MaxFacetGroupIndex() + 1));
           // Iterate over polarizations, channels & facets
           for (const ImagingTableEntry& entry : groupTable) {
             // Only request one polarization for each facet/channel. The
@@ -1564,7 +1574,7 @@ void WSClean::runMajorIterations(ImagingTable& groupTable,
           resetModelColumns(groupTable);
           _predictingWatch.Start();
           _griddingTaskManager->Start(getMaxNrMSProviders() *
-                                      groupTable.FacetGroupCount());
+                                      (groupTable.MaxFacetGroupIndex() + 1));
           for (const ImagingTable::Group& sqGroup :
                groupTable.SquaredGroups()) {
             for (const ImagingTable::EntryPtr& entry : sqGroup) {
@@ -1587,7 +1597,7 @@ void WSClean::runMajorIterations(ImagingTable& groupTable,
           resetModelColumns(groupTable);
           _predictingWatch.Start();
           _griddingTaskManager->Start(getMaxNrMSProviders() *
-                                      groupTable.FacetGroupCount());
+                                      (groupTable.MaxFacetGroupIndex() + 1));
           bool hasMore;
           size_t sqIndex = 0;
           do {
@@ -1637,18 +1647,25 @@ void WSClean::runMajorIterations(ImagingTable& groupTable,
   }
 
   if (_settings.saveSourceList) {
-    _deconvolution.SaveSourceList(groupTable, _observationInfo.phaseCentreRA,
-                                  _observationInfo.phaseCentreDec);
+    std::unique_ptr<DeconvolutionTable> deconvolution_table =
+        groupTable.CreateDeconvolutionTable(_settings.deconvolutionChannelCount,
+                                            _psfImages, _modelImages,
+                                            _residualImages);
+    ComponentListWriter componentListWriter(_settings,
+                                            std::move(deconvolution_table));
+    componentListWriter.SaveSourceList(*_deconvolution,
+                                       _observationInfo.phaseCentreRA,
+                                       _observationInfo.phaseCentreDec);
     if (_settings.applyPrimaryBeam || _settings.applyFacetBeam ||
         !_settings.facetSolutionFiles.empty() || _settings.gridWithBeam ||
         !_settings.atermConfigFilename.empty()) {
-      _deconvolution.SavePBSourceList(groupTable,
-                                      _observationInfo.phaseCentreRA,
-                                      _observationInfo.phaseCentreDec);
+      componentListWriter.SavePbCorrectedSourceList(
+          *_deconvolution, _observationInfo.phaseCentreRA,
+          _observationInfo.phaseCentreDec);
     }
   }
 
-  _deconvolution.FreeDeconvolutionAlgorithms();
+  _deconvolution->FreeDeconvolutionAlgorithms();
 }
 
 MSSelection WSClean::selectInterval(MSSelection& fullSelection,
@@ -1700,10 +1717,10 @@ void WSClean::saveUVImage(const Image& image, const ImagingTableEntry& entry,
                           bool isImaginary, const std::string& prefix) const {
   Image realUV(_settings.trimmedImageWidth, _settings.trimmedImageHeight),
       imagUV(_settings.trimmedImageWidth, _settings.trimmedImageHeight);
-  FFTResampler fft(_settings.trimmedImageWidth, _settings.trimmedImageHeight,
-                   _settings.trimmedImageWidth, _settings.trimmedImageHeight, 1,
-                   true);
-  fft.SingleFT(image.data(), realUV.data(), imagUV.data());
+  schaapcommon::fft::Resampler fft(
+      _settings.trimmedImageWidth, _settings.trimmedImageHeight,
+      _settings.trimmedImageWidth, _settings.trimmedImageHeight, 1);
+  fft.SingleFT(image.Data(), realUV.Data(), imagUV.Data());
   // Factors of 2 involved: because of SingleFT()
   // (also one from the fact that normF excludes a factor of two?)
   realUV *=
@@ -1713,8 +1730,8 @@ void WSClean::saveUVImage(const Image& image, const ImagingTableEntry& entry,
       _infoPerChannel[entry.outputChannelIndex].normalizationFactor /
       sqrt(0.5 * _settings.trimmedImageWidth * _settings.trimmedImageHeight);
   WSCFitsWriter writer(createWSCFitsWriter(entry, isImaginary, false, false));
-  writer.WriteUV(prefix + "-real.fits", realUV.data());
-  writer.WriteUV(prefix + "-imag.fits", imagUV.data());
+  writer.WriteUV(prefix + "-real.fits", realUV.Data());
+  writer.WriteUV(prefix + "-imag.fits", imagUV.Data());
 }
 
 void WSClean::stitchFacets(const ImagingTable& table,
@@ -1740,7 +1757,7 @@ void WSClean::stitchFacets(const ImagingTable& table,
         for (size_t imageIndex = 0; imageIndex != imageCount; ++imageIndex) {
           stitchSingleGroup(stitchGroup, imageIndex, imageCache, writeDirty,
                             isPSF, fullImage, facetImage,
-                            table.FacetGroupCount());
+                            table.MaxFacetGroupIndex());
         }
       }
     }
@@ -1751,7 +1768,7 @@ void WSClean::stitchSingleGroup(const ImagingTable& facetGroup,
                                 size_t imageIndex, CachedImageSet& imageCache,
                                 bool writeDirty, bool isPSF, Image& fullImage,
                                 schaapcommon::facets::FacetImage& facetImage,
-                                size_t nFacetGroups) {
+                                size_t maxFacetGroupIndex) {
   const bool isImaginary = (imageIndex == 1);
   fullImage = 0.0f;
   for (const ImagingTableEntry& facetEntry : facetGroup) {
@@ -1762,30 +1779,26 @@ void WSClean::stitchSingleGroup(const ImagingTable& facetGroup,
 
     if (!isPSF &&
         (_settings.applyFacetBeam || !_settings.facetSolutionFiles.empty())) {
-      float m = 1.0;
-      if (_settings.applyFacetBeam)
-        m *= _msGridderMetaCache[facetEntry.index]->beamSum /
-             facetEntry.imageWeight;
-      if (!_settings.facetSolutionFiles.empty())
-        m *= _msGridderMetaCache[facetEntry.index]->h5Sum /
-             facetEntry.imageWeight;
+      const long double m =
+          _msGridderMetaCache[facetEntry.index]->correctionSum /
+          facetEntry.imageWeight;
       facetImage *= 1.0f / std::sqrt(m);
     }
 
     // TODO with our current stitching implementation, facets should always be
     // directly copied to the full image, not added. The facets should not
     // overlap though.
-    facetImage.AddToImage({fullImage.data()});
+    facetImage.AddToImage({fullImage.Data()});
   }
   if (writeDirty) {
     initializeModelImages(facetGroup.Front(), facetGroup.Front().polarization,
-                          nFacetGroups);
+                          maxFacetGroupIndex);
     _residualImages.SetFitsWriter(
         createWSCFitsWriter(facetGroup.Front(), false, false, true).Writer());
     WSCFitsWriter writer(
         createWSCFitsWriter(facetGroup.Front(), isImaginary, false, true));
     Logger::Info << "Writing dirty image...\n";
-    writer.WriteImage("dirty.fits", fullImage.data());
+    writer.WriteImage("dirty.fits", fullImage.Data());
   }
 
   if (isPSF) {
@@ -1795,15 +1808,15 @@ void WSClean::stitchSingleGroup(const ImagingTable& facetGroup,
 
   const size_t channelIndex = facetGroup.Front().outputChannelIndex;
   const PolarizationEnum polarization = facetGroup.Front().polarization;
-  imageCache.Store(fullImage.data(), polarization, channelIndex, isImaginary);
+  imageCache.Store(fullImage.Data(), polarization, channelIndex, isImaginary);
 }
 
 void WSClean::makeImagingTable(size_t outputIntervalIndex) {
   std::set<aocommon::ChannelInfo> channelSet;
-  _msBands.assign(_settings.filenames.size(), MultiBandData());
+  _msBands.assign(_settings.filenames.size(), aocommon::MultiBandData());
   for (size_t i = 0; i != _settings.filenames.size(); ++i) {
     casacore::MeasurementSet ms(_settings.filenames[i]);
-    _msBands[i] = MultiBandData(ms);
+    _msBands[i] = aocommon::MultiBandData(ms);
     std::set<size_t> dataDescIds = _msBands[i].GetUsedDataDescIds(ms);
     if (dataDescIds.size() != _msBands[i].DataDescCount()) {
       Logger::Debug << dataDescIds.size() << "/" << _msBands[i].DataDescCount()
@@ -1912,8 +1925,9 @@ void WSClean::makeImagingTableEntry(
     // outChannelIndex.
     const size_t nSplits = _settings.divideChannelFrequencies.size();
     for (size_t i = 0; i != nSplits + 1; ++i) {
-      size_t outChannelStart = _settings.channelsOut * i / (nSplits + 1),
-             outChannelEnd = _settings.channelsOut * (i + 1) / (nSplits + 1);
+      const size_t outChannelStart = _settings.channelsOut * i / (nSplits + 1);
+      const size_t outChannelEnd =
+          _settings.channelsOut * (i + 1) / (nSplits + 1);
       if (outChannelIndex >= outChannelStart &&
           outChannelIndex < outChannelEnd) {
         double splitFreqLow =
@@ -1942,10 +1956,10 @@ void WSClean::makeImagingTableEntry(
         0.5 * (channels.front().Frequency() + channels.back().Frequency());
     double chCentralFrequency =
         0.5 * (entry.lowestFrequency + entry.highestFrequency);
-    double chFlux = NonLinearPowerLawFitter::Evaluate(
+    double chFlux = schaapcommon::fitters::NonLinearPowerLawFitter::Evaluate(
         chCentralFrequency, _settings.spectralCorrection,
         _settings.spectralCorrectionFrequency);
-    double midFlux = NonLinearPowerLawFitter::Evaluate(
+    double midFlux = schaapcommon::fitters::NonLinearPowerLawFitter::Evaluate(
         bandwidthCentre, _settings.spectralCorrection,
         _settings.spectralCorrectionFrequency);
     entry.siCorrection = midFlux / chFlux;
@@ -1977,6 +1991,9 @@ void WSClean::makeImagingTableEntryChannelSettings(
     std::vector<size_t> orderedGaps;
     auto iter = gaps.rbegin();
     for (size_t i = 0; i != nOutChannels - 1; ++i) {
+      if (iter == gaps.rend())
+        throw std::runtime_error(
+            "Channel gap division leads to invalid selection");
       orderedGaps.push_back(iter->second);
       ++iter;
     }
@@ -1992,6 +2009,15 @@ void WSClean::makeImagingTableEntryChannelSettings(
   } else {
     chLowIndex = outChannelIndex * channels.size() / nOutChannels;
     chHighIndex = (outChannelIndex + 1) * channels.size() / nOutChannels - 1;
+    if (chLowIndex == chHighIndex + 1)
+      throw std::runtime_error(
+          "Too many output channels requested: output channel " +
+          std::to_string(outChannelIndex) +
+          " would be empty. Number of output channels requested: " +
+          std::to_string(_settings.channelsOut) +
+          ". Number of channels in the measurement set(s) available (after "
+          "applying channel range selections and splits): " +
+          std::to_string(channels.size()));
   }
   if (channels[chLowIndex].Frequency() > channels[chHighIndex].Frequency())
     std::swap(chLowIndex, chHighIndex);
@@ -2102,22 +2128,22 @@ void WSClean::correctImagesH5(aocommon::FitsWriter& writer,
 
     aocommon::FitsReader reader(prefix + "-" + filenameKind + ".fits");
     Image image(reader.ImageWidth(), reader.ImageHeight());
-    reader.Read(image.data());
+    reader.Read(image.Data());
 
     schaapcommon::facets::FacetImage facetImage(
         _settings.trimmedImageWidth, _settings.trimmedImageHeight, 1);
-    std::vector<float*> imagePtr{image.data()};
+    std::vector<float*> imagePtr{image.Data()};
     for (const ImagingTableEntry& entry : table) {
       facetImage.SetFacet(*entry.facet, true);
       // Requires std::map::at in order to comply with constness of member
       // function
-      const float m =
-          _msGridderMetaCache.at(entry.index)->h5Sum / entry.imageWeight;
+      const long double m = _msGridderMetaCache.at(entry.index)->correctionSum /
+                            entry.imageWeight;
       facetImage.MultiplyImageInsideFacet(imagePtr, 1.0f / std::sqrt(m));
     }
 
     // Always write to -pb.fits
-    writer.Write(prefix + "-" + filenameKind + "-pb.fits", image.data());
+    writer.Write(prefix + "-" + filenameKind + "-pb.fits", image.Data());
   } else {
     throw std::runtime_error(
         "H5 correction is requested, but this is not supported "

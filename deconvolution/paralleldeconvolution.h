@@ -1,13 +1,11 @@
 #ifndef PARALLEL_DECONVOLUTION_H
 #define PARALLEL_DECONVOLUTION_H
 
-#include "../system/fftwmanager.h"
+#include "componentlist.h"
+#include "deconvolutionsettings.h"
+#include "subimagelogset.h"
 
-#include "../structures/image.h"
-#include "../structures/primarybeamimageset.h"
-
-#include "controllablelog.h"
-
+#include <aocommon/image.h>
 #include <aocommon/uvector.h>
 
 #include <memory>
@@ -16,7 +14,7 @@
 
 class ParallelDeconvolution {
  public:
-  ParallelDeconvolution(const class Settings& settings);
+  ParallelDeconvolution(const DeconvolutionSettings& deconvolutionSettings);
 
   ~ParallelDeconvolution();
 
@@ -27,13 +25,21 @@ class ParallelDeconvolution {
     return *_algorithms.front();
   }
 
+  ComponentList GetComponentList(const DeconvolutionTable& table) const;
+
+  /**
+   * @brief Same as @c FirstAlgorithm , except that for a multi-scale clean
+   * the algorithm with the maximum number of scale counts is returned.
+   */
+  const DeconvolutionAlgorithm& MaxScaleCountAlgorithm() const;
+
   void SetAllocator(class ImageBufferAllocator* allocator) {
     _allocator = allocator;
   }
 
   void SetAlgorithm(std::unique_ptr<class DeconvolutionAlgorithm> algorithm);
 
-  void SetRMSFactorImage(Image&& image);
+  void SetRMSFactorImage(aocommon::Image&& image);
 
   void SetThreshold(double threshold);
 
@@ -43,11 +49,11 @@ class ParallelDeconvolution {
 
   void SetCleanMask(const bool* mask);
 
-  void SetSpectrallyForcedImages(std::vector<Image>&& images);
+  void SetSpectrallyForcedImages(std::vector<aocommon::Image>&& images);
 
   void ExecuteMajorIteration(class ImageSet& dataImage,
                              class ImageSet& modelImage,
-                             const aocommon::UVector<const float*>& psfImages,
+                             const std::vector<aocommon::Image>& psfImages,
                              bool& reachedMajorThreshold);
 
   void FreeDeconvolutionAlgorithms() {
@@ -55,59 +61,41 @@ class ParallelDeconvolution {
     _mask = nullptr;
   }
 
-  void SaveSourceList(class CachedImageSet& modelImages,
-                      const class ImagingTable& table,
-                      long double phaseCentreRA, long double phaseCentreDec);
-
-  void SavePBSourceList(class CachedImageSet& modelImages,
-                        const class ImagingTable& table,
-                        long double phaseCentreRA,
-                        long double phaseCentreDec) const;
-
-  class FFTWManager& GetFFTWManager() {
-    return _fftwManager;
-  }
-
  private:
   void executeParallelRun(class ImageSet& dataImage, class ImageSet& modelImage,
-                          const aocommon::UVector<const float*>& psfImages,
+                          const std::vector<aocommon::Image>& psfImages,
                           bool& reachedMajorThreshold);
 
   struct SubImage {
     size_t index, x, y, width, height;
+    // Mask to be used during deconvoution (combines user mask with the
+    // boundary mask)
     aocommon::UVector<bool> mask;
+    // Selects the pixels inside this subimage
+    aocommon::UVector<bool> boundaryMask;
     double peak;
     bool reachedMajorThreshold;
   };
 
   void runSubImage(SubImage& subImg, ImageSet& dataImage,
-                   class ImageSet& modelImage,
-                   const aocommon::UVector<const float*>& psfImages,
+                   const ImageSet& modelImage, ImageSet& resultModel,
+                   const std::vector<aocommon::Image>& psfImages,
                    double majorIterThreshold, bool findPeakOnly,
-                   std::mutex* mutex);
+                   std::mutex& mutex);
 
-  void correctChannelForPB(class ComponentList& list,
-                           const struct ImagingTableEntry& entry) const;
-
-  PrimaryBeamImageSet loadAveragePrimaryBeam(
-      size_t imageIndex, const class ImagingTable& table) const;
-
-  void writeSourceList(ComponentList& componentList,
-                       const std::string& filename, long double phaseCentreRA,
-                       long double phaseCentreDec) const;
-
-  FFTWManager _fftwManager;
   std::vector<std::unique_ptr<class DeconvolutionAlgorithm>> _algorithms;
-  FacetLogSet _logs;
-  size_t _horImages, _verImages;
-  const Settings& _settings;
+  SubImageLogSet _logs;
+  size_t _horImages;
+  size_t _verImages;
+  // Deconvolution::_settings outlives ParallelDeconvolution::_settings
+  const DeconvolutionSettings& _settings;
   ImageBufferAllocator* _allocator;
   const bool* _mask;
-  std::vector<Image> _spectrallyForcedImages;
+  std::vector<aocommon::Image> _spectrallyForcedImages;
   bool _trackPerScaleMasks, _usePerScaleMasks;
   std::vector<aocommon::UVector<bool>> _scaleMasks;
   std::unique_ptr<class ComponentList> _componentList;
-  Image _rmsImage;
+  aocommon::Image _rmsImage;
 };
 
 #endif

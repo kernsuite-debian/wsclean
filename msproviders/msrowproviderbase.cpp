@@ -3,11 +3,12 @@
 #include "bdamsrowprovider.h"
 #include "directmsrowprovider.h"
 #include "msprovider.h"
-#include "../system/throwruntimeerror.h"
+
+#include <aocommon/throwruntimeerror.h>
 
 #include <casacore/tables/Tables/TableRecord.h>
 
-#include <boost/make_unique.hpp>
+#include <memory>
 
 MsRowProviderBase::MsRowProviderBase(const casacore::MeasurementSet& ms,
                                      const MSSelection& selection,
@@ -21,19 +22,19 @@ std::unique_ptr<MsRowProviderBase> MakeMsRowProvider(
     const std::map<size_t, size_t>& selected_data_description_ids,
     const std::string& data_column_name, bool require_model) {
   if (!casacore::Table::isReadable(ms_name)) {
-    ThrowRuntimeError("The measurement set ", ms_name,
-                      " can't be opened for reading.");
+    aocommon::ThrowRuntimeError("The measurement set ", ms_name,
+                                " can't be opened for reading.");
   }
 
   casacore::MeasurementSet ms(ms_name);
   if (MsHasBdaData(ms))
-    return boost::make_unique<BdaMsRowProvider>(
-        ms, selection, selected_data_description_ids, data_column_name,
-        require_model);
+    return std::make_unique<BdaMsRowProvider>(ms, selection,
+                                              selected_data_description_ids,
+                                              data_column_name, require_model);
 
-  return boost::make_unique<DirectMSRowProvider>(
-      ms, selection, selected_data_description_ids, data_column_name,
-      require_model);
+  return std::make_unique<DirectMSRowProvider>(ms, selection,
+                                               selected_data_description_ids,
+                                               data_column_name, require_model);
 }
 
 bool MsHasBdaData(const casacore::MeasurementSet& ms) {

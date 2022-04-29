@@ -1,6 +1,6 @@
 #include "deconvolutionalgorithm.h"
 
-#include "../system/system.h"
+#include <aocommon/system.h>
 
 DeconvolutionAlgorithm::DeconvolutionAlgorithm()
     : _threshold(0.0),
@@ -10,12 +10,13 @@ DeconvolutionAlgorithm::DeconvolutionAlgorithm()
       _cleanBorderRatio(0.05),
       _maxIter(500),
       _iterationNumber(0),
-      _threadCount(System::ProcessorCount()),
+      _threadCount(aocommon::system::ProcessorCount()),
       _allowNegativeComponents(true),
       _stopOnNegativeComponent(false),
-      _cleanMask(0),
+      _cleanMask(nullptr),
       _logReceiver(nullptr),
-      _spectralFitter(SpectralFittingMode::NoFitting, 0) {}
+      _spectralFitter(schaapcommon::fitters::SpectralFittingMode::NoFitting,
+                      0) {}
 
 void DeconvolutionAlgorithm::ResizeImage(float* dest, size_t newWidth,
                                          size_t newHeight, const float* source,

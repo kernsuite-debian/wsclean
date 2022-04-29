@@ -1,10 +1,11 @@
 #include "averagingmsrowprovider.h"
 
-#include "../structures/multibanddata.h"
-
-#include "../io/logger.h"
+#include <aocommon/logger.h>
+#include <aocommon/multibanddata.h>
 
 #include <casacore/tables/Tables/ArrayColumn.h>
+
+using aocommon::Logger;
 
 namespace {
 template <typename ArrayT>
@@ -13,7 +14,6 @@ void copyAndResize(const ArrayT& source, ArrayT& destination) {
   const size_t bufferSize = source.shape()[0] * source.shape()[1];
   std::copy_n(source.data(), bufferSize, destination.data());
 }
-
 }  // namespace
 
 AveragingMSRowProvider::AveragingMSRowProvider(
@@ -42,7 +42,7 @@ AveragingMSRowProvider::AveragingMSRowProvider(
   _nElements = selectedDataDescIds.size() * _nAntennae * _nAntennae;
   _averagingFactors.assign(_nElements, 0.0);
   _buffers.resize(_nElements);
-  MultiBandData bands(Ms().spectralWindow(), Ms().dataDescription());
+  aocommon::MultiBandData bands(Ms().spectralWindow(), Ms().dataDescription());
 
   double dt = (EndTime() - StartTime()) / (EndTimestep() - StartTimestep());
   Logger::Debug << "Assuming integration time of " << dt * (24.0 * 60.0 * 60.0)
@@ -61,7 +61,7 @@ AveragingMSRowProvider::AveragingMSRowProvider(
       for (std::map<size_t, size_t>::const_iterator spwIter =
                selectedDataDescIds.begin();
            spwIter != selectedDataDescIds.end(); ++spwIter) {
-        BandData band = bands[spwIter->first];
+        aocommon::BandData band = bands[spwIter->first];
         double lambda = band.SmallestWavelength();
         double nWavelengthsPerIntegration = 2.0 * M_PI * dist / lambda * dt;
         _averagingFactors[element] = std::max<size_t>(
@@ -169,13 +169,13 @@ void AveragingMSRowProvider::NextRow() {
 
   if (MSRowProvider::AtEnd()) {
     // There might be residual data in the buffers which have to be read out
-    AveragingBuffer* buffer = 0;
+    AveragingBuffer* buffer = nullptr;
     do {
       buffer = &_buffers[_flushPosition];
       ++_flushPosition;
     } while (buffer->AveragedDataCount() == 0 && _flushPosition < _nElements);
 
-    if (buffer != 0 && buffer->AveragedDataCount() != 0) {
+    if (buffer != nullptr && buffer->AveragedDataCount() != 0) {
       size_t bufferSize = _currentData.shape()[0] * _currentData.shape()[1];
       if (requireModel())
         buffer->Get(bufferSize, _currentData.data(), _currentModel.data(),

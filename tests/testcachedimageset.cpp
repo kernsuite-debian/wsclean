@@ -1,5 +1,7 @@
 #include "../io/cachedimageset.h"
 
+#include <aocommon/fits/fitswriter.h>
+#include <aocommon/image.h>
 #include <aocommon/polarization.h>
 #include <aocommon/uvector.h>
 #include <schaapcommon/facets/facet.h>
@@ -36,7 +38,7 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
   size_t image_height = 8;
   double dl_dm = 0.0125;
 
-  FitsWriter writer;
+  aocommon::FitsWriter writer;
   writer.SetImageDimensions(image_width, image_height, dl_dm, dl_dm);
 
   // Make two 4x4 facets
@@ -85,7 +87,7 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
 
   schaapcommon::facets::FacetImage imageStorage(image_width, image_height, 1);
   for (size_t pol_idx = 0; pol_idx < polarizations.size(); ++pol_idx) {
-    Image imageMain(image_width, image_height, 0.0f);
+    aocommon::Image imageMain(image_width, image_height, 0.0f);
     for (size_t facet_idx = 0; facet_idx < facets.size(); ++facet_idx) {
       // Offset in file list
       size_t offset = pol_idx * facets.size() + facet_idx;
@@ -101,7 +103,7 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
           facets[facet_idx]->GetTrimmedBoundingBox().Height();
       cSet.LoadFacet(imageStorage.Data(0), polarizations[pol_idx], 1, facet_idx,
                      facets[facet_idx], false);
-      imageStorage.AddToImage({imageMain.data()});
+      imageStorage.AddToImage({imageMain.Data()});
       BOOST_CHECK_EQUAL_COLLECTIONS(
           imageStorage.Data(0), imageStorage.Data(0) + num_facet_pixels,
           facets_data[facet_idx].data(),
@@ -120,7 +122,7 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
                               : facetCollision + 1.0f);
       }
     }
-    cSet.Store(imageMain.data(), polarizations[pol_idx], 1, false);
+    cSet.Store(imageMain.Data(), polarizations[pol_idx], 1, false);
     BOOST_CHECK(
         cSet.GetStoredNames().find(
             prefix + "-" +

@@ -14,7 +14,7 @@ void MetaDataCache::Serialize(aocommon::SerialOStream& stream) const {
         .Double(entry.integrationTime);
   }
 
-  stream.Ptr(averageBeam).Float(beamSum).Float(h5Sum);
+  stream.LDouble(h5Sum).LDouble(correctionSum);
 }
 
 void MetaDataCache::Unserialize(aocommon::SerialIStream& stream) {
@@ -28,5 +28,5 @@ void MetaDataCache::Unserialize(aocommon::SerialIStream& stream) {
         .Double(entry.integrationTime);
   }
 
-  stream.Ptr(averageBeam).Float(beamSum).Float(h5Sum);
+  stream.LDouble(h5Sum).LDouble(correctionSum);
 }
