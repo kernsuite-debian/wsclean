@@ -1,1 +1,5 @@
+External-aocommon.patch
+External-pybind11.patch
+External-schaapcommon.patch
+Unknown-Arguments-Specified.patch
 Add-Missing-linker-flags.patch

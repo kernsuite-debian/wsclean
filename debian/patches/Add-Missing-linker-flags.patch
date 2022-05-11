@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 040c3bf..365c65e 100644
+index 2536355..59eaf91 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -223,19 +223,19 @@ add_definitions(-DHAVE_GSL)
+@@ -234,19 +234,19 @@ add_definitions(-DHAVE_GSL)
  # Include GNUInstallDirs for CMAKE_INSTALL_FULL_LIBDIR
  include(GNUInstallDirs)
  # Use, i.e. don't skip the full RPATH for the build tree.
@@ -30,7 +30,7 @@ index 040c3bf..365c65e 100644
  
  configure_file("${PROJECT_SOURCE_DIR}/wscversion.h.in"
                 "${PROJECT_BINARY_DIR}/wscversion.h")
-@@ -382,11 +382,11 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+@@ -384,11 +384,11 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
  set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
  
  add_library(wsclean-shared SHARED ${WSCLEANFILES})
@@ -44,7 +44,7 @@ index 040c3bf..365c65e 100644
  
  if(MPI_FOUND)
    add_executable(wsclean-mp distributed/wsclean-mp.cpp distributed/slave.cpp)
-@@ -398,9 +398,8 @@ add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp
+@@ -399,9 +399,8 @@ add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp)
  target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
                        ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
  
@@ -55,8 +55,8 @@ index 040c3bf..365c65e 100644
 +target_link_libraries(wsuvbinning wsclean-shared)
  
  add_executable(
-   wspredictionexample EXCLUDE_FROM_ALL
-@@ -417,6 +416,8 @@ target_link_libraries(mscaleexample ${ALL_LIBRARIES})
+   wspredictionexample EXCLUDE_FROM_ALL gridding/examples/wspredictionexample.cpp
+@@ -416,6 +415,8 @@ target_link_libraries(mscaleexample ${ALL_LIBRARIES})
  
  install(TARGETS wsclean DESTINATION bin)
  install(TARGETS wsclean-lib DESTINATION lib)

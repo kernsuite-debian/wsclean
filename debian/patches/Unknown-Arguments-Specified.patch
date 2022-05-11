@@ -1,0 +1,31 @@
+Index: wsclean/CMakeLists.txt
+===================================================================
+--- wsclean.orig/CMakeLists.txt
++++ wsclean/CMakeLists.txt
+@@ -193,8 +193,7 @@ endif(${EVERYBEAM_FOUND})
+ find_package(IDGAPI NO_MODULE QUIET)
+ 
+ if(IDGAPI_FOUND)
+-  if(${IDGAPI_VERSION} VERSION_LESS "0.8.1" OR ${EVERYBEAM_VERSION}
+-                                               VERSION_GREATER_EQUAL "0.9")
++	if(${IDGAPI_VERSION} VERSION_LESS "0.8.1")
+     message(STATUS "IDG version is incompatible")
+     message(
+       FATAL_ERROR
+@@ -206,14 +205,14 @@ if(IDGAPI_FOUND)
+     add_definitions(-DHAVE_IDG)
+     message(STATUS "Image domain gridder libraries found.")
+   endif()
+-else()
++else(IDGAPI_FOUND)
+   set(IDGAPI_LIBRARIES)
+   set(IDG_FILES)
+   message(
+     STATUS
+       "Image domain gridder libraries NOT found. This gridder will not be available."
+   )
+-endif()
++endif(IDGAPI_FOUND)
+ 
+ include_directories(SYSTEM ${CASACORE_INCLUDE_DIRS})
+ include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
