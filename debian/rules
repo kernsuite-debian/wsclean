@@ -15,3 +15,5 @@ CMAKE_FLAGS += -DDEB_HOST_MULTIARCH=$(DEB_HOST_MULTIARCH) \
 
 override_dh_auto_configure:
 	dh_auto_configure -- $(CMAKE_FLAGS)
+
+override_dh_installexamples:
