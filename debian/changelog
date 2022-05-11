@@ -1,3 +1,24 @@
+wsclean (3.1-1kern4) focal; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Add build deps
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 11 May 2022 13:25:54 +0000
+
+wsclean (3.1-1kern3) focal; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Add build deps
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 11 May 2022 13:14:39 +0000
+
+wsclean (3.1-1kern2) focal; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Add build deps
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 11 May 2022 12:58:28 +0000
+
 wsclean (3.1-1kern1) focal; urgency=medium
 
   [ Athanaseus Javas Ramaila ]
