@@ -6,7 +6,6 @@
 include /usr/share/dpkg/architecture.mk
 CMAKE_FLAGS += -DDEB_HOST_MULTIARCH=$(DEB_HOST_MULTIARCH) \
 			   -DPORTABLE=yes \
-			   -DIDGAPI_DIR=/usr/lib/cmake/share/idgapi/cmake \
 			   -DLOFAR_STATION_RESPONSE_INCLUDE=/usr/include \
  			   -DLOFAR_STATION_RESPONSE_LIB=/usr/lib/libstationresponse.so
 

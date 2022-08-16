@@ -1,3 +1,10 @@
+wsclean (2.10.1-1kern2) focal; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Drop idg support
+
+ -- KERN packaging <packaging@kernsuite.info>  Mon, 15 Aug 2022 17:39:25 +0200
+
 wsclean (2.10.1-1kern1) focal; urgency=medium
 
   * new upstream release

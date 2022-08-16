@@ -7,13 +7,13 @@ Description: Add missing linker flags
  set_target_properties(wsclean-shared PROPERTIES OUTPUT_NAME wsclean)
  set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 -target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${HDF5_LIBRARIES})
-+target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${HDF5_LIBRARIES} -lidg-api)
++target_link_libraries(wsclean-shared PRIVATE ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_THREAD_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${FITSIO_LIB} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${HDF5_LIBRARIES} )
  
  set(ALL_LIBRARIES ${CASACORE_LIBRARIES} ${FFTW3_LIB} ${FFTW3_THREADS_LIB} ${FFTW3F_LIB} ${FFTW3F_THREADS_LIB} ${Boost_DATE_TIME_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_SYSTEM_LIBRARY} ${CFITSIO_LIBRARY} ${GSL_LIB} ${GSL_CBLAS_LIB} ${PTHREAD_LIB} ${LBEAM_LIBS} ${IDGAPI_LIBRARIES} ${HDF5_LIBRARIES} ${MPI_LIBRARIES})
  
  add_executable(wsclean wscleanmain.cpp)
 -target_link_libraries(wsclean wsclean-shared ${CASACORE_LIBRARIES} ${Boost_SYSTEM_LIBRARY})
-+target_link_libraries(wsclean wsclean-shared ${CASACORE_LIBRARIES} ${Boost_SYSTEM_LIBRARY} -lboost_program_options -lidg)
++target_link_libraries(wsclean wsclean-shared ${CASACORE_LIBRARIES} ${Boost_SYSTEM_LIBRARY} -lboost_program_options )
  
  if(MPI_FOUND)
    add_executable(wsclean-mp
