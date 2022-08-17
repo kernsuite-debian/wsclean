@@ -1,8 +1,8 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2536355..59eaf91 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -234,19 +234,19 @@ add_definitions(-DHAVE_GSL)
+Index: wsclean/CMakeLists.txt
+===================================================================
+--- wsclean.orig/CMakeLists.txt
++++ wsclean/CMakeLists.txt
+@@ -233,19 +233,19 @@ add_definitions(-DHAVE_GSL)
  # Include GNUInstallDirs for CMAKE_INSTALL_FULL_LIBDIR
  include(GNUInstallDirs)
  # Use, i.e. don't skip the full RPATH for the build tree.
@@ -30,21 +30,21 @@ index 2536355..59eaf91 100644
  
  configure_file("${PROJECT_SOURCE_DIR}/wscversion.h.in"
                 "${PROJECT_BINARY_DIR}/wscversion.h")
-@@ -384,11 +384,11 @@ set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
+@@ -383,11 +383,11 @@ set_target_properties(wsclean-lib PROPER
  set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
  
  add_library(wsclean-shared SHARED ${WSCLEANFILES})
 -target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES})
-+target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES} -lidg-api)
++target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES})
  set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
  
  add_executable(wsclean main/main.cpp)
 -target_link_libraries(wsclean wsclean-lib)
-+target_link_libraries(wsclean wsclean-lib -lboost_program_options -lidg)
++target_link_libraries(wsclean wsclean-lib -lboost_program_options)
  
  if(MPI_FOUND)
    add_executable(wsclean-mp distributed/wsclean-mp.cpp distributed/slave.cpp)
-@@ -399,9 +399,8 @@ add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp)
+@@ -398,9 +398,8 @@ add_executable(chgcentre chgcentre/main.
  target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
                        ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
  
@@ -56,7 +56,7 @@ index 2536355..59eaf91 100644
  
  add_executable(
    wspredictionexample EXCLUDE_FROM_ALL gridding/examples/wspredictionexample.cpp
-@@ -416,6 +415,8 @@ target_link_libraries(mscaleexample ${ALL_LIBRARIES})
+@@ -415,6 +414,8 @@ target_link_libraries(mscaleexample ${AL
  
  install(TARGETS wsclean DESTINATION bin)
  install(TARGETS wsclean-lib DESTINATION lib)
