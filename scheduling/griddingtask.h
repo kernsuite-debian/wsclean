@@ -47,6 +47,8 @@ class GriddingTask {
    */
   std::vector<aocommon::Image> modelImages;
   ObservationInfo observationInfo;
+  double l_shift;
+  double m_shift;
 
   std::shared_ptr<schaapcommon::facets::Facet> facet;
   size_t facetIndex;

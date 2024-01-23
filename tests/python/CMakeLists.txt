@@ -6,15 +6,15 @@ execute_process(
   COMMAND ${CMAKE_COMMAND} -E create_symlink ${CMAKE_CURRENT_SOURCE_DIR}
           ${CMAKE_CURRENT_BINARY_DIR}/source)
 
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config_vars.py.in
-               ${CMAKE_CURRENT_BINARY_DIR}/config_vars.py)
+configure_file(config_vars.py.in config_vars.py)
 
 add_custom_target(
   integrationchecks
   COMMAND
     python3 -B -m pytest --exitfirst -v
     --junitxml=${CMAKE_BINARY_DIR}/check_integration.xml
-    ${CMAKE_CURRENT_SOURCE_DIR}/basic_checks.py)
+    ${CMAKE_CURRENT_SOURCE_DIR}/basic_checks.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/spectral_imaging_checks.py)
 
 add_custom_target(
   facetchecks
@@ -30,4 +30,5 @@ add_custom_target(
     python3 -B -m pytest --exitfirst -v
     --junitxml=${CMAKE_BINARY_DIR}/check_long_system.xml
     ${CMAKE_CURRENT_SOURCE_DIR}/vela_deconvolution_checks.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/aterms_checks.py
     ${CMAKE_CURRENT_SOURCE_DIR}/long_system_checks.py)

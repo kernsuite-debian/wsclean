@@ -21,32 +21,54 @@
 using aocommon::Image;
 using aocommon::Logger;
 
-WGriddingMSGridder::WGriddingMSGridder(const Settings& settings)
+WGriddingMSGridder::WGriddingMSGridder(const Settings& settings,
+                                       const Resources& resources,
+                                       bool use_tuned_wgridder)
     : MSGridderBase(settings),
-      _cpuCount(_settings.threadCount),
-      _accuracy(_settings.wgridderAccuracy) {
-  _memSize = getAvailableMemory(_settings.memFraction, _settings.absMemLimit);
+      resources_(resources),
+      accuracy_(_settings.wgridderAccuracy),
+      use_tuned_wgridder_(use_tuned_wgridder) {
   // It may happen that several schaapcommon::fft::Resamplers are created
   // concurrently, so we must make sure that the FFTW planner can deal with
   // this.
   fftwf_make_planner_thread_safe();
 }
 
+WGriddingMSGridder::~WGriddingMSGridder() = default;
+
+std::unique_ptr<WGriddingGridderBase> WGriddingMSGridder::MakeGridder(
+    size_t width, size_t height) const {
+  if (accuracy_ <= 1.01e-5) {
+    return std::make_unique<WGriddingGridder_Simple<double>>(
+        ActualInversionWidth(), ActualInversionHeight(), width, height,
+        ActualPixelSizeX(), ActualPixelSizeY(), LShift(), MShift(),
+        resources_.NCpus(), accuracy_, 0, use_tuned_wgridder_);
+  } else {
+    return std::make_unique<WGriddingGridder_Simple<float>>(
+        ActualInversionWidth(), ActualInversionHeight(), width, height,
+        ActualPixelSizeX(), ActualPixelSizeY(), LShift(), MShift(),
+        resources_.NCpus(), accuracy_, 0, use_tuned_wgridder_);
+  }
+}
+
 size_t WGriddingMSGridder::calculateMaxNRowsInMemory(
     size_t channelCount) const {
-  size_t constantMem, perVisMem;
-  _gridder->memUsage(constantMem, perVisMem);
-  if (int64_t(constantMem) >= _memSize) {
-    constantMem = _memSize / 2;
+  size_t constantMem;
+  size_t perVisMem;
+  gridder_->MemoryUsage(constantMem, perVisMem);
+  if (int64_t(constantMem) >= resources_.Memory()) {
+    // Assume that half the memory is necessary for the constant parts (like
+    // image grid), and the other half remains available for the dynamic buffers
+    constantMem = resources_.Memory() / 2;
     Logger::Warn << "Not enough memory available for doing the gridding:\n"
                     "swapping might occur!\n";
   }
-  uint64_t memForBuffers = _memSize - constantMem;
+  const uint64_t memForBuffers = resources_.Memory() - constantMem;
 
-  uint64_t memPerRow = (perVisMem + sizeof(std::complex<float>)) *
-                           channelCount       // vis themselves
-                       + sizeof(double) * 3;  // uvw
-  size_t maxNRows = std::max(memForBuffers / memPerRow, uint64_t(100));
+  const uint64_t memPerRow = (perVisMem + sizeof(std::complex<float>)) *
+                                 channelCount       // vis themselves
+                             + sizeof(double) * 3;  // uvw
+  const size_t maxNRows = std::max(memForBuffers / memPerRow, uint64_t(100));
   if (maxNRows < 1000) {
     Logger::Warn << "Less than 1000 data rows fit in memory: this probably "
                     "means performance is going to be very poor!\n";
@@ -55,14 +77,15 @@ size_t WGriddingMSGridder::calculateMaxNRowsInMemory(
   return maxNRows;
 }
 
-template <DDGainMatrix GainEntry>
 void WGriddingMSGridder::gridMeasurementSet(MSData& msData) {
   const aocommon::BandData selectedBand(msData.SelectedBand());
   StartMeasurementSet(msData, false);
 
+  const size_t n_vis_polarizations = msData.msProvider->NPolarizations();
   aocommon::UVector<std::complex<float>> modelBuffer(
-      selectedBand.ChannelCount());
-  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount());
+      selectedBand.ChannelCount() * n_vis_polarizations);
+  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount() *
+                                        n_vis_polarizations);
   aocommon::UVector<bool> isSelected(selectedBand.ChannelCount(), true);
 
   size_t totalNRows = 0;
@@ -78,7 +101,7 @@ void WGriddingMSGridder::gridMeasurementSet(MSData& msData) {
 
   std::unique_ptr<MSReader> msReader = msData.msProvider->MakeReader();
   aocommon::UVector<std::complex<float>> newItemData(
-      selectedBand.ChannelCount());
+      selectedBand.ChannelCount() * n_vis_polarizations);
   InversionRow newRowData;
   newRowData.data = newItemData.data();
 
@@ -91,14 +114,15 @@ void WGriddingMSGridder::gridMeasurementSet(MSData& msData) {
 
     // Read / fill the chunk
     while (msReader->CurrentRowAvailable() && nRows < maxNRows) {
-      double uInMeters, vInMeters, wInMeters;
-      msReader->ReadMeta(uInMeters, vInMeters, wInMeters);
-      newRowData.uvw[0] = uInMeters;
-      newRowData.uvw[1] = vInMeters;
-      newRowData.uvw[2] = wInMeters;
-      readAndWeightVisibilities<1, GainEntry>(
-          *msReader, msData.antennaNames, newRowData, selectedBand,
-          weightBuffer.data(), modelBuffer.data(), isSelected.data());
+      MSProvider::MetaData metaData;
+      msReader->ReadMeta(metaData);
+      newRowData.uvw[0] = metaData.uInM;
+      newRowData.uvw[1] = metaData.vInM;
+      newRowData.uvw[2] = metaData.wInM;
+
+      GetCollapsedVisibilities(*msReader, msData.antennaNames, newRowData,
+                               selectedBand, weightBuffer.data(),
+                               modelBuffer.data(), isSelected.data(), metaData);
 
       std::copy_n(newRowData.data, selectedBand.ChannelCount(),
                   &visBuffer[nRows * selectedBand.ChannelCount()]);
@@ -109,7 +133,7 @@ void WGriddingMSGridder::gridMeasurementSet(MSData& msData) {
     }
 
     Logger::Info << "Gridding " << nRows << " rows...\n";
-    _gridder->AddInversionData(nRows, selectedBand.ChannelCount(),
+    gridder_->AddInversionData(nRows, selectedBand.ChannelCount(),
                                uvwBuffer.data(), frequencies.data(),
                                visBuffer.data());
 
@@ -119,14 +143,6 @@ void WGriddingMSGridder::gridMeasurementSet(MSData& msData) {
   msData.totalRowsProcessed += totalNRows;
 }
 
-template void WGriddingMSGridder::gridMeasurementSet<DDGainMatrix::kXX>(
-    MSData& msData);
-template void WGriddingMSGridder::gridMeasurementSet<DDGainMatrix::kYY>(
-    MSData& msData);
-template void WGriddingMSGridder::gridMeasurementSet<DDGainMatrix::kTrace>(
-    MSData& msData);
-
-template <DDGainMatrix GainEntry>
 void WGriddingMSGridder::predictMeasurementSet(MSData& msData) {
   msData.msProvider->ReopenRW();
   const aocommon::BandData selectedBand(msData.SelectedBand());
@@ -148,11 +164,8 @@ void WGriddingMSGridder::predictMeasurementSet(MSData& msData) {
     size_t nRows = 0;
     // Read / fill the chunk
     while (msReader->CurrentRowAvailable() && nRows < maxNRows) {
-      double uInMeters, vInMeters, wInMeters;
-      msReader->ReadMeta(uInMeters, vInMeters, wInMeters);
-      uvwBuffer[nRows * 3] = uInMeters;
-      uvwBuffer[nRows * 3 + 1] = vInMeters;
-      uvwBuffer[nRows * 3 + 2] = wInMeters;
+      msReader->ReadMeta(uvwBuffer[nRows * 3], uvwBuffer[nRows * 3 + 1],
+                         uvwBuffer[nRows * 3 + 2]);
       ++nRows;
       msReader->NextInputRow();
     }
@@ -160,28 +173,21 @@ void WGriddingMSGridder::predictMeasurementSet(MSData& msData) {
     Logger::Info << "Predicting " << nRows << " rows...\n";
     aocommon::UVector<std::complex<float>> visBuffer(
         maxNRows * selectedBand.ChannelCount());
-    _gridder->PredictVisibilities(nRows, selectedBand.ChannelCount(),
+    gridder_->PredictVisibilities(nRows, selectedBand.ChannelCount(),
                                   uvwBuffer.data(), frequencies.data(),
                                   visBuffer.data());
 
     Logger::Info << "Writing...\n";
     for (size_t row = 0; row != nRows; ++row) {
-      writeVisibilities<1, GainEntry>(
-          *msData.msProvider, msData.antennaNames, selectedBand,
-          &visBuffer[row * selectedBand.ChannelCount()]);
+      WriteCollapsedVisibilities(*msData.msProvider, msData.antennaNames,
+                                 selectedBand,
+                                 &visBuffer[row * selectedBand.ChannelCount()]);
     }
     totalNRows += nRows;
   }  // end of chunk
 
   msData.totalRowsProcessed += totalNRows;
 }
-
-template void WGriddingMSGridder::predictMeasurementSet<DDGainMatrix::kXX>(
-    MSData& msData);
-template void WGriddingMSGridder::predictMeasurementSet<DDGainMatrix::kYY>(
-    MSData& msData);
-template void WGriddingMSGridder::predictMeasurementSet<DDGainMatrix::kTrace>(
-    MSData& msData);
 
 void WGriddingMSGridder::getActualTrimmedSize(size_t& trimmedWidth,
                                               size_t& trimmedHeight) const {
@@ -209,26 +215,17 @@ void WGriddingMSGridder::Invert() {
   size_t trimmedWidth, trimmedHeight;
   getActualTrimmedSize(trimmedWidth, trimmedHeight);
 
-  _gridder.reset(new WGriddingGridder_Simple(
-      ActualInversionWidth(), ActualInversionHeight(), trimmedWidth,
-      trimmedHeight, ActualPixelSizeX(), ActualPixelSizeY(), PhaseCentreDL(),
-      PhaseCentreDM(), _cpuCount, _accuracy));
-  _gridder->InitializeInversion();
+  gridder_ = MakeGridder(trimmedWidth, trimmedHeight);
+  gridder_->InitializeInversion();
 
   resetVisibilityCounters();
 
   for (size_t i = 0; i != MeasurementSetCount(); ++i) {
     MSData& msData = msDataVector[i];
-    if (Polarization() == aocommon::Polarization::XX) {
-      gridMeasurementSet<DDGainMatrix::kXX>(msData);
-    } else if (Polarization() == aocommon::Polarization::YY) {
-      gridMeasurementSet<DDGainMatrix::kYY>(msData);
-    } else {
-      gridMeasurementSet<DDGainMatrix::kTrace>(msData);
-    }
+    gridMeasurementSet(msData);
   }
 
-  _gridder->FinalizeImage(1.0 / totalWeight());
+  gridder_->FinalizeImage(1.0 / totalWeight());
 
   Logger::Info << "Gridded visibility count: "
                << double(GriddedVisibilityCount());
@@ -239,7 +236,7 @@ void WGriddingMSGridder::Invert() {
 
   _image = Image(ActualInversionWidth(), ActualInversionHeight());
   {
-    std::vector<float> imageFloat = _gridder->RealImage();
+    std::vector<float> imageFloat = gridder_->RealImage();
     for (size_t i = 0; i < imageFloat.size(); ++i) _image[i] = imageFloat[i];
   }
 
@@ -249,7 +246,7 @@ void WGriddingMSGridder::Invert() {
     // The input is of size ActualInversionWidth() x ActualInversionHeight()
     schaapcommon::fft::Resampler resampler(
         ActualInversionWidth(), ActualInversionHeight(), ImageWidth(),
-        ImageHeight(), _cpuCount);
+        ImageHeight(), resources_.NCpus());
 
     Image resized(ImageWidth(), ImageHeight());
     resampler.Resample(_image.Data(), resized.Data());
@@ -260,10 +257,7 @@ void WGriddingMSGridder::Invert() {
     Logger::Debug << "Trimming " << ImageWidth() << " x " << ImageHeight()
                   << " -> " << TrimWidth() << " x " << TrimHeight() << '\n';
 
-    Image trimmed(TrimWidth(), TrimHeight());
-    Image::Trim(trimmed.Data(), TrimWidth(), TrimHeight(), _image.Data(),
-                ImageWidth(), ImageHeight());
-    _image = std::move(trimmed);
+    _image = _image.Trim(TrimWidth(), TrimHeight());
   }
 }
 
@@ -274,10 +268,7 @@ void WGriddingMSGridder::Predict(std::vector<Image>&& images) {
   size_t trimmedWidth, trimmedHeight;
   getActualTrimmedSize(trimmedWidth, trimmedHeight);
 
-  _gridder.reset(new WGriddingGridder_Simple(
-      ActualInversionWidth(), ActualInversionHeight(), trimmedWidth,
-      trimmedHeight, ActualPixelSizeX(), ActualPixelSizeY(), PhaseCentreDL(),
-      PhaseCentreDM(), _cpuCount, _accuracy));
+  gridder_ = MakeGridder(trimmedWidth, trimmedHeight);
 
   if (TrimWidth() != ImageWidth() || TrimHeight() != ImageHeight()) {
     Image untrimmedImage(ImageWidth(), ImageHeight());
@@ -291,24 +282,18 @@ void WGriddingMSGridder::Predict(std::vector<Image>&& images) {
   if (ImageWidth() != ActualInversionWidth() ||
       ImageHeight() != ActualInversionHeight()) {
     Image resampledImage(ImageWidth(), ImageHeight());
-    schaapcommon::fft::Resampler resampler(ImageWidth(), ImageHeight(),
-                                           ActualInversionWidth(),
-                                           ActualInversionHeight(), _cpuCount);
+    schaapcommon::fft::Resampler resampler(
+        ImageWidth(), ImageHeight(), ActualInversionWidth(),
+        ActualInversionHeight(), resources_.NCpus());
 
     resampler.Resample(images[0].Data(), resampledImage.Data());
     images[0] = std::move(resampledImage);
   }
 
-  _gridder->InitializePrediction(images[0].Data());
+  gridder_->InitializePrediction(images[0].Data());
   images[0].Reset();
 
   for (MSData& msData : msDataVector) {
-    if (Polarization() == aocommon::Polarization::XX) {
-      predictMeasurementSet<DDGainMatrix::kXX>(msData);
-    } else if (Polarization() == aocommon::Polarization::YY) {
-      predictMeasurementSet<DDGainMatrix::kYY>(msData);
-    } else {
-      predictMeasurementSet<DDGainMatrix::kTrace>(msData);
-    }
+    predictMeasurementSet(msData);
   }
 }

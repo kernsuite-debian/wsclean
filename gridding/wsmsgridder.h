@@ -4,6 +4,8 @@
 #include "msgridderbase.h"
 #include "wstackinggridder.h"
 
+#include "../structures/resources.h"
+
 #include <casacore/casa/Arrays/Array.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 
@@ -19,7 +21,7 @@ class WSMSGridder final : public MSGridderBase {
  public:
   typedef WStackingGridder<float> GridderType;
 
-  WSMSGridder(const Settings& settings);
+  WSMSGridder(const Settings& settings, const Resources& resources);
   ~WSMSGridder() noexcept;
 
   virtual void Invert() override;
@@ -53,23 +55,12 @@ class WSMSGridder final : public MSGridderBase {
     size_t rowId;
   };
 
-  template <DDGainMatrix GainEntry>
   void gridMeasurementSet(MSData& msData);
 
   void countSamplesPerLayer(MSData& msData);
   virtual size_t getSuggestedWGridSize() const override;
 
-  template <DDGainMatrix GainEntry>
-  void predictMeasurementSet(MSData& msData);
-
-  /*void workThread(aocommon::Lane<InversionRow>* workLane) {
-    InversionRow workItem;
-    while (workLane->read(workItem)) {
-      _gridder->AddData(workItem.data, DataDescId(), workItem.uvw[0],
-                        workItem.uvw[1], workItem.uvw[2]);
-      delete[] workItem.data;
-    }
-  }*/
+  void predictMeasurementSet(MSData& msData, GainMode gain_mode);
 
   void startInversionWorkThreads(size_t maxChannelCount);
   void finishInversionWorkThreads();
@@ -79,20 +70,19 @@ class WSMSGridder final : public MSGridderBase {
                          aocommon::Lane<PredictionWorkItem>* outputLane,
                          const aocommon::BandData* bandData);
 
-  template <DDGainMatrix GainEntry>
   void predictWriteThread(aocommon::Lane<PredictionWorkItem>* samplingWorkLane,
                           const MSData* msData,
-                          const aocommon::BandData* bandData);
+                          const aocommon::BandData* bandData,
+                          GainMode gain_mode);
 
   std::unique_ptr<GridderType> _gridder;
   std::vector<aocommon::Lane<InversionWorkSample>> _inversionCPULanes;
   std::vector<std::thread> _threadGroup;
   size_t _nwWidth, _nwHeight;
-  size_t _currentDataDescId;
   double _nwFactor;
   size_t _antialiasingKernelSize, _overSamplingFactor;
-  size_t _cpuCount, _laneBufferSize;
-  int64_t _memSize;
+  const Resources _resources;
+  size_t _laneBufferSize;
   aocommon::Image _realImage;
   aocommon::Image _imaginaryImage;
 };

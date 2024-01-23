@@ -1,8 +1,11 @@
+from wsgiref import validate
 import pytest
 import os, glob
-import warnings
 import sys
-from utils import validate_call
+from astropy.io import fits
+import numpy as np
+from utils import validate_call, compute_rms
+
 
 # Append current directory to system path in order to import testconfig
 sys.path.append(".")
@@ -11,11 +14,11 @@ sys.path.append(".")
 import config_vars as tcf
 
 """
-Test script containing a collection of wsclean commands, tested on an MWA measurement set. Tests contained in this
-file can be invoked via various routes:
+Test script containing a collection of wsclean commands, tested on big MWA/SKA
+measurement sets. Tests contained in this file can be invoked via various routes:
 
 - execute "make longsystemcheck"  in your build directory
-- execute "[python3 -m] pytest [OPTIONS] source/<test_name.py>" in your build/tests directory
+- execute "[python3 -m] pytest [OPTIONS] source/long_system_checks.py::TestLongSystem::<test_name.py>" in your build/tests/python directory
 """
 
 
@@ -24,7 +27,11 @@ def name(name: str):
 
 
 @pytest.mark.usefixtures("prepare_large_ms")
-class TestCommandCatalogue:
+class TestLongSystem:
+    """
+    Collection of long system tests.
+    """
+
     def test_dirty_image(self):
         # Make dirty image
         s = f"{tcf.WSCLEAN} -name {name('test-dirty')} {tcf.DIMS_LARGE} {tcf.MWA_MS}"
@@ -44,7 +51,8 @@ class TestCommandCatalogue:
 
     def test_multiple_intervals(self):
         # Multiple intervals
-        s = f"{tcf.WSCLEAN} -name {name('intervals')} -intervals-out 3 {tcf.DIMS_RECTANGULAR} {tcf.MWA_MS}"
+        s = f"{tcf.WSCLEAN} -name {name('intervals')} -intervals-out 3 \
+            {tcf.DIMS_RECTANGULAR} {tcf.MWA_MS}"
         validate_call(s.split())
 
     def test_multiple_intervals_and_channels(self):
@@ -53,10 +61,26 @@ class TestCommandCatalogue:
             -channels-out 2 -niter 1000 -mgain 0.8 {tcf.DIMS_LARGE} {tcf.MWA_MS}"
         validate_call(s.split())
 
+    def test_multiple_intervals_and_facets(self):
+        # Multiple intervals + multiple facets with some cleaning
+        s_base = f"{tcf.WSCLEAN} -name {name('intervals-and-facets')} -intervals-out 3 \
+            -facet-regions {tcf.FACETFILE_4FACETS}"
+        s = f"{s_base} -niter 1000 -mgain 0.8 {tcf.DIMS_LARGE} {tcf.MWA_MS}"
+        validate_call(s.split())
+
+        # Run predict, using the model generated above.
+        s = f"{s_base} -predict {tcf.MWA_MS}"
+        validate_call(s.split())
+
     def test_multifrequency_hogbom(self):
         # Multi-frequency Högbom clean, no parallel gridding
         s = f"{tcf.WSCLEAN} -name {name('mfhogbom')} -channels-out 4 -join-channels -auto-threshold 3 \
             -mgain 0.8 -niter 1000000 {tcf.DIMS_RECTANGULAR} {tcf.MWA_MS}"
+        validate_call(s.split())
+
+    def test_multifrequency_without_joining_pol(self):
+        # Multi-frequency clean, no joining of pols (reproduces bug #128)
+        s = f"{tcf.WSCLEAN} -name {name('mf-no-join-pol')} -pol iv -channels-out 2 -join-channels -niter 1 -interval 10 13 {tcf.DIMS_RECTANGULAR} {tcf.MWA_MS}"
         validate_call(s.split())
 
     def test_multifrequency_hogbom_spectral_fit(self):
@@ -95,7 +119,7 @@ class TestCommandCatalogue:
         # Linear joined polarizations with 4 joined channels
         s = f"{tcf.WSCLEAN} -name {name('linearpol')} -niter 1000000 -auto-threshold 3.0 \
              -pol XX,YY,XY,YX -join-polarizations -join-channels -mgain 0.85 \
-                 -channels-out 4 -parallel-gridding 16 {tcf.DIMS_LARGE} {tcf.MWA_MS}"
+                 -channels-out 4 -parallel-gridding 16 -gridder wstacking {tcf.DIMS_LARGE} {tcf.MWA_MS}"
         validate_call(s.split())
 
     def test_two_timesteps(self):
@@ -121,6 +145,23 @@ class TestCommandCatalogue:
         s = f"{tcf.WSCLEAN} {gridder} -name {name(test_name)} -mgain 0.8 -auto-threshold 5 -niter 1000000 -make-psf {tcf.DIMS_RECTANGULAR} -shift 08h09m20s -39d06m54s -no-update-model-required {tcf.MWA_MS}"
         validate_call(s.split())
 
+    def test_shifted_source_list(self):
+        # Shift the image and check coordinates in source list
+        s = f"{tcf.WSCLEAN} -name {name('shifted-source-list')} -niter 1 {tcf.DIMS_RECTANGULAR} -shift 08h09m20s -39d06m54s -save-source-list {tcf.MWA_MS}"
+        validate_call(s.split())
+        source_file = f"{name('shifted-source-list')}-sources.txt"
+        assert os.path.isfile(source_file)
+        with open(source_file) as f:
+            lines = f.readlines()
+            # There should be a header line and a single source line in the file
+            assert len(lines) == 2
+            # 3rd and 4th column contain ra and dec
+            cols = lines[1].split(",")
+            assert len(cols) >= 4
+            ra_str = cols[2]
+            dec_str = cols[3]
+            assert ra_str[0:5] + " " + dec_str[0:6] == "07:49 -44.12"
+
     def test_missing_channels_in_deconvolution(self):
         # The test set has some missing MWA subbands. One MWA subband is 1/24 of the data (32/768 channels), so
         # by imaging with -channels-out 24, it is tested what happens when an output channel has no data.
@@ -128,8 +169,7 @@ class TestCommandCatalogue:
         validate_call(s.split())
 
     def test_grid_with_beam(self):
-        """Requires that WSClean is compiled with IDG and EveryBeam
-        """
+        """Requires that WSClean is compiled with IDG and EveryBeam"""
         name = "idg-beam"
 
         # Remove existing component files if present
@@ -174,7 +214,7 @@ class TestCommandCatalogue:
         # Test facet-based imaging and applying h5 solutions
         # where the polarization axis in the h5 file has size npol
         h5download = (
-            f"wget -N -q www.astron.nl/citt/ci_data/wsclean/mock_soltab_{npol}pol.h5"
+            f"wget -N -q {tcf.WSCLEAN_DATA_URL}/mock_soltab_{npol}pol.h5"
         )
         validate_call(h5download.split())
 
@@ -219,36 +259,6 @@ class TestCommandCatalogue:
         # First make sure input files exist:
         s = f"{tcf.WSCLEAN} -name {name('idg-reuse-psf-A')} {tcf.DIMS_LARGE} -use-idg -idg-mode cpu -grid-with-beam -interval 10 14 -mgain 0.8 -niter 1 -mwa-path . {tcf.MWA_MS}"
         validate_call(s.split())
-        os.rename(
-            name("idg-reuse-psf-A") + "-model.fits",
-            name("idg-reuse-psf-B") + "-model.fits",
-        )
-        os.rename(
-            name("idg-reuse-psf-A") + "-beam.fits",
-            name("idg-reuse-psf-B") + "-beam.fits",
-        )
-        # Now continue:
-        s = f"{tcf.WSCLEAN} -name {name('idg-reuse-psf-B')} {tcf.DIMS_LARGE} -use-idg -idg-mode cpu -grid-with-beam -interval 10 14 -mgain 0.8 -niter 1 -continue -reuse-psf {name('idg-reuse-psf-A')} -mwa-path . {tcf.MWA_MS}"
-        validate_call(s.split())
-
-    def test_idg_with_reuse_dirty(self):
-        # Test for issue #80: -reuse-dirty option fails (#80)
-        # First make sure input files exist:
-        s = f"{tcf.WSCLEAN} -name {name('idg-reuse-dirty-A')} {tcf.DIMS_LARGE} -use-idg -idg-mode cpu -grid-with-beam -interval 10 14 -mgain 0.8 -niter 1 -mwa-path . {tcf.MWA_MS}"
-        validate_call(s.split())
-        os.rename(
-            name("idg-reuse-dirty-A") + "-model.fits",
-            name("idg-reuse-dirty-B") + "-model.fits",
-        )
-        # Now continue:
-        s = f"{tcf.WSCLEAN} -name {name('idg-reuse-dirty-B')} {tcf.DIMS_LARGE} -use-idg -idg-mode cpu -grid-with-beam -interval 10 14 -mgain 0.8 -niter 1 -continue -reuse-dirty {name('idg-reuse-dirty-A')} -mwa-path . {tcf.MWA_MS}"
-        validate_call(s.split())
-
-    def test_idg_with_reuse_psf(self):
-        # Test for issue #81: -reuse-psf gives segmentation fault in IDG
-        # First make sure input files exist:
-        s = f"{tcf.WSCLEAN} -name {name('idg-reuse-psf-A')} {tcf.DIMS_LARGE} -use-idg -idg-mode cpu -grid-with-beam -interval 10 14 -mgain 0.8 -niter 1 -mwa-path . {tcf.MWA_MS}"
-        validate_call(s.split())
         # Model image A is copied to B-model-pb corrected image, to avoid
         # issues due to NaN values in the A-model-pb.fits file.
         # As such, this test is purely illlustrative.
@@ -264,6 +274,9 @@ class TestCommandCatalogue:
         s = f"{tcf.WSCLEAN} -name {name('idg-reuse-psf-B')} {tcf.DIMS_LARGE} -use-idg -idg-mode cpu -grid-with-beam -interval 10 14 -mgain 0.8 -niter 1 -continue -reuse-psf {name('idg-reuse-psf-A')} -mwa-path . {tcf.MWA_MS}"
         validate_call(s.split())
 
+    @pytest.mark.skip(
+        reason="-reuse-dirty and -grid-with-beam options conflict due to average beam computation (AST-995)"
+    )
     def test_idg_with_reuse_dirty(self):
         # Test for issue #80: -reuse-dirty option fails (#80)
         # First make sure input files exist:
@@ -295,7 +308,9 @@ class TestCommandCatalogue:
         # Now use this as a mask, and force a Gaussian on the position
         s = f"{tcf.WSCLEAN} -name {name('masked-parallel-deconvolution')} -size 256 256 -scale 1amin -fits-mask {name('masked-parallel-deconvolution-prepare')}-model.fits -interval 10 14 -niter 10 -parallel-deconvolution 128 -multiscale -multiscale-scales 10 {tcf.MWA_MS}"
         validate_call(s.split())
-        for f in glob.glob(f"{name('masked-parallel-deconvolution-prepare')}*.fits"):
+        for f in glob.glob(
+            f"{name('masked-parallel-deconvolution-prepare')}*.fits"
+        ):
             os.remove(f)
 
     @pytest.mark.parametrize("use_beam", (False, True))
@@ -322,17 +337,17 @@ class TestCommandCatalogue:
         s = f"{tcf.WSCLEAN} -name {name('test-caught-bad-selection')} -channels-out 256 -channel-range 0 255 {tcf.DIMS_LARGE} {tcf.MWA_MS}"
         with pytest.raises(Exception):
             validate_call(s.split())
-            
+
     def test_catch_invalid_channel_selection_with_gaps(self):
         s = f"{tcf.WSCLEAN} -name {name('test-caught-bad-selection')} -gap-channel-division -channels-out 256 -channel-range 0 255 {tcf.DIMS_LARGE} {tcf.MWA_MS}"
         with pytest.raises(Exception):
             validate_call(s.split())
-            
+
     def test_catch_invalid_channel_selection_with_division(self):
         s = f"{tcf.WSCLEAN} -name {name('test-caught-bad-selection')} -channel-division-frequencies 145e6 -channels-out 256 -channel-range 0 255 {tcf.DIMS_LARGE} {tcf.MWA_MS}"
         with pytest.raises(Exception):
             validate_call(s.split())
-            
+
     def test_multiband_no_mf_weighting(self):
         # Tests issue #105: Segmentation fault (core dumped), when grouping spectral windows + no-mf-weighting Master Branch
         # The issue was caused by invalid indexing into the BandData object.
@@ -340,3 +355,206 @@ class TestCommandCatalogue:
         validate_call(s.split())
         for f in glob.glob(f"{name('vla-multiband-no-mf')}*.fits"):
             os.remove(f)
+
+    def test_spectrally_fitted_with_joined_polarizations(self):
+        s = f"{tcf.WSCLEAN} -name {name('iv-jointly-fitted')} {tcf.DIMS_LARGE} -parallel-gridding 4 -channels-out 4 -join-channels -fit-spectral-pol 2 -pol i,v -join-polarizations -niter 1000 -auto-threshold 5 -multiscale -mgain 0.8 {tcf.MWA_MS}"
+        validate_call(s.split())
+
+    def test_direction_dependent_psfs(self):
+        """Tests direction-dependent PSFs.
+        Checks that the PSF generated which lies close to the source point is more similar to the dirty image than the one lying further away.
+        """
+
+        def get_peak_centered_normalized_subimage(img, subimage_size):
+            """Get a subimage centered at the pixel with the heighest value
+            Image is normalized by the heighest pixel value
+            """
+            # Get coordinates of the peak
+            center_point_x, center_point_y = np.unravel_index(
+                np.argmax(img, axis=None), img.shape
+            )
+
+            return (
+                img[
+                    center_point_x
+                    - subimage_size // 2 : center_point_x
+                    - subimage_size // 2
+                    + subimage_size,
+                    center_point_y
+                    - subimage_size // 2 : center_point_y
+                    - subimage_size // 2
+                    + subimage_size,
+                ]
+                / img[center_point_x, center_point_y]
+            )
+
+        # Make template model image
+        s = f"{tcf.WSCLEAN} -name {name('DD-PSFs')} -no-reorder -size 4800 4800 -scale 5asec -weight briggs -1 -padding 1.2 -gridder idg -grid-with-beam -beam-mode array_factor -aterm-kernel-size 15 -beam-aterm-update 120 {tcf.SKA_MS}"
+        validate_call(s.split())
+
+        # Fill model images with grid of point sources
+        f_image = fits.open(name("DD-PSFs-image.fits"))
+        f_beam = fits.open(name("DD-PSFs-beam.fits"))
+        image_size = f_image[0].data.shape[-1]
+        PSF_GRID_SIZE_1D = 3
+        point_source_spacing = image_size // PSF_GRID_SIZE_1D
+        position_range_1d = (
+            point_source_spacing // 2
+            + point_source_spacing * np.arange(PSF_GRID_SIZE_1D)
+        )
+        f_image[0].data[:] = 0.0
+        for i in position_range_1d:
+            for j in position_range_1d:
+                f_image[0].data[0, 0, i, j] = 1.0 / f_beam[0].data[0, 0, i, j]
+        f_image.writeto(name("DD-PSFs-model-pb.fits"), overwrite=True)
+
+        # Predict visibilites using wsclean
+        # predicted visibiliies are written to the MODEL_DATA column
+        s = f"{tcf.WSCLEAN} -name {name('DD-PSFs')} -no-reorder -predict -padding 1.2 -gridder idg -grid-with-beam  -beam-mode array_factor  -beam-aterm-update 120 {tcf.SKA_MS}"
+        validate_call(s.split())
+
+        # Location of a python implementation of a "deconvolution algorithm" that does
+        # nothing except storing its input images to disk
+        deconvolution_script = os.path.join(
+            os.path.dirname(__file__), "test_deconvolution_write_input.py"
+        )
+
+        # Generate the regular (direction independent) psf
+        s = f"{tcf.WSCLEAN} -name {name('NO-DD-PSFs')} -make-psf-only -data-column MODEL_DATA -no-reorder -size 4800 4800 -scale 5asec -weight briggs -1 -padding 1.2 -gridder idg -grid-with-beam -beam-mode array_factor -aterm-kernel-size 15 -beam-aterm-update 120 {tcf.SKA_MS}"
+        validate_call(s.split())
+
+        # Generate dirty image and PSF_GRID_SIZE_1D x PSF_GRID_SIZE_1D direction-dependent PSFs
+        s = f"{tcf.WSCLEAN} -name {name('DD-PSFs')} -data-column MODEL_DATA -parallel-deconvolution 1600 -no-reorder -size 4800 4800 -scale 5asec -mgain 0.8 -niter 10000000 -threshold 10.0mJy -auto-mask 5.0 -weight briggs -1 -padding 1.2 -gridder idg -grid-with-beam -beam-mode array_factor -aterm-kernel-size 15 -beam-aterm-update 120 -dd-psf-grid 3 3 -nmiter 1 -python-deconvolution {deconvolution_script} {tcf.SKA_MS}"
+        validate_call(s.split())
+
+        # Check whether the restoring beam for dd-psf and regular imaging is the same
+        reference_header = fits.getheader(name("NO-DD-PSFs" + "-psf.fits"))
+        ddpsf_header = fits.getheader(name("DD-PSFs" + "-image.fits"))
+        assert np.isclose(
+            reference_header["BMAJ"], ddpsf_header["BMAJ"], rtol=1e-3, atol=0.0
+        )
+        assert np.isclose(
+            reference_header["BMIN"], ddpsf_header["BMIN"], rtol=1e-3, atol=0.0
+        )
+        assert np.isclose(
+            reference_header["BPA"], ddpsf_header["BPA"], rtol=0.0, atol=0.1
+        )
+
+        SUBIMAGE_SIZE = 40
+        dirty = get_peak_centered_normalized_subimage(
+            fits.open(f"{name('DD-PSFs')}-dirty.fits")[0].data.squeeze()[
+                :1600, :1600
+            ],
+            SUBIMAGE_SIZE,
+        )
+        psf_on_source = get_peak_centered_normalized_subimage(
+            fits.open(f"{name('DD-PSFs')}-d0000-psf.fits")[0].data.squeeze(),
+            SUBIMAGE_SIZE,
+        )
+        psf_off_source = get_peak_centered_normalized_subimage(
+            fits.open(f"{name('DD-PSFs')}-d0004-psf.fits")[0].data.squeeze(),
+            SUBIMAGE_SIZE,
+        )
+
+        # Verify that the psf generated at the location of a point source
+        # is indeed a better match then a psf for a diffetent location
+        expected_improvement_factor = 0.3
+        assert np.sqrt(
+            np.mean(np.square(dirty - psf_on_source))
+        ) < expected_improvement_factor * np.sqrt(
+            np.mean(np.square(dirty - psf_off_source))
+        )
+
+        num_psfs = PSF_GRID_SIZE_1D * PSF_GRID_SIZE_1D
+
+        dirty = []
+        psf = []
+
+        # Load the psfs and dirty images that were stored by the dummy deconvolution algorithm
+        for i in range(num_psfs):
+            dirty.append(
+                get_peak_centered_normalized_subimage(
+                    np.load(
+                        f"{name(f'test-deconvolution-write-input-dirty-{i}.npy')}"
+                    )[0][0],
+                    SUBIMAGE_SIZE,
+                )
+            )
+            psf.append(
+                get_peak_centered_normalized_subimage(
+                    np.load(
+                        f"{name(f'test-deconvolution-write-input-psf-{i}.npy')}"
+                    )[0],
+                    SUBIMAGE_SIZE,
+                )
+            )
+
+        # Create a difference matrix of rms differences between all pairs of
+        # dirty images and psfs.
+        # The best match should occur when psf and dirty image index match,
+        # i.e. on the diagonal of the difference matrix
+        diff = np.zeros((num_psfs, num_psfs))
+        for i in range(num_psfs):
+            for j in range(num_psfs):
+                diff[i, j] = np.sqrt(np.mean(np.square(dirty[i] - psf[j])))
+
+        # Assert that for each dirty image, the best match is indeed the psf
+        # with the same index
+        assert all(np.argmin(diff, axis=0) == np.arange(num_psfs))
+
+    def test_read_only_ms(self):
+        chmod = f"chmod a-w -R {tcf.MWA_MS}"
+        validate_call(chmod.split())
+        try:
+            # When "-no-update-model-required" is specified, processing a read-only measurement set should be possible.
+            s = f"{tcf.WSCLEAN} -interval 10 20 -no-update-model-required -name {name('readonly-ms')} -auto-threshold 0.5 -auto-mask 3 \
+                -mgain 0.95 -nmiter 2 -multiscale -niter 100000 {tcf.DIMS_RECTANGULAR} {tcf.MWA_MS}"
+            validate_call(s.split())
+        finally:
+            chmod = f"chmod u+w -R {tcf.MWA_MS}"
+            validate_call(chmod.split())
+
+    def test_rr_polarization(self):
+        s = f"{tcf.WSCLEAN} -pol rr -name {name('gmrt-rr')} -mgain 0.8 -niter 1 -size 512 512 -scale 10asec -gridder wstacking {tcf.GMRT_MS}"
+        validate_call(s.split())
+        rms_dirty = compute_rms(f"{name('gmrt-rr')}-dirty.fits")
+        rms_image = compute_rms(f"{name('gmrt-rr')}-image.fits")
+        # This was 0.215 when measured
+        assert rms_dirty > 0.2 and rms_dirty < 0.22
+        assert rms_dirty > rms_image
+
+    def test_gmrt_beam(self):
+        s = f"{tcf.WSCLEAN} -pol rr -name {name('gmrt-beam')} -apply-primary-beam -mgain 0.8 -size 512 512 -scale 10asec -gridder wstacking {tcf.GMRT_MS}"
+        validate_call(s.split())
+        rms_beam = compute_rms(f"{name('gmrt-beam')}-beam-0.fits")
+        # This was measured at 0.6306
+        assert rms_beam > 0.61 and rms_beam < 0.65
+        rms_corrected = compute_rms(f"{name('gmrt-beam')}-image-pb.fits")
+        # Measured at 0.45849
+        assert rms_corrected > 0.42 and rms_corrected < 0.49
+
+    def test_mf_full_polarization_beam_correction(self):
+        prefix = name("mf-full-pol-beam")
+        s = f"{tcf.WSCLEAN} -name {prefix} {tcf.DIMS_LARGE} -interval 10 12 -mwa-path . -channels-out 2 -apply-primary-beam -pol iquv -link-polarizations i -mgain 0.8 -niter 1000 -auto-threshold 6 -size 512 512 -scale 2amin {tcf.MWA_MS}"
+        validate_call(s.split())
+
+        assert os.path.isfile(prefix + "-0000-psf.fits")
+        assert os.path.isfile(prefix + "-0001-psf.fits")
+        assert os.path.isfile(prefix + "-MFS-psf.fits")
+        for image_type in [
+            "dirty",
+            "image",
+            "image-pb",
+            "model",
+            "model-pb",
+            "residual",
+            "residual-pb",
+        ]:
+            for pol_type in ["I", "Q", "U", "V"]:
+                postfix = pol_type + "-" + image_type + ".fits"
+                image_name = prefix + "-0000-" + postfix
+                assert os.path.isfile(image_name)
+                image_name = prefix + "-0001-" + postfix
+                assert os.path.isfile(image_name)
+                image_name = prefix + "-MFS-" + postfix
+                assert os.path.isfile(image_name)

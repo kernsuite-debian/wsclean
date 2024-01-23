@@ -6,13 +6,17 @@
 
 #include "msgridderbase.h"
 
+#include "../structures/resources.h"
+
+class ProgressBar;
+
 template <typename num_t>
 class DirectMSGridder final : public MSGridderBase {
  public:
   const static size_t num_t_factor =
       (sizeof(num_t) + sizeof(double) - 1) / sizeof(double);
 
-  DirectMSGridder(const Settings& settings);
+  DirectMSGridder(const Settings& settings, const Resources& resources);
 
   virtual void Invert() override;
 
@@ -28,14 +32,13 @@ class DirectMSGridder final : public MSGridderBase {
     num_t uInLambda, vInLambda, wInLambda;
     std::complex<float> sample;
   };
-  size_t _nThreads;
+  const Resources _resources;
   aocommon::Image _image;
   num_t* _sqrtLMTable;
   std::vector<num_t*> _layers;
   aocommon::Lane<InversionSample> _inversionLane;
 
-  template <DDGainMatrix GainEntry>
-  void invertMeasurementSet(const MSData& msData, class ProgressBar& progress,
+  void invertMeasurementSet(const MSData& msData, ProgressBar& progress,
                             size_t msIndex);
   void inversionWorker(size_t layer);
   void gridSample(const InversionSample& sample, size_t layer);

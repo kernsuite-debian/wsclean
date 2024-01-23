@@ -21,6 +21,16 @@ template <>
 void AddOrAssign<false>(std::complex<float>* dest, std::complex<float> source) {
   *dest = source;
 }
+
+void FillModelColumn(const casacore::ArrayColumn<casacore::Complex>& dataColumn,
+                     casacore::ArrayColumn<casacore::Complex>& modelColumn) {
+  casacore::Array<casacore::Complex> zeroArray;
+  for (size_t row = 0; row != dataColumn.nrow(); ++row) {
+    zeroArray.resize(dataColumn.shape(row));
+    zeroArray = casacore::Complex(0.0, 0.0);
+    modelColumn.put(row, zeroArray);
+  }
+}
 }  // namespace
 
 MSProvider::~MSProvider() {}
@@ -802,44 +812,36 @@ void MSProvider::GetRowRangeAndIDMap(casacore::MeasurementSet& ms,
 void MSProvider::InitializeModelColumn(casacore::MeasurementSet& ms) {
   casacore::ArrayColumn<casacore::Complex> dataColumn(
       ms, casacore::MS::columnName(casacore::MSMainEnums::DATA));
+  ms.reopenRW();
   if (ms.isColumn(casacore::MSMainEnums::MODEL_DATA)) {
     casacore::ArrayColumn<casacore::Complex> modelColumn(
         ms, casacore::MS::columnName(casacore::MSMainEnums::MODEL_DATA));
-    casacore::IPosition dataShape = dataColumn.shape(0);
     bool isDefined = modelColumn.isDefined(0);
     bool isSameShape = false;
     if (isDefined) {
       casacore::IPosition modelShape = modelColumn.shape(0);
+      casacore::IPosition dataShape = dataColumn.shape(0);
       isSameShape = modelShape == dataShape;
     }
     if (!isDefined || !isSameShape) {
       Logger::Warn << "WARNING: Your model column does not have the same shape "
                       "as your data column: resetting MODEL column.\n";
-      const casacore::Array<casacore::Complex> zeroArray(
-          dataShape, casacore::Complex(0.0, 0.0));
-      for (size_t row = 0; row != ms.nrow(); ++row)
-        modelColumn.put(row, zeroArray);
+      FillModelColumn(dataColumn, modelColumn);
     }
-  } else {  // if(!_ms.isColumn(casacore::MSMainEnums::MODEL_DATA))
-    ms.reopenRW();
+  } else {  // No column named MODEL_DATA
     Logger::Info << "Adding model data column... ";
     Logger::Info.Flush();
-    casacore::IPosition shape = dataColumn.shape(0);
     casacore::ArrayColumnDesc<casacore::Complex> modelColumnDesc(
-        ms.columnName(casacore::MSMainEnums::MODEL_DATA), shape);
+        ms.columnName(casacore::MSMainEnums::MODEL_DATA));
     try {
       ms.addColumn(modelColumnDesc, "StandardStMan", true, true);
     } catch (std::exception& e) {
       ms.addColumn(modelColumnDesc, "StandardStMan", false, true);
     }
 
-    const casacore::Array<casacore::Complex> zeroArray(
-        shape, casacore::Complex(0.0, 0.0));
     casacore::ArrayColumn<casacore::Complex> modelColumn(
         ms, casacore::MS::columnName(casacore::MSMainEnums::MODEL_DATA));
-
-    for (size_t row = 0; row != ms.nrow(); ++row)
-      modelColumn.put(row, zeroArray);
+    FillModelColumn(dataColumn, modelColumn);
 
     Logger::Info << "DONE\n";
   }
@@ -878,13 +880,21 @@ casacore::ArrayColumn<float> MSProvider::InitializeImagingWeightColumn(
 }
 
 std::vector<aocommon::PolarizationEnum> MSProvider::GetMSPolarizations(
-    const casacore::MSPolarization& polTable) {
+    size_t dataDescId, const casacore::MeasurementSet& ms) {
+  // First get the polarization index corresponding with the data desc id
+  casacore::MSDataDescription dataDescriptionTable = ms.dataDescription();
+  casacore::ScalarColumn<int> polarizationIndexColumn(
+      dataDescriptionTable, casacore::MSDataDescription::columnName(
+                                casacore::MSDataDescription::POLARIZATION_ID));
+  const size_t polarizationIndex = polarizationIndexColumn(dataDescId);
+  casacore::MSPolarization polTable = ms.polarization();
   std::vector<aocommon::PolarizationEnum> pols;
   casacore::ArrayColumn<int> corrTypeColumn(
       polTable, casacore::MSPolarization::columnName(
                     casacore::MSPolarizationEnums::CORR_TYPE));
 
-  casacore::Array<int> corrTypeVec(corrTypeColumn(0));
+  // Now get the information corresponding with the polarization index
+  casacore::Array<int> corrTypeVec(corrTypeColumn(polarizationIndex));
   for (casacore::Array<int>::const_contiter p = corrTypeVec.cbegin();
        p != corrTypeVec.cend(); ++p) {
     pols.push_back(aocommon::Polarization::AipsIndexToEnum(*p));
@@ -895,8 +905,6 @@ std::vector<aocommon::PolarizationEnum> MSProvider::GetMSPolarizations(
 
 void MSProvider::ResetModelColumn() {
   std::unique_ptr<MSReader> msReader = MakeReader();
-  SynchronizedMS ms = MS();
-  ms->reopenRW();
   const std::vector<std::complex<float>> buffer(NChannels() * NPolarizations(),
                                                 {0.0f, 0.0f});
   while (msReader->CurrentRowAvailable()) {

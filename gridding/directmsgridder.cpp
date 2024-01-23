@@ -9,8 +9,9 @@
 #include <vector>
 
 template <typename num_t>
-DirectMSGridder<num_t>::DirectMSGridder(const Settings& settings)
-    : MSGridderBase(settings), _nThreads(_settings.threadCount) {}
+DirectMSGridder<num_t>::DirectMSGridder(const Settings& settings,
+                                        const Resources& resources)
+    : MSGridderBase(settings), _resources(resources) {}
 
 template <typename num_t>
 void DirectMSGridder<num_t>::Invert() {
@@ -23,11 +24,11 @@ void DirectMSGridder<num_t>::Invert() {
 
   ProgressBar progress("Performing direct Fourier transform");
 
-  _inversionLane.resize(_nThreads * 1024);
+  _inversionLane.resize(_resources.NCpus() * 1024);
 
   std::vector<std::thread> threads;
-  threads.reserve(_nThreads);
-  for (size_t t = 0; t != _nThreads; ++t) {
+  threads.reserve(_resources.NCpus());
+  for (size_t t = 0; t != _resources.NCpus(); ++t) {
     _layers.emplace_back(allocate());
     std::fill(_layers[t], _layers[t] + width * height, num_t(0.0));
     threads.emplace_back(
@@ -36,14 +37,7 @@ void DirectMSGridder<num_t>::Invert() {
 
   for (size_t i = 0; i != MeasurementSetCount(); ++i) {
     MSData& msData = msDataVector[i];
-
-    if (Polarization() == aocommon::Polarization::XX) {
-      invertMeasurementSet<DDGainMatrix::kXX>(msData, progress, i);
-    } else if (Polarization() == aocommon::Polarization::YY) {
-      invertMeasurementSet<DDGainMatrix::kYY>(msData, progress, i);
-    } else {
-      invertMeasurementSet<DDGainMatrix::kTrace>(msData, progress, i);
-    }
+    invertMeasurementSet(msData, progress, i);
   }
 
   _inversionLane.write_end();
@@ -103,13 +97,13 @@ inline void DirectMSGridder<num_t>::gridSample(const InversionSample& sample,
     size_t ySrc = (height - y) + height / 2;
     if (ySrc >= height) ySrc -= height;
     const num_t m =
-        num_t(((num_t)ySrc - (height / 2)) * PixelSizeY() + PhaseCentreDM());
+        num_t(((num_t)ySrc - (height / 2)) * PixelSizeY() + MShift());
 
     for (size_t x = 0; x != width; ++x) {
       size_t xSrc = x + width / 2;
       if (xSrc >= width) xSrc -= width;
       const num_t l =
-          num_t(((width / 2) - (num_t)xSrc) * PixelSizeX() + PhaseCentreDL());
+          num_t(((width / 2) - (num_t)xSrc) * PixelSizeX() + LShift());
 
       size_t index = yIndex + x;
       num_t angle = minTwoPi * (u * l + v * m + w * _sqrtLMTable[index]);
@@ -128,20 +122,21 @@ void DirectMSGridder<num_t>::inversionWorker(size_t layer) {
 }
 
 template <typename num_t>
-template <DDGainMatrix GainEntry>
 void DirectMSGridder<num_t>::invertMeasurementSet(
     const MSGridderBase::MSData& msData, ProgressBar& progress,
     size_t msIndex) {
   StartMeasurementSet(msData, false);
+  const size_t n_vis_polarizations = msData.msProvider->NPolarizations();
   const aocommon::BandData selectedBand(msData.SelectedBand());
   aocommon::UVector<std::complex<float>> modelBuffer(
-      selectedBand.ChannelCount());
-  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount());
+      selectedBand.ChannelCount() * n_vis_polarizations);
+  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount() *
+                                        n_vis_polarizations);
   aocommon::UVector<bool> isSelected(selectedBand.ChannelCount(), true);
 
   InversionRow newItem;
   aocommon::UVector<std::complex<float>> newItemData(
-      selectedBand.ChannelCount());
+      selectedBand.ChannelCount() * n_vis_polarizations);
   newItem.data = newItemData.data();
 
   std::vector<size_t> idToMSRow;
@@ -152,11 +147,15 @@ void DirectMSGridder<num_t>::invertMeasurementSet(
     progress.SetProgress(msIndex * idToMSRow.size() + rowIndex,
                          MeasurementSetCount() * idToMSRow.size());
 
-    msReader->ReadMeta(newItem.uvw[0], newItem.uvw[1], newItem.uvw[2]);
+    MSProvider::MetaData metaData;
+    msReader->ReadMeta(metaData);
+    newItem.uvw[0] = metaData.uInM;
+    newItem.uvw[1] = metaData.vInM;
+    newItem.uvw[2] = metaData.wInM;
 
-    readAndWeightVisibilities<1, GainEntry>(
-        *msReader, msData.antennaNames, newItem, selectedBand,
-        weightBuffer.data(), modelBuffer.data(), isSelected.data());
+    GetCollapsedVisibilities(*msReader, msData.antennaNames, newItem,
+                             selectedBand, weightBuffer.data(),
+                             modelBuffer.data(), isSelected.data(), metaData);
     InversionSample sample;
     for (size_t ch = 0; ch != selectedBand.ChannelCount(); ++ch) {
       const double wl = selectedBand.ChannelWavelength(ch);
@@ -186,14 +185,12 @@ void DirectMSGridder<num_t>::initializeSqrtLMLookupTable() {
   for (size_t y = 0; y != height; ++y) {
     size_t ySrc = (height - y) + height / 2;
     if (ySrc >= height) ySrc -= height;
-    num_t m =
-        num_t(((num_t)ySrc - (height / 2)) * PixelSizeY() + PhaseCentreDM());
+    num_t m = num_t(((num_t)ySrc - (height / 2)) * PixelSizeY() + MShift());
 
     for (size_t x = 0; x != width; ++x) {
       size_t xSrc = x + width / 2;
       if (xSrc >= width) xSrc -= width;
-      num_t l =
-          num_t(((width / 2) - (num_t)xSrc) * PixelSizeX() + PhaseCentreDL());
+      num_t l = num_t(((width / 2) - (num_t)xSrc) * PixelSizeX() + LShift());
 
       if (l * l + m * m < 1.0)
         *iter = std::sqrt(1.0 - l * l - m * m) - 1.0;
@@ -207,29 +204,3 @@ void DirectMSGridder<num_t>::initializeSqrtLMLookupTable() {
 template class DirectMSGridder<float>;
 template class DirectMSGridder<double>;
 template class DirectMSGridder<long double>;
-
-template void DirectMSGridder<float>::invertMeasurementSet<DDGainMatrix::kXX>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-template void DirectMSGridder<float>::invertMeasurementSet<DDGainMatrix::kYY>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-template void
-DirectMSGridder<float>::invertMeasurementSet<DDGainMatrix::kTrace>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-
-template void DirectMSGridder<double>::invertMeasurementSet<DDGainMatrix::kXX>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-template void DirectMSGridder<double>::invertMeasurementSet<DDGainMatrix::kYY>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-template void
-DirectMSGridder<double>::invertMeasurementSet<DDGainMatrix::kTrace>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-
-template void
-DirectMSGridder<long double>::invertMeasurementSet<DDGainMatrix::kXX>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-template void
-DirectMSGridder<long double>::invertMeasurementSet<DDGainMatrix::kYY>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);
-template void
-DirectMSGridder<long double>::invertMeasurementSet<DDGainMatrix::kTrace>(
-    const MSData& msData, class ProgressBar& progress, size_t msIndex);

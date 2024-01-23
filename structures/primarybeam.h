@@ -1,5 +1,5 @@
-#ifndef PRIMARY_BEAM_H
-#define PRIMARY_BEAM_H
+#ifndef STRUCTURES_PRIMARY_BEAM_H_
+#define STRUCTURES_PRIMARY_BEAM_H_
 
 #include <string>
 
@@ -13,6 +13,7 @@
 
 #include "../scheduling/metadatacache.h"
 
+#include <aocommon/coordinatesystem.h>
 #include <aocommon/fits/fitswriter.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/polarization.h>
@@ -21,48 +22,67 @@
 #ifdef HAVE_EVERYBEAM
 #include <EveryBeam/beammode.h>
 #include <EveryBeam/beamnormalisationmode.h>
+#include <EveryBeam/load.h>
 #endif
 
-namespace everybeam {
-namespace coords {
-struct CoordinateSystem;
-}  // namespace coords
-}  // namespace everybeam
+class ImageWeights;
+class MSDataDescription;
+class Settings;
 
 class PrimaryBeam {
  public:
-  PrimaryBeam(const class Settings& settings);
+  PrimaryBeam(const Settings& settings);
   ~PrimaryBeam();
 
-  void SetPhaseCentre(double ra, double dec, double dl, double dm) {
-    _phaseCentreRA = ra;
-    _phaseCentreDec = dec;
-    _phaseCentreDL = dl;
-    _phaseCentreDM = dm;
+  void SetPhaseCentre(double ra, double dec, double l_shift, double m_shift) {
+    phase_centre_ra_ = ra;
+    phase_centre_dec_ = dec;
+    l_shift_ = l_shift;
+    m_shift_ = m_shift;
   }
 
-  void CorrectImages(const ImageFilename& imageName,
+  /**
+   * Read the beam images in and multiply facets with their gain corrections.
+   */
+  void CorrectBeamForFacetGain(
+      const ImageFilename& image_name, const ImagingTable& table,
+      const std::map<size_t, std::unique_ptr<MetaDataCache>>& meta_cache);
+
+  void CorrectImages(const ImageFilename& image_name,
                      std::vector<float*>& images) {
-    PrimaryBeamImageSet beamImages = load(imageName, _settings);
-    if (_settings.polarizations.size() == 1 &&
-        *_settings.polarizations.begin() == aocommon::Polarization::StokesI) {
-      beamImages.ApplyStokesI(images[0], _settings.primaryBeamLimit);
-    } else if (_settings.polarizations.size() == 4 &&
+    if (settings_.polarizations.size() == 1 &&
+        *settings_.polarizations.begin() == aocommon::Polarization::StokesI) {
+      const PrimaryBeamImageSet beam_images = LoadStokesI(image_name);
+      beam_images.ApplyStokesI(images[0], settings_.primaryBeamLimit);
+    } else if (settings_.polarizations.size() == 4 &&
                aocommon::Polarization::HasFullStokesPolarization(
-                   _settings.polarizations)) {
-      beamImages.ApplyFullStokes(images.data(), _settings.primaryBeamLimit);
-    }
+                   settings_.polarizations)) {
+      const PrimaryBeamImageSet beam_images = LoadFull(image_name);
+      beam_images.ApplyFullStokes(images.data(), settings_.primaryBeamLimit);
+    } else
+      throw std::runtime_error("Unsupported primary beam correction");
   }
 
-  PrimaryBeamImageSet Load(const ImageFilename& imageName) {
-    return load(imageName, _settings);
+  PrimaryBeamImageSet LoadFull(const ImageFilename& image_name) {
+    const std::set<size_t> kFullIndices = {0, 1, 2,  3,  4,  5,  6,  7,
+                                           8, 9, 10, 11, 12, 13, 14, 15};
+    return Load(image_name, kFullIndices);
+  }
+  PrimaryBeamImageSet LoadDiagonal(const ImageFilename& image_name) {
+    const std::set<size_t> kDiagonalIndices = {0, 3, 8, 15};
+    return Load(image_name, kDiagonalIndices);
+  }
+  PrimaryBeamImageSet LoadStokesI(const ImageFilename& image_name) {
+    const std::set<size_t> kStokesIIndices = {0, 15};
+    return Load(image_name, kStokesIIndices);
   }
 
-  void AddMS(std::unique_ptr<class MSDataDescription> description);
+  void AddMS(std::unique_ptr<MSDataDescription> description);
 
-  void MakeBeamImages(const ImageFilename& imageName,
-                      const ImagingTableEntry& entry,
-                      std::shared_ptr<class ImageWeights> imageWeights);
+  void MakeOrReuse(const ImageFilename& image_name,
+                   const ImagingTableEntry& entry,
+                   std::shared_ptr<ImageWeights> image_weights,
+                   size_t field_id);
 
   /**
    * @brief Correct images for the primary beam by multiplying the input image
@@ -72,23 +92,22 @@ class PrimaryBeam {
    * by their corrected counterparts.
    *
    * @param writer FitsWriter
-   * @param imageName Image name object from which prefixes or polarization can
+   * @param image_name Image name object from which prefixes or polarization can
    * be derived.
-   * @param filenameKind string specifying which image will be corrected
+   * @param filename_kind string specifying which image will be corrected
    * @param table Imaging table of a single FacetGroup
-   * @param metaCache MSGridder meta data cache, containing image weights an
+   * @param meta_cache MSGridder meta data cache, containing image weights an
    * (summed) H5 facet solutions.
-   * @param requiresH5Correction Correct beam images for piecewise constant h5
-   * solution?
+   * @param requires_gain_correction Correct beam images for piecewise constant
+   * h5 solution?
    */
   void CorrectImages(
-      class aocommon::FitsWriter& writer, const ImageFilename& imageName,
-      const std::string& filenameKind, const ImagingTable& table,
-      const std::map<size_t, std::unique_ptr<MetaDataCache>>& metaCache,
-      bool requiresH5Correction);
+      aocommon::FitsWriter& writer, const ImageFilename& image_name,
+      const std::string& filename_kind, const ImagingTable& table,
+      const std::map<size_t, std::unique_ptr<MetaDataCache>>& meta_cache);
 
-  size_t GetUndersamplingFactor() const { return _undersample; };
-  size_t GetBeamUpdateTime() const { return _secondsBeforeBeamUpdate; };
+  size_t GetUndersamplingFactor() const { return undersample_; };
+  size_t GetBeamUpdateTime() const { return seconds_before_beam_update_; };
 
  private:
   // Compute undersampling factor from the primaryBeamGridSize.
@@ -96,27 +115,27 @@ class PrimaryBeam {
   // from the shortest dimension.
   static size_t computeUndersamplingFactor(const Settings& settings);
 
-  const Settings& _settings;
-  double _phaseCentreRA, _phaseCentreDec, _phaseCentreDL, _phaseCentreDM;
-  const size_t _undersample;
-  const size_t _secondsBeforeBeamUpdate;
+  const Settings& settings_;
+  double phase_centre_ra_, phase_centre_dec_, l_shift_, m_shift_;
+  const size_t undersample_;
+  const size_t seconds_before_beam_update_;
 #ifdef HAVE_EVERYBEAM
-  const everybeam::BeamMode _beamMode;
-  const everybeam::BeamNormalisationMode _beamNormalisationMode;
+  const everybeam::BeamMode beam_mode_;
+  const everybeam::BeamNormalisationMode beam_normalisation_mode_;
 #endif
-  std::vector<std::unique_ptr<class MSDataDescription>> _msList;
+  std::vector<std::unique_ptr<MSDataDescription>> ms_list_;
   struct MSProviderInfo {
     MSProviderInfo(MSProvider* _provider, const MSSelection* _selection,
-                   size_t _msIndex)
-        : provider(_provider), selection(_selection), msIndex(_msIndex) {}
+                   size_t _ms_index)
+        : provider(_provider), selection(_selection), ms_index(_ms_index) {}
     MSProvider* provider;
     const MSSelection* selection;
-    size_t msIndex;
+    size_t ms_index;
   };
-  std::vector<MSProviderInfo> _msProviders;
+  std::vector<MSProviderInfo> ms_providers_;
 
-  static PrimaryBeamImageSet load(const ImageFilename& imageName,
-                                  const Settings& settings);
+  PrimaryBeamImageSet Load(const ImageFilename& image_name,
+                           const std::set<size_t>& elements);
 #ifdef HAVE_EVERYBEAM
   /**
    * @brief Lower triangular matrix representation of baseline weights.
@@ -124,19 +143,19 @@ class PrimaryBeam {
    */
   class WeightMatrix {
    public:
-    explicit WeightMatrix(size_t nAntenna)
-        : _nAntenna(nAntenna), _weights(nAntenna * nAntenna, 0) {}
+    explicit WeightMatrix(size_t n_antenna)
+        : n_antenna_(n_antenna), weights_(n_antenna * n_antenna, 0) {}
     double& Value(size_t a1, size_t a2) {
       if (a1 < a2)
-        return _weights[a1 * _nAntenna + a2];
+        return weights_[a1 * n_antenna_ + a2];
       else
-        return _weights[a1 + a2 * _nAntenna];
+        return weights_[a1 + a2 * n_antenna_];
     }
     const double& Value(size_t a1, size_t a2) const {
       if (a1 < a2)
-        return _weights[a1 * _nAntenna + a2];
+        return weights_[a1 * n_antenna_ + a2];
       else
-        return _weights[a1 + a2 * _nAntenna];
+        return weights_[a1 + a2 * n_antenna_];
     }
 
     /**
@@ -145,13 +164,13 @@ class PrimaryBeam {
      * @return aocommon::UVector<double>
      */
     aocommon::UVector<double> GetBaselineWeights() const {
-      int nbaselines = _nAntenna * (_nAntenna + 1) / 2;
+      int nbaselines = n_antenna_ * (n_antenna_ + 1) / 2;
       aocommon::UVector<double> baseline_weights(nbaselines, 0);
 
       int index = 0;
-      for (size_t a1 = 0; a1 != _nAntenna; ++a1) {
-        for (size_t a2 = a1; a2 != _nAntenna; ++a2) {
-          baseline_weights[index] = _weights[a1 * _nAntenna + a2];
+      for (size_t a1 = 0; a1 != n_antenna_; ++a1) {
+        for (size_t a2 = a1; a2 != n_antenna_; ++a2) {
+          baseline_weights[index] = weights_[a1 * n_antenna_ + a2];
           ++index;
         }
       }
@@ -159,26 +178,31 @@ class PrimaryBeam {
     }
 
    private:
-    size_t _nAntenna;
-    aocommon::UVector<double> _weights;
+    size_t n_antenna_;
+    aocommon::UVector<double> weights_;
   };
 
-  PrimaryBeamImageSet MakeImage(const ImagingTableEntry& entry,
-                                std::shared_ptr<ImageWeights> imageWeights);
+  void MakeImage(const ImageFilename& image_name,
+                 const ImagingTableEntry& entry,
+                 std::shared_ptr<ImageWeights> image_weights, size_t field_id);
 
-  double MakeBeamForMS(
-      aocommon::UVector<float>& buffer, MSProvider& msProvider,
-      const MSSelection& selection, const ImageWeights& imageWeights,
-      const everybeam::coords::CoordinateSystem& coordinateSystem,
-      double centralFrequency);
+  /**
+   * Calculate the average beam for one measurement set.
+   * @param result The average beam values are assigned to this vector.
+   */
+  double MakeBeamForMS(std::vector<aocommon::HMC4x4>& result,
+                       MSProvider& ms_provider, const MSSelection& selection,
+                       const ImageWeights& image_weights,
+                       const aocommon::CoordinateSystem& coordinate_system,
+                       double central_frequency, size_t field_id);
 
-  std::tuple<double, double, size_t> GetTimeInfo(MSProvider& msProvider);
+  std::tuple<double, double, size_t> GetTimeInfo(MSProvider& ms_provider);
 
-  void CalculateStationWeights(const class ImageWeights& imageWeights,
-                               WeightMatrix& baselineWeights,
-                               SynchronizedMS& ms, MSProvider& msProvider,
-                               const MSSelection& selection, double endTime);
+  void CalculateStationWeights(const ImageWeights& image_weights,
+                               WeightMatrix& baseline_weights,
+                               SynchronizedMS& ms, MSProvider& ms_provider,
+                               const MSSelection& selection, double end_time);
 #endif  // HAVE_EVERYBEAM
 };
 
-#endif  // PRIMARY_BEAM_H
+#endif  // STRUCTURES_PRIMARY_BEAM_H_

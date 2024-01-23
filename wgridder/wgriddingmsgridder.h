@@ -2,14 +2,19 @@
 #define WGRIDDING_MS_GRIDDER_H
 
 #include "../gridding/msgridderbase.h"
+#include "../structures/resources.h"
 
 #include <aocommon/image.h>
 
 #include <memory>
 
+class WGriddingGridderBase;
+
 class WGriddingMSGridder final : public MSGridderBase {
  public:
-  WGriddingMSGridder(const Settings& settings);
+  WGriddingMSGridder(const Settings& settings, const Resources& resources,
+                     bool use_tuned_wgridder);
+  ~WGriddingMSGridder();
 
   virtual void Invert() override;
 
@@ -26,20 +31,21 @@ class WGriddingMSGridder final : public MSGridderBase {
  private:
   aocommon::Image _image;
 
-  template <DDGainMatrix GainEntry>
+  std::unique_ptr<WGriddingGridderBase> MakeGridder(size_t width,
+                                                    size_t height) const;
+
   void gridMeasurementSet(MSData& msData);
 
-  template <DDGainMatrix GainEntry>
   void predictMeasurementSet(MSData& msData);
 
   size_t calculateMaxNRowsInMemory(size_t channelCount) const;
 
   void getActualTrimmedSize(size_t& trimmedWidth, size_t& trimmedHeight) const;
 
-  size_t _cpuCount;
-  int64_t _memSize;
-  double _accuracy;
-  std::unique_ptr<class WGriddingGridder_Simple> _gridder;
+  const Resources resources_;
+  double accuracy_;
+  bool use_tuned_wgridder_;
+  std::unique_ptr<WGriddingGridderBase> gridder_;
 };
 
 #endif

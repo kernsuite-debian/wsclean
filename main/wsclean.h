@@ -6,9 +6,10 @@
 #include <aocommon/fits/fitswriter.h>
 #include <aocommon/multibanddata.h>
 #include <aocommon/polarization.h>
+
 #include <schaapcommon/facets/facet.h>
 
-#include "../deconvolution/deconvolution.h"
+#include <radler/radler.h>
 
 #include "../scheduling/griddingresult.h"
 
@@ -31,13 +32,15 @@
 #include <optional>
 #include <set>
 
+class ImageWeightCache;
+class PrimaryBeam;
+
 namespace schaapcommon {
 namespace facets {
 class FacetImage;
 }
 }  // namespace schaapcommon
 
-class PrimaryBeam;
 class WSClean {
  public:
   WSClean();
@@ -80,18 +83,41 @@ class WSClean {
 
   void performReordering(bool isPredictMode);
 
+  /**
+   * Returns true when gridding is done with a-terms. This can either
+   * be enabled by setting the gridWithBeam setting to true or by providing
+   * an aterm config file. */
+  bool griddingUsesATerms() const {
+    return _settings.gridWithBeam || !_settings.atermConfigFilename.empty();
+  }
+
+  /**
+   * True when the imaging uses any of the methods to apply a beam.
+   * A beam can be applied through facetting (with solutions or beam),
+   * through gridding with the beam using IDG or by correcting for the beam
+   * in image space after imaging.
+   */
+  bool usesBeam() const {
+    return _settings.applyPrimaryBeam || _settings.applyFacetBeam ||
+           !_settings.facetSolutionFiles.empty() || griddingUsesATerms();
+  }
+
   ObservationInfo getObservationInfo() const;
   /**
-   * Add the phase shift of a facet to an ObservationInfo object.
+   * Add the phase shift of a facet
    * @param entry entry. If its facet is null, nothing happens.
-   * @param observationInfo shiftL and shiftM of this object are updated.
+   * @param l_shift is updated.
+   * @param m_shift is updated.
    */
-  void applyFacetPhaseShift(const ImagingTableEntry& entry,
-                            ObservationInfo& observationInfo) const;
+
+  std::pair<double, double> getLMShift() const;
+
+  void applyFacetPhaseShift(const ImagingTableEntry& entry, double& l_shift,
+                            double& m_shift) const;
   std::shared_ptr<ImageWeights> initializeImageWeights(
       const ImagingTableEntry& entry,
-      std::vector<std::unique_ptr<class MSDataDescription>>& msList);
-  void initializeMFSImageWeights();
+      std::vector<std::unique_ptr<MSDataDescription>>& msList);
+  void initializeMFImageWeights();
   void initializeMSList(
       const ImagingTableEntry& entry,
       std::vector<std::unique_ptr<MSDataDescription>>& msList);
@@ -100,7 +126,7 @@ class WSClean {
   void storeAndCombineXYandYX(CachedImageSet& dest, size_t joinedChannelIndex,
                               const ImagingTableEntry& entry,
                               aocommon::PolarizationEnum polarization,
-                              bool isImaginary, const float* image);
+                              bool isImaginary, const aocommon::Image& image);
   MSSelection selectInterval(MSSelection& fullSelection, size_t intervalIndex);
 
   void makeImagingTable(size_t outputIntervalIndex);
@@ -111,11 +137,13 @@ class WSClean {
       const std::vector<aocommon::ChannelInfo>& channels,
       size_t outIntervalIndex, size_t outChannelIndex, size_t nOutChannels,
       ImagingTableEntry& entry);
-  void addFacetsToImagingTable(ImagingTableEntry& templateEntry);
   void addPolarizationsToImagingTable(ImagingTableEntry& templateEntry);
-  std::unique_ptr<class ImageWeightCache> createWeightCache();
-
-  void multiplyImage(double factor, double* image) const;
+  void addFacetsToImagingTable(ImagingTableEntry& templateEntry,
+                               const size_t facet_count);
+  void updateFacetsInImagingTable(
+      const std::vector<std::shared_ptr<schaapcommon::facets::Facet>>& facets,
+      bool updateDdPsfs);
+  std::unique_ptr<ImageWeightCache> createWeightCache();
 
   /**
    * Initializes full-size model images for the given entry. Depending on the
@@ -139,19 +167,21 @@ class WSClean {
   void loadExistingDirty(ImagingTableEntry& entry, bool updateBeamInfo);
 
   void imagePSF(ImagingTableEntry& entry);
-  void imagePSFCallback(ImagingTableEntry& entry, struct GriddingResult& result,
-                        bool writeBeamImage);
+  void imagePSFCallback(ImagingTableEntry& entry, GriddingResult& result);
 
   void imageMain(ImagingTableEntry& entry, bool isFirstInversion,
                  bool updateBeamInfo);
-  void imageMainCallback(ImagingTableEntry& entry,
-                         struct GriddingResult& result, bool updateBeamInfo,
-                         bool isInitialInversion);
+  void imageMainCallback(ImagingTableEntry& entry, GriddingResult& result,
+                         bool updateBeamInfo, bool isInitialInversion);
 
   void predict(const ImagingTableEntry& entry);
 
   void saveUVImage(const aocommon::Image& image, const ImagingTableEntry& entry,
                    bool isImaginary, const std::string& prefix) const;
+
+  void saveUVImage(const aocommon::Image& image, const ImagingTableEntry& entry,
+                   const OutputChannelInfo& channel_info, bool isImaginary,
+                   const std::string& prefix) const;
 
   void processFullPSF(aocommon::Image& image, const ImagingTableEntry& entry);
 
@@ -167,11 +197,15 @@ class WSClean {
                     bool writeDirty, bool isPSF);
 
   /**
-   * @brief Stitch facet for a single (Facet)Group
+   * Stitch facet for a single (Facet)Group
+   * @param weight_image weight image pointer that should be either empty
+   * or should be an image with the right size. This can be used to reuse
+   * the same weight image over multiple calls and prevent re-allocation.
    */
   void stitchSingleGroup(const ImagingTable& facetGroup, size_t imageIndex,
                          CachedImageSet& imageCache, bool writeDirty,
                          bool isPSF, aocommon::Image& fullImage,
+                         std::unique_ptr<aocommon::Image>& weight_image,
                          schaapcommon::facets::FacetImage& facetImage,
                          size_t nFacetGroups);
   /**
@@ -196,13 +230,15 @@ class WSClean {
   void makeBeam();
 
   WSCFitsWriter createWSCFitsWriter(const ImagingTableEntry& entry,
-                                    bool isImaginary, bool isModel,
-                                    bool isFullImage) const;
+                                    const OutputChannelInfo& channel_info,
+                                    bool isImaginary, bool isModel) const;
+
+  WSCFitsWriter createWSCFitsWriter(const ImagingTableEntry& entry,
+                                    bool isImaginary, bool isModel) const;
 
   WSCFitsWriter createWSCFitsWriter(const ImagingTableEntry& entry,
                                     aocommon::PolarizationEnum polarization,
-                                    bool isImaginary, bool isModel,
-                                    bool isFullImage) const;
+                                    bool isImaginary, bool isModel) const;
   /**
    * @brief Apply the H5 solution to the (restored) image and save as -pb.fits
    * file. Method is only invoked in case no beam corrections are applied.
@@ -232,12 +268,40 @@ class WSClean {
    * Determines if IDG uses diagonal instrumental or full instrumental
    * polarizations.
    */
-  aocommon::PolarizationEnum getIdgPolarization() const {
-    return _settings.polarizations ==
-                   std::set<aocommon::PolarizationEnum>{
-                       aocommon::Polarization::StokesI}
-               ? aocommon::Polarization::DiagonalInstrumental
-               : aocommon::Polarization::Instrumental;
+  aocommon::PolarizationEnum getProviderPolarization(
+      aocommon::PolarizationEnum entry_polarization) const {
+    if (_settings.gridderType == GridderType::IDG) {
+      if (_settings.polarizations.size() == 1 &&
+          *_settings.polarizations.begin() == aocommon::Polarization::StokesI) {
+        if ((_settings.ddPsfGridWidth > 1 || _settings.ddPsfGridHeight > 1) &&
+            _settings.gridWithBeam) {
+          return aocommon::Polarization::StokesI;
+        } else {
+          return aocommon::Polarization::DiagonalInstrumental;
+        }
+      } else {
+        return aocommon::Polarization::Instrumental;
+      }
+    } else if (_settings.diagonalSolutions) {
+      return aocommon::Polarization::DiagonalInstrumental;
+    } else {
+      return entry_polarization;
+    }
+  }
+
+  long double GetFacetCorrectionFactor(const ImagingTableEntry& entry) const {
+    const std::map<size_t, std::unique_ptr<MetaDataCache>>::const_iterator
+        entry_cache = _msGridderMetaCache.find(entry.index);
+    assert(entry_cache != _msGridderMetaCache.end());
+    return entry_cache->second->correctionSum / entry.imageWeight;
+  }
+
+  bool DataDescIdIsUsed(size_t ms_index, size_t data_desc_id) const {
+    const size_t band_index = _msBands[ms_index].GetBandIndex(data_desc_id);
+    // An empty selection means that all bands are selected
+    return _settings.spectralWindows.empty() ||
+           _settings.spectralWindows.find(band_index) !=
+               _settings.spectralWindows.end();
   }
 
   MSSelection _globalSelection;
@@ -249,8 +313,8 @@ class WSClean {
   OutputChannelInfo _infoForMFS;
   std::map<size_t, std::unique_ptr<MetaDataCache>> _msGridderMetaCache;
 
-  std::unique_ptr<class GriddingTaskManager> _griddingTaskManager;
-  std::unique_ptr<class ImageWeightCache> _imageWeightCache;
+  std::unique_ptr<GriddingTaskManager> _griddingTaskManager;
+  std::unique_ptr<ImageWeightCache> _imageWeightCache;
   Stopwatch _inversionWatch, _predictingWatch, _deconvolutionWatch;
   bool _isFirstInversion;
   size_t _majorIterationNr;
@@ -261,11 +325,19 @@ class WSClean {
   CachedImageSet _matrixBeamImages;
   std::vector<PartitionedMS::Handle> _partitionedMSHandles;
   std::vector<aocommon::MultiBandData> _msBands;
-  // Deconvolution object only needed in RunClean runs.
-  std::optional<Deconvolution> _deconvolution;
+  // Radler object only needed in RunClean runs.
+  std::optional<radler::Radler> _deconvolution;
   ImagingTable _imagingTable;
   ObservationInfo _observationInfo;
-  std::vector<std::shared_ptr<schaapcommon::facets::Facet>> _facets;
+  std::size_t _facetCount;  // 0 means facets are not used.
+  std::size_t _ddPsfCount;  // 0 means dd-psfs are not used.
+  /// These contain the user-requested image shift values converted from ra,dec
+  /// to l,m units
+  /// @{
+  double _l_shift;
+  double _m_shift;
+  /// @}
+
   double _lastStartTime;
 };
 

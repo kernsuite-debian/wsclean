@@ -5,6 +5,22 @@
 #include <vector>
 #include <cstddef>
 
+class WGriddingGridderBase {
+ public:
+  virtual ~WGriddingGridderBase() = default;
+  virtual void MemoryUsage(size_t &constant, size_t &per_vis) const = 0;
+  virtual void InitializeInversion() = 0;
+  virtual void AddInversionData(size_t nrows, size_t nchan, const double *uvw,
+                                const double *freq,
+                                const std::complex<float> *vis) = 0;
+  virtual void FinalizeImage(double multiplicationFactor) = 0;
+  virtual std::vector<float> RealImage() = 0;
+  virtual void InitializePrediction(const float *image_data) = 0;
+  virtual void PredictVisibilities(size_t nrows, size_t nchan,
+                                   const double *uvw, const double *freq,
+                                   std::complex<float> *vis) const = 0;
+};
+
 /* Memory usage of this gridder is:
    between calls:
      width*height*4  between calls (dirty image buffer)
@@ -15,17 +31,18 @@
        8*2*2  )    (second uv grid used during FFT, not really necessary)
      + nvis_unflagged*8 (index arrays, rough guess)
 */
-
-class WGriddingGridder_Simple {
+template <typename NumT>
+class WGriddingGridder_Simple final : public WGriddingGridderBase {
  private:
   static constexpr double sigma_min = 1.1;
   static constexpr double sigma_max = 2.0;
   size_t width_, height_, width_t_, height_t_, nthreads_;
   double pixelSizeX_, pixelSizeY_;
-  double shiftL_, shiftM_;
+  double l_shift_, m_shift_;
   double epsilon_;
-  std::vector<float> img;
+  std::vector<NumT> img;
   size_t verbosity_;
+  bool tuning_;
 
  public:
   /** Construct a new gridder with given settings.
@@ -46,8 +63,9 @@ class WGriddingGridder_Simple {
    */
   WGriddingGridder_Simple(size_t width, size_t height, size_t width_t,
                           size_t height_t, double pixelSizeX, double pixelSizeY,
-                          double shiftL, double shiftM, size_t nthreads,
-                          double epsilon = 1e-4, size_t verbosity = 0);
+                          double l_shift, double m_shift, size_t nthreads,
+                          double epsilon = 1e-4, size_t verbosity = 0,
+                          bool tuning_ = false);
 
   WGriddingGridder_Simple(const WGriddingGridder_Simple &) = delete;
   WGriddingGridder_Simple &operator=(const WGriddingGridder_Simple &) = delete;
@@ -57,13 +75,13 @@ class WGriddingGridder_Simple {
    * @param constant The constant base memory usage in bytes
    * @param per_vis additional memory required per gridded visibility in bytes.
    */
-  void memUsage(size_t &constant, size_t &per_vis) const;
+  void MemoryUsage(size_t &constant, size_t &per_vis) const override;
 
   /**
    * Initialize a new inversion gridding pass. This just
    * intializes the accumulated dirty image with zero.
    */
-  void InitializeInversion();
+  void InitializeInversion() override;
 
   /** Add more data to the current inversion operation.
    * The visibilities will be gridded, and the dirty image
@@ -81,14 +99,15 @@ class WGriddingGridder_Simple {
    *        visibility(row, chan) := vis[row*nchan + chan]
    */
   void AddInversionData(size_t nrows, size_t nchan, const double *uvw,
-                        const double *freq, const std::complex<float> *vis);
+                        const double *freq,
+                        const std::complex<float> *vis) override;
 
   /**
    * Finalize inversion once all passes are performed.
    * @param multiplicationFactor Apply this factor to all pixels. This can be
    * used to normalize the image for the weighting scheme.
    */
-  void FinalizeImage(double multiplicationFactor);
+  void FinalizeImage(double multiplicationFactor) override;
 
   /**
    * Get the untrimmed image result of inversion. This is an array of size width
@@ -96,14 +115,14 @@ class WGriddingGridder_Simple {
    * this image, e.g. set the horizon to zero before saving to fits. This call
    * is only valid once @ref FinalizeImage() has been called.
    */
-  std::vector<float> RealImage();
+  std::vector<float> RealImage() override;
 
   /**
    * Initialize gridder for prediction and specify image to predict for.
    * @param image The (untrimmed) model image that is to be predicted for. This
    * is an array of width * height size, index by (x + width*y).
    */
-  void InitializePrediction(const float *image_data);
+  void InitializePrediction(const float *image_data) override;
 
   /** Predicts visibilities from the current dirty image.
    * FIXME: how do we indicate flagged visibilities that do not
@@ -120,7 +139,8 @@ class WGriddingGridder_Simple {
    *        visibility(row, chan) := vis[row*nchan + chan]
    */
   void PredictVisibilities(size_t nrows, size_t nchan, const double *uvw,
-                           const double *freq, std::complex<float> *vis) const;
+                           const double *freq,
+                           std::complex<float> *vis) const override;
 };
 
 #endif
@@ -139,3 +159,6 @@ for (auto &chunk: chunks)
   gridder.AddInversionData(...)
 auto res = gridder.RealImage();
 */
+
+extern template class WGriddingGridder_Simple<float>;
+extern template class WGriddingGridder_Simple<double>;

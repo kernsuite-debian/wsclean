@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+
+# base
+FROM ubuntu:22.04
+# libclang, llvm just needed for docstrings (for development only)
+RUN export DEBIAN_FRONTEND="noninteractive" && \
+    apt-get update && \
+    apt-get upgrade -y && \
+    apt-get -y install \
+        casacore-dev \
+        casacore-tools \
+        libclang1 \
+        clang-format-12 \
+        clang-tidy-12 \
+        cmake \
+        doxygen \
+        g++ \
+        gcovr \
+        git \
+        libboost-all-dev \
+        libcfitsio-dev \
+        libfftw3-dev \
+        libgsl-dev \
+        libhdf5-dev \
+        libpython3-dev \
+        llvm \
+        locales \
+        make \
+        ninja-build \
+        python3-pip \
+        wcslib-dev \
+        wget \
+    && \
+    rm -rf /var/lib/apt/lists/* \
+    # The formatter needs a binary named 'clang-format', not 'clang-format-12'.
+    # Same for clang-tidy-12
+    && \
+    ln -sf clang-format-12 /usr/bin/clang-format \
+    && \
+    ln -sf clang-tidy-12 /usr/bin/clang-tidy
+RUN python3 -m pip install \
+        black \
+        breathe \
+        cmake-format \
+        myst-parser \
+        numpy \
+        pybind11-mkdoc \
+        pytest \
+        pytest-lazy-fixture \
+        sphinx \
+        sphinx_rtd_theme \
+    ;
+RUN locale-gen en_US.UTF-8  # Necessary for creating docstrings (Högbom)
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:UTF-8
+ENV LC_ALL en_US.UTF-8

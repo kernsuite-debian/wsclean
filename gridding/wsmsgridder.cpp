@@ -22,17 +22,15 @@
 using aocommon::Image;
 using aocommon::Logger;
 
-WSMSGridder::WSMSGridder(const Settings& settings)
+WSMSGridder::WSMSGridder(const Settings& settings, const Resources& resources)
     : MSGridderBase(settings),
       _nwWidth(settings.widthForNWCalculation),
       _nwHeight(settings.heightForNWCalculation),
       _nwFactor(settings.nWLayersFactor),
       _antialiasingKernelSize(settings.antialiasingKernelSize),
       _overSamplingFactor(settings.overSamplingFactor),
-      _cpuCount(_settings.threadCount),
-      _laneBufferSize(std::max<size_t>(_cpuCount * 2, 1024)) {
-  _memSize = getAvailableMemory(_settings.memFraction, _settings.absMemLimit);
-
+      _resources(resources),
+      _laneBufferSize(std::max<size_t>(_resources.NCpus() * 2, 1024)) {
   // We do this once here. WStackingGridder does this too, but by default only
   // for the float variant of fftw. schaapcommon::fft::Resampler does double
   // fft's multithreaded, hence this needs to be done here too.
@@ -40,6 +38,11 @@ WSMSGridder::WSMSGridder(const Settings& settings)
 }
 
 WSMSGridder::~WSMSGridder() noexcept {
+  // In case there is an exception during gridding, the lanes need to
+  // be end so that the threads stop waiting:
+  for (aocommon::Lane<WSMSGridder::InversionWorkSample>& lane :
+       _inversionCPULanes)
+    lane.write_end();
   for (std::thread& t : _threadGroup) t.join();
 }
 
@@ -80,8 +83,8 @@ size_t WSMSGridder::getSuggestedWGridSize() const {
     wWidth = TrimWidth();
     wHeight = TrimHeight();
   }
-  double maxL = wWidth * PixelSizeX() * 0.5 + fabs(PhaseCentreDL()),
-         maxM = wHeight * PixelSizeY() * 0.5 + fabs(PhaseCentreDM()),
+  double maxL = wWidth * PixelSizeX() * 0.5 + fabs(LShift()),
+         maxM = wHeight * PixelSizeY() * 0.5 + fabs(MShift()),
          lmSq = maxL * maxL + maxM * maxM;
   double cMinW = IsComplex() ? -_maxW : _minW;
   double radiansForAllLayers;
@@ -91,28 +94,28 @@ size_t WSMSGridder::getSuggestedWGridSize() const {
     radiansForAllLayers = 2 * M_PI * (_maxW - cMinW);
   size_t suggestedGridSize = size_t(ceil(radiansForAllLayers * NWFactor()));
   if (suggestedGridSize == 0) suggestedGridSize = 1;
-  if (suggestedGridSize < _cpuCount) {
+  if (suggestedGridSize < _resources.NCpus()) {
     // When nwlayers is lower than the nr of cores, we cannot parallellize well.
     // However, we don't want extra w-layers if we are low on mem, as that might
     // slow down the process
     double memoryRequired =
-        double(_cpuCount) * double(sizeof(GridderType::num_t)) *
+        double(_resources.NCpus()) * double(sizeof(GridderType::num_t)) *
         double(ActualInversionWidth() * ActualInversionHeight());
-    if (4.0 * memoryRequired < double(_memSize)) {
+    if (4.0 * memoryRequired < double(_resources.Memory())) {
       Logger::Info << "The theoretically suggested number of w-layers ("
                    << suggestedGridSize
                    << ") is less than the number of availables\n"
                       "cores ("
-                   << _cpuCount
+                   << _resources.NCpus()
                    << "). Changing suggested number of w-layers to "
-                   << _cpuCount << ".\n";
-      suggestedGridSize = _cpuCount;
+                   << _resources.NCpus() << ".\n";
+      suggestedGridSize = _resources.NCpus();
     } else {
       Logger::Info << "The theoretically suggested number of w-layers ("
                    << suggestedGridSize
                    << ") is less than the number of availables\n"
                       "cores ("
-                   << _cpuCount
+                   << _resources.NCpus()
                    << "), but there is not enough memory available to increase "
                       "the number of w-layers.\n"
                       "Not all cores can be used efficiently.\n";
@@ -124,14 +127,15 @@ size_t WSMSGridder::getSuggestedWGridSize() const {
   return suggestedGridSize;
 }
 
-template <DDGainMatrix GainEntry>
 void WSMSGridder::gridMeasurementSet(MSData& msData) {
+  const size_t n_vis_polarizations = msData.msProvider->NPolarizations();
   const aocommon::BandData selectedBand = msData.SelectedBand();
   StartMeasurementSet(msData, false);
   _gridder->PrepareBand(selectedBand);
   aocommon::UVector<std::complex<float>> modelBuffer(
-      selectedBand.ChannelCount());
-  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount());
+      selectedBand.ChannelCount() * n_vis_polarizations);
+  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount() *
+                                        n_vis_polarizations);
   aocommon::UVector<bool> isSelected(selectedBand.ChannelCount());
 
   // Samples of the same w-layer are collected in a buffer
@@ -139,18 +143,19 @@ void WSMSGridder::gridMeasurementSet(MSData& msData) {
   // to a lane is reasonably slow; it requires holding a mutex. Without
   // these buffers, writing the lane was a bottleneck and multithreading
   // did not help. I think.
-  std::vector<lane_write_buffer<InversionWorkSample>> bufferedLanes(_cpuCount);
+  std::vector<lane_write_buffer<InversionWorkSample>> bufferedLanes(
+      _resources.NCpus());
   size_t bufferSize =
       std::max<size_t>(8u, _inversionCPULanes[0].capacity() / 8);
   bufferSize = std::min<size_t>(
       128, std::min(bufferSize, _inversionCPULanes[0].capacity()));
-  for (size_t i = 0; i != _cpuCount; ++i) {
+  for (size_t i = 0; i != _resources.NCpus(); ++i) {
     bufferedLanes[i].reset(&_inversionCPULanes[i], bufferSize);
   }
 
   InversionRow newItem;
   aocommon::UVector<std::complex<float>> newItemData(
-      selectedBand.ChannelCount());
+      selectedBand.ChannelCount() * n_vis_polarizations);
   newItem.data = newItemData.data();
 
   try {
@@ -158,7 +163,12 @@ void WSMSGridder::gridMeasurementSet(MSData& msData) {
     std::unique_ptr<MSReader> msReader = msData.msProvider->MakeReader();
     while (msReader->CurrentRowAvailable()) {
       double uInMeters, vInMeters, wInMeters;
-      msReader->ReadMeta(uInMeters, vInMeters, wInMeters);
+      MSProvider::MetaData metaData;
+      msReader->ReadMeta(metaData);
+      uInMeters = metaData.uInM;
+      vInMeters = metaData.vInM;
+      wInMeters = metaData.wInM;
+
       const aocommon::BandData& curBand(selectedBand);
       const double w1 = wInMeters / curBand.LongestWavelength(),
                    w2 = wInMeters / curBand.SmallestWavelength();
@@ -170,18 +180,21 @@ void WSMSGridder::gridMeasurementSet(MSData& msData) {
         // Any visibilities that are not gridded in this pass
         // should not contribute to the weight sum
         for (size_t ch = 0; ch != curBand.ChannelCount(); ++ch) {
-          double w = newItem.uvw[2] / curBand.ChannelWavelength(ch);
+          const double w = newItem.uvw[2] / curBand.ChannelWavelength(ch);
           isSelected[ch] = _gridder->IsInLayerRange(w);
         }
 
-        readAndWeightVisibilities<1, GainEntry>(
-            *msReader, msData.antennaNames, newItem, curBand,
-            weightBuffer.data(), modelBuffer.data(), isSelected.data());
+        GetCollapsedVisibilities(*msReader, msData.antennaNames, newItem,
+                                 curBand, weightBuffer.data(),
+                                 modelBuffer.data(), isSelected.data(),
+                                 metaData);
 
         if (HasDenormalPhaseCentre()) {
-          const double shiftFactor = -2.0 * M_PI *
-                                     (newItem.uvw[0] * PhaseCentreDL() +
-                                      newItem.uvw[1] * PhaseCentreDM());
+          const double shiftFactor =
+              -2.0 * M_PI *
+              (newItem.uvw[0] * LShift() + newItem.uvw[1] * MShift());
+          // Because the visibilities have been collapsed, there's only one
+          // polarization left:
           rotateVisibilities<1>(curBand, shiftFactor, newItem.data);
         }
 
@@ -192,7 +205,8 @@ void WSMSGridder::gridMeasurementSet(MSData& msData) {
           sampleData.uInLambda = newItem.uvw[0] / wavelength;
           sampleData.vInLambda = newItem.uvw[1] / wavelength;
           sampleData.wInLambda = newItem.uvw[2] / wavelength;
-          size_t cpu = _gridder->WToLayer(sampleData.wInLambda) % _cpuCount;
+          size_t cpu =
+              _gridder->WToLayer(sampleData.wInLambda) % _resources.NCpus();
           bufferedLanes[cpu].write(sampleData);
         }
 
@@ -215,18 +229,10 @@ void WSMSGridder::gridMeasurementSet(MSData& msData) {
     throw;
   }
 }
-
-template void WSMSGridder::gridMeasurementSet<DDGainMatrix::kXX>(
-    MSData& msData);
-template void WSMSGridder::gridMeasurementSet<DDGainMatrix::kYY>(
-    MSData& msData);
-template void WSMSGridder::gridMeasurementSet<DDGainMatrix::kTrace>(
-    MSData& msData);
-
 void WSMSGridder::startInversionWorkThreads(size_t maxChannelCount) {
-  _inversionCPULanes.resize(_cpuCount);
+  _inversionCPULanes.resize(_resources.NCpus());
   _threadGroup.clear();
-  for (size_t i = 0; i != _cpuCount; ++i) {
+  for (size_t i = 0; i != _resources.NCpus(); ++i) {
     _inversionCPULanes[i].resize(maxChannelCount * _laneBufferSize);
     set_lane_debug_name(
         _inversionCPULanes[i],
@@ -255,8 +261,7 @@ void WSMSGridder::workThreadPerSample(
   }
 }
 
-template <DDGainMatrix GainEntry>
-void WSMSGridder::predictMeasurementSet(MSData& msData) {
+void WSMSGridder::predictMeasurementSet(MSData& msData, GainMode gain_mode) {
   msData.msProvider->ReopenRW();
   msData.msProvider->ResetWritePosition();
   const aocommon::BandData selectedBandData(msData.SelectedBand());
@@ -266,7 +271,8 @@ void WSMSGridder::predictMeasurementSet(MSData& msData) {
 
   size_t rowsProcessed = 0;
 
-  aocommon::Lane<PredictionWorkItem> calcLane(_laneBufferSize + _cpuCount),
+  aocommon::Lane<PredictionWorkItem> calcLane(_laneBufferSize +
+                                              _resources.NCpus()),
       writeLane(_laneBufferSize);
   set_lane_debug_name(
       calcLane,
@@ -275,10 +281,10 @@ void WSMSGridder::predictMeasurementSet(MSData& msData) {
                       "Prediction write lane containing full row data");
   lane_write_buffer<PredictionWorkItem> bufferedCalcLane(&calcLane,
                                                          _laneBufferSize);
-  std::thread writeThread(&WSMSGridder::predictWriteThread<GainEntry>, this,
-                          &writeLane, &msData, &selectedBandData);
+  std::thread writeThread(&WSMSGridder::predictWriteThread, this, &writeLane,
+                          &msData, &selectedBandData, gain_mode);
   std::vector<std::thread> calcThreads;
-  for (size_t i = 0; i != _cpuCount; ++i)
+  for (size_t i = 0; i != _resources.NCpus(); ++i)
     calcThreads.emplace_back(&WSMSGridder::predictCalcThread, this, &calcLane,
                              &writeLane, &selectedBandData);
 
@@ -317,13 +323,6 @@ void WSMSGridder::predictMeasurementSet(MSData& msData) {
   writeThread.join();
 }
 
-template void WSMSGridder::predictMeasurementSet<DDGainMatrix::kXX>(
-    MSData& msData);
-template void WSMSGridder::predictMeasurementSet<DDGainMatrix::kYY>(
-    MSData& msData);
-template void WSMSGridder::predictMeasurementSet<DDGainMatrix::kTrace>(
-    MSData& msData);
-
 void WSMSGridder::predictCalcThread(
     aocommon::Lane<PredictionWorkItem>* inputLane,
     aocommon::Lane<PredictionWorkItem>* outputLane,
@@ -337,8 +336,7 @@ void WSMSGridder::predictCalcThread(
                          item.uvw[2]);
     if (HasDenormalPhaseCentre()) {
       const double shiftFactor =
-          2.0 * M_PI *
-          (item.uvw[0] * PhaseCentreDL() + item.uvw[1] * PhaseCentreDM());
+          2.0 * M_PI * (item.uvw[0] * LShift() + item.uvw[1] * MShift());
       rotateVisibilities<1>(*bandData, shiftFactor, item.data.get());
     }
 
@@ -346,10 +344,10 @@ void WSMSGridder::predictCalcThread(
   }
 }
 
-template <DDGainMatrix GainEntry>
 void WSMSGridder::predictWriteThread(
     aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const aocommon::BandData* bandData) {
+    const MSData* msData, const aocommon::BandData* bandData,
+    GainMode gain_mode) {
   lane_read_buffer<PredictionWorkItem> buffer(
       predictionWorkLane,
       std::min(_laneBufferSize, predictionWorkLane->capacity()));
@@ -364,9 +362,9 @@ void WSMSGridder::predictWriteThread(
   size_t nextRowId = 0;
   while (buffer.read(workItem)) {
     queue.emplace(std::move(workItem));
-    while (queue.top().rowId == nextRowId) {
-      writeVisibilities<1, GainEntry>(*msData->msProvider, msData->antennaNames,
-                                      *bandData, queue.top().data.get());
+    while (!queue.empty() && queue.top().rowId == nextRowId) {
+      WriteCollapsedVisibilities(*msData->msProvider, msData->antennaNames,
+                                 *bandData, queue.top().data.get());
 
       queue.pop();
       ++nextRowId;
@@ -375,34 +373,23 @@ void WSMSGridder::predictWriteThread(
   assert(queue.empty());
 }
 
-template void WSMSGridder::predictWriteThread<DDGainMatrix::kXX>(
-    aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const aocommon::BandData* bandData);
-
-template void WSMSGridder::predictWriteThread<DDGainMatrix::kYY>(
-    aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const aocommon::BandData* bandData);
-
-template void WSMSGridder::predictWriteThread<DDGainMatrix::kTrace>(
-    aocommon::Lane<PredictionWorkItem>* predictionWorkLane,
-    const MSData* msData, const aocommon::BandData* bandData);
-
 void WSMSGridder::Invert() {
   std::vector<MSData> msDataVector;
   initializeMSDataVector(msDataVector);
 
-  _gridder.reset(
-      new GridderType(ActualInversionWidth(), ActualInversionHeight(),
-                      ActualPixelSizeX(), ActualPixelSizeY(), _cpuCount,
-                      AntialiasingKernelSize(), OverSamplingFactor()));
+  _gridder = std::make_unique<GridderType>(
+      ActualInversionWidth(), ActualInversionHeight(), ActualPixelSizeX(),
+      ActualPixelSizeY(), _resources.NCpus(), AntialiasingKernelSize(),
+      OverSamplingFactor());
   _gridder->SetGridMode(GetGridMode());
   if (HasDenormalPhaseCentre())
-    _gridder->SetDenormalPhaseCentre(PhaseCentreDL(), PhaseCentreDM());
+    _gridder->SetDenormalPhaseCentre(LShift(), MShift());
   _gridder->SetIsComplex(IsComplex());
   //_imager->SetImageConjugatePart(Polarization() == aocommon::Polarization::YX
   //&& IsComplex());
-  _gridder->PrepareWLayers(ActualWGridSize(), double(_memSize) * (6.0 / 10.0),
-                           _minW, _maxW);
+  _gridder->PrepareWLayers(ActualWGridSize(),
+                           double(_resources.Memory()) * (6.0 / 10.0), _minW,
+                           _maxW);
   if (IsFirstIteration()) {
     Logger::Info << "Will process "
                  << (_gridder->NWLayers() / _gridder->NPasses()) << "/"
@@ -430,14 +417,7 @@ void WSMSGridder::Invert() {
       const aocommon::BandData selectedBand(msData.SelectedBand());
 
       startInversionWorkThreads(selectedBand.ChannelCount());
-
-      if (Polarization() == aocommon::Polarization::XX) {
-        gridMeasurementSet<DDGainMatrix::kXX>(msData);
-      } else if (Polarization() == aocommon::Polarization::YY) {
-        gridMeasurementSet<DDGainMatrix::kYY>(msData);
-      } else {
-        gridMeasurementSet<DDGainMatrix::kTrace>(msData);
-      }
+      gridMeasurementSet(msData);
       finishInversionWorkThreads();
     }
 
@@ -484,7 +464,7 @@ void WSMSGridder::Invert() {
     // The input is of size ActualInversionWidth() x ActualInversionHeight()
     schaapcommon::fft::Resampler resampler(
         ActualInversionWidth(), ActualInversionHeight(), ImageWidth(),
-        ImageHeight(), _cpuCount);
+        ImageHeight(), _resources.NCpus());
 
     if (IsComplex()) {
       Image resizedReal(ImageWidth(), ImageHeight());
@@ -505,18 +485,10 @@ void WSMSGridder::Invert() {
   if (TrimWidth() != ImageWidth() || TrimHeight() != ImageHeight()) {
     Logger::Debug << "Trimming " << ImageWidth() << " x " << ImageHeight()
                   << " -> " << TrimWidth() << " x " << TrimHeight() << '\n';
-    // Perform trimming
-
-    Image trimmed(TrimWidth(), TrimHeight());
-    Image::Trim(trimmed.Data(), TrimWidth(), TrimHeight(), _realImage.Data(),
-                ImageWidth(), ImageHeight());
-    _realImage = std::move(trimmed);
+    _realImage = _realImage.Trim(TrimWidth(), TrimHeight());
 
     if (IsComplex()) {
-      Image trimmedImag(TrimWidth(), TrimHeight());
-      Image::Trim(trimmedImag.Data(), TrimWidth(), TrimHeight(),
-                  _imaginaryImage.Data(), ImageWidth(), ImageHeight());
-      _imaginaryImage = std::move(trimmedImag);
+      _imaginaryImage = _imaginaryImage.Trim(TrimWidth(), TrimHeight());
     }
   }
   Logger::Debug << "Inversion finished.\n";
@@ -531,18 +503,19 @@ void WSMSGridder::Predict(std::vector<Image>&& images) {
   std::vector<MSData> msDataVector;
   initializeMSDataVector(msDataVector);
 
-  _gridder = std::unique_ptr<GridderType>(
-      new GridderType(ActualInversionWidth(), ActualInversionHeight(),
-                      ActualPixelSizeX(), ActualPixelSizeY(), _cpuCount,
-                      AntialiasingKernelSize(), OverSamplingFactor()));
+  _gridder = std::make_unique<GridderType>(
+      ActualInversionWidth(), ActualInversionHeight(), ActualPixelSizeX(),
+      ActualPixelSizeY(), _resources.NCpus(), AntialiasingKernelSize(),
+      OverSamplingFactor());
   _gridder->SetGridMode(GetGridMode());
   if (HasDenormalPhaseCentre())
-    _gridder->SetDenormalPhaseCentre(PhaseCentreDL(), PhaseCentreDM());
+    _gridder->SetDenormalPhaseCentre(LShift(), MShift());
   _gridder->SetIsComplex(IsComplex());
   //_imager->SetImageConjugatePart(Polarization() == aocommon::Polarization::YX
   //&& IsComplex());
-  _gridder->PrepareWLayers(ActualWGridSize(), double(_memSize) * (6.0 / 10.0),
-                           _minW, _maxW);
+  _gridder->PrepareWLayers(ActualWGridSize(),
+                           double(_resources.Memory()) * (6.0 / 10.0), _minW,
+                           _maxW);
 
   if (IsFirstIteration()) {
     for (size_t i = 0; i != MeasurementSetCount(); ++i)
@@ -564,9 +537,9 @@ void WSMSGridder::Predict(std::vector<Image>&& images) {
       ImageHeight() != ActualInversionHeight()) {
     // Decimate the image
     // Input is ImageWidth() x ImageHeight()
-    schaapcommon::fft::Resampler resampler(ImageWidth(), ImageHeight(),
-                                           ActualInversionWidth(),
-                                           ActualInversionHeight(), _cpuCount);
+    schaapcommon::fft::Resampler resampler(
+        ImageWidth(), ImageHeight(), ActualInversionWidth(),
+        ActualInversionHeight(), _resources.NCpus());
 
     if (images.size() == 1) {
       Image resampled(ImageWidth(), ImageHeight());
@@ -601,13 +574,7 @@ void WSMSGridder::Predict(std::vector<Image>&& images) {
 
     Logger::Info << "Predicting...\n";
     for (MSData& msData : msDataVector) {
-      if (Polarization() == aocommon::Polarization::XX) {
-        predictMeasurementSet<DDGainMatrix::kXX>(msData);
-      } else if (Polarization() == aocommon::Polarization::YY) {
-        predictMeasurementSet<DDGainMatrix::kYY>(msData);
-      } else {
-        predictMeasurementSet<DDGainMatrix::kTrace>(msData);
-      }
+      predictMeasurementSet(msData, GetGainMode(Polarization(), 1));
     }
   }
 

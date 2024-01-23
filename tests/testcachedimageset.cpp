@@ -22,7 +22,7 @@ size_t FacetCollision(const std::vector<std::shared_ptr<Facet>>& facets, int x,
                       int y) {
   size_t facetCollision = std::numeric_limits<size_t>::max();
   for (size_t f = 0; f < facets.size(); ++f) {
-    schaapcommon::facets::BoundingBox bbox(facets[f]->GetPixels());
+    schaapcommon::facets::BoundingBox bbox(facets[f]->GetPixels(), 1, false);
     if (y >= bbox.Min().y && y < bbox.Max().y && x >= bbox.Min().x &&
         x < bbox.Max().x) {
       facetCollision = f;
@@ -42,30 +42,34 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
   writer.SetImageDimensions(image_width, image_height, dl_dm, dl_dm);
 
   // Make two 4x4 facets
-  std::vector<std::pair<double, double>> coords{
+  std::vector<schaapcommon::facets::Coord> coords0{
       {0.05, -0.05}, {0.0, -0.05}, {0.0, 0.0}, {0.05, 0.0}};
 
-  // Do not change num_facets!
-  const size_t num_facets = 2;
-  std::vector<std::shared_ptr<Facet>> facets(num_facets);
-  std::vector<aocommon::UVector<float>> facets_data(num_facets);
+  // Second facet (i=1) is mirrored in origin
+  std::vector<schaapcommon::facets::Coord> coords1;
+  for (schaapcommon::facets::Coord coordinate : coords0) {
+    coords1.emplace_back(-1.0 * coordinate.ra, -1.0 * coordinate.dec);
+  }
+
+  Facet::InitializationData facet_data(writer.PixelSizeX(), writer.PixelSizeY(),
+                                       writer.Width(), writer.Height());
+  facet_data.phase_centre.ra = writer.RA();
+  facet_data.phase_centre.dec = writer.Dec();
+  facet_data.l_shift = writer.LShift();
+  facet_data.m_shift = writer.MShift();
+  // The bounding box is padded such that it is partially outside the main image
+  facet_data.padding = 1.5;
+
+  std::vector<std::shared_ptr<Facet>> facets{
+      std::make_shared<Facet>(facet_data, std::move(coords0)),
+      std::make_shared<Facet>(facet_data, std::move(coords1))};
+  std::vector<aocommon::Image> facet_images;
+  facet_images.reserve(facets.size());
 
   for (size_t i = 0; i < facets.size(); ++i) {
-    facets[i] = std::make_shared<schaapcommon::facets::Facet>();
-    for (const auto& coord : coords) {
-      // Second facet (i=1) is mirrored in origin
-      facets[i]->AddVertex(std::pow(-1, i) * coord.first,
-                           std::pow(-1, i) * coord.second);
-    }
-    // The bounding box is padded such that it is partially outside the main
-    // image
-    facets[i]->CalculatePixels(writer.RA(), writer.Dec(), writer.PixelSizeX(),
-                               writer.PixelSizeY(), writer.Width(),
-                               writer.Height(), writer.PhaseCentreDL(),
-                               writer.PhaseCentreDM(), 1.5, 1u, false);
-    facets_data[i].assign(facets[i]->GetTrimmedBoundingBox().Width() *
+    facet_images.emplace_back(facets[i]->GetTrimmedBoundingBox().Width(),
                               facets[i]->GetTrimmedBoundingBox().Height(),
-                          static_cast<float>(i + 1));
+                              static_cast<float>(i + 1));
   }
 
   CachedImageSet cSet;
@@ -76,7 +80,7 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
 
   for (const auto& polarization : polarizations) {
     for (size_t facet_idx = 0; facet_idx < facets.size(); ++facet_idx) {
-      cSet.StoreFacet(facets_data[facet_idx].data(), polarization, 1, facet_idx,
+      cSet.StoreFacet(facet_images[facet_idx], polarization, 1, facet_idx,
                       facets[facet_idx], false);
     }
   }
@@ -106,8 +110,7 @@ BOOST_AUTO_TEST_CASE(store_and_load_facet) {
       imageStorage.AddToImage({imageMain.Data()});
       BOOST_CHECK_EQUAL_COLLECTIONS(
           imageStorage.Data(0), imageStorage.Data(0) + num_facet_pixels,
-          facets_data[facet_idx].data(),
-          facets_data[facet_idx].data() + num_facet_pixels);
+          facet_images[facet_idx].begin(), facet_images[facet_idx].end());
     }
 
     // Check whether data in imageMain is correct

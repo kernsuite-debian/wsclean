@@ -1,4 +1,4 @@
-image: ubuntu:20.04
+image: ubuntu:22.04
 
 stages:
  - format
@@ -20,6 +20,7 @@ workflow:
       casacore-data casacore-dev casacore-tools
       cmake
       g++
+      g++-12
       git
       libblas-dev liblapack-dev
       libboost-filesystem-dev libboost-system-dev libboost-date-time-dev
@@ -45,8 +46,8 @@ format:
     - apt-get install -y -qq clang-format-12
     # The formatter needs a binary named 'clang-format', not 'clang-format-12'.
     - ln -sf clang-format-12 /usr/bin/clang-format
-    - pip3 install cmake-format
-    # Check formatting of header (*.h), source (*.cpp) and CMake files
+    - pip3 install black cmake-format
+    # Check formatting of header (*.h), source (*.cpp), python and CMake files.
     - ./scripts/run-format.sh
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
@@ -66,16 +67,18 @@ build-without-everybeam:
     - make install
     # For a push pipeline, run unittests only, otherwise run both unit and integration tests
     - if [[ $CI_PIPELINE_SOURCE == "push" ]] ; then make unitchecks; else make check; fi
-    - gcovr -r .. -e '.*/tests/.*' -e '.*/external/.*' -e '.*/CompilerIdCXX/.*' --json -o run-unit.json
+    - gcovr --gcov-ignore-parse-errors -r .. -e '.*/tests/.*' -e '.*/external/.*' -e '.*/CompilerIdCXX/.*' --json -o run-unit.json
     # gcovr to enable line coverage highlighting in MRs
     - gcovr --add-tracefile run-unit.json --xml > coverage.xml
     # gcovr to create badge
     - gcovr --add-tracefile run-unit.json
   artifacts:
     reports:
-      cobertura: build/coverage.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
 
-build-with-everybeam:
+build-with-everybeam-gcc12:
   stage: build
   extends: .dependencies
   script:
@@ -84,50 +87,10 @@ build-with-everybeam:
     - cd build/ && cmake -DCMAKE_INSTALL_PREFIX=.. ../EveryBeam/
     - make -j`nproc` install
     - cd $CI_PROJECT_DIR && mkdir build && cd build
-    - cmake -DBUILD_TESTING=ON -DCMAKE_PREFIX_PATH='/opt/everybeam' ../
+    - cmake -DBUILD_TESTING=ON -DCMAKE_PREFIX_PATH='/opt/everybeam' -DCMAKE_C_COMPILER=/usr/bin/gcc-12 -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 ../
     - make -j`nproc` install
     # For a push pipeline, run unittests only, otherwise run both unit and integration tests
     - if [[ $CI_PIPELINE_SOURCE == "push" ]] ; then make unitchecks; else make check; fi
-
-build-casacore-3.0.0:
-  stage: build
-  needs: []
-  before_script:
-    - apt-get update -qq
-    - export DEBIAN_FRONTEND=noninteractive && apt-get install -y -qq
-      bison
-      cmake
-      flex
-      g++
-      gfortran
-      git
-      libblas-dev liblapack-dev
-      libboost-filesystem-dev libboost-system-dev libboost-date-time-dev
-      libboost-program-options-dev libboost-python-dev libboost-test-dev
-      libcfitsio-dev
-      libfftw3-dev
-      libgsl-dev
-      libhdf5-dev
-      libpython3-dev
-      ninja-build
-      pkg-config
-      python-dev python-numpy
-      wcslib-dev
-      wget
-  script:
-    - mkdir -p /opt/casacore/build
-    - cd /opt/casacore
-    - wget -O - https://github.com/casacore/casacore/archive/refs/tags/v3.0.0.tar.gz | tar xz
-    - cd build
-    - cmake -G Ninja -DBUILD_TESTING=OFF ../casacore-3.0.0
-    - ninja install
-    - cd $CI_PROJECT_DIR && mkdir build && cd build
-    - cmake -G Ninja ../ && ninja
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-      when: always
-    - when: manual
-      allow_failure: true
 
 .test-das6-common:
   stage: test
@@ -138,7 +101,7 @@ build-casacore-3.0.0:
     - source scripts/das6_modules.sh
     - export OPENBLAS_NUM_THREADS=1
     - mkdir -p build && cd build
-    - cmake -DBUILD_TESTING=ON -DCFITSIO_ROOT_DIR=$CFITSIO_ROOT -DCASACORE_ROOT_DIR=$CASACORE_ROOT -DCMAKE_INSTALL_PREFIX=. -DCMAKE_PREFIX_PATH="${IDG_ROOT};${EVERYBEAM_ROOT};${FFTW_ROOT}" ..
+    - cmake -DBUILD_TESTING=ON -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS" -DCFITSIO_ROOT_DIR=$CFITSIO_ROOT -DCASACORE_ROOT_DIR=$CASACORE_ROOT -DCMAKE_INSTALL_PREFIX=. -DCMAKE_PREFIX_PATH="${IDG_ROOT};${EVERYBEAM_ROOT};${FFTW_ROOT}" ..
     - make -j`nproc`
 
 test-nightly-das6:

@@ -27,7 +27,9 @@ def basic_image_check(fits_file):
         from astropy.io import fits
     except:
         warnings.warn(
-            UserWarning("Could not import astropy, so fits image checks are skipped.")
+            UserWarning(
+                "Could not import astropy, so fits image checks are skipped."
+            )
         )
         return
 
@@ -73,12 +75,14 @@ def compute_rms(fits_file):
         from astropy.io import fits
     except:
         warnings.warn(
-            UserWarning("Could not import astropy, so fits image checks are skipped.")
+            UserWarning(
+                "Could not import astropy, so fits image checks are skipped."
+            )
         )
         return
 
     data = fits.open(fits_file)[0].data[0, 0, ...]
-    return np.sqrt(np.mean(data ** 2))
+    return np.sqrt(np.mean(data**2))
 
 
 def compare_rms_fits(fits1, fits2, threshold):
@@ -91,7 +95,9 @@ def compare_rms_fits(fits1, fits2, threshold):
         from astropy.io import fits
     except:
         warnings.warn(
-            UserWarning("Could not import astropy, so fits image checks are skipped.")
+            UserWarning(
+                "Could not import astropy, so fits image checks are skipped."
+            )
         )
         return
     image1 = fits.open(fits1)[0].data
@@ -104,6 +110,7 @@ def compare_rms_fits(fits1, fits2, threshold):
 
 def validate_call(cmdline):
     try:
+        print("Running: " + " ".join(cmdline))
         check_call(cmdline)
     except:
         # To avoid having to work back what the command was, the command is reported:

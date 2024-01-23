@@ -13,6 +13,27 @@
 
 using aocommon::Logger;
 
+namespace {
+/**
+ * Determines the number of images in one dimension of an image grid.
+ * @param image_size Size of the image, in some dimension.
+ * @param max_grid_size Maximum size of a grid cell, in the same dimension.
+ *        Zero indicates using a single grid cell.
+ * @return The number of grid cells.
+ */
+size_t GetNumCells(const size_t image_size, const size_t max_grid_size) {
+  size_t images = 1;
+  if (max_grid_size > 0) {
+    images = (image_size + max_grid_size - 1) / max_grid_size;
+    // Since an image typically has an interesting object at its center,
+    // ensure that the number of grid cells is odd. That object then resides in
+    // one grid cell instead of two.
+    images |= 1;
+  }
+  return images;
+}
+}  // namespace
+
 void Settings::Validate() const {
   if (mode == ImagingMode) {
     if (trimmedImageWidth == 0 && trimmedImageHeight == 0)
@@ -50,17 +71,33 @@ void Settings::Validate() const {
     throw std::runtime_error(s.str());
   }
 
-  if (facetRegionFilename.empty()) {
+  if (diagonalSolutions) {
+    if (facetSolutionFiles.empty()) {
+      throw std::runtime_error(
+          "-diagonal-solutions must be combined with -apply-facet-solutions");
+    }
+    if (polarizations.size() != 1 ||
+        *polarizations.begin() != aocommon::PolarizationEnum::StokesI) {
+      throw std::runtime_error(
+          "-diagonal-solutions can only be used when making Stokes I images");
+    }
+  }
+
+  if (facetRegionFilename.empty() && ddPsfGridWidth == 1 &&
+      ddPsfGridHeight == 1) {
     if (!facetSolutionFiles.empty())
       throw std::runtime_error(
           "A facet solution file can only be specified in conjunction with a "
           "facet regions file. Either remove -apply-facet-solutions from the "
-          "command line, or specify a facet regions file with -facet-regions.");
+          "command line, or specify a facet regions file with -facet-regions,"
+          " or specify a grid of dd-psfs with -dd-psf-grid.");
     if (applyFacetBeam)
       throw std::runtime_error(
-          "A facet beam can only applied if a facet regions file is specified. "
+          "A facet beam can only applied if a facet regions file is specified, "
+          "or if a dd-psf is used. "
           "Either remove -apply-facet-beam from the command line, or specify a "
-          "regions file with -facet-regions.");
+          "regions file with -facet-regions, or specify a grid of dd-psfs with "
+          "-dd-psf-grid.");
   } else {
     if (polarizations.size() > 1) {
       // -join-polarizations required in order to write the pb.fits images
@@ -74,7 +111,8 @@ void Settings::Validate() const {
       }
       // This condition might become a bit more specific once xx,yy polarization
       // correction for h5 AND beam are implemented
-      if (applyFacetBeam && !facetSolutionFiles.empty()) {
+      if (applyFacetBeam && !facetSolutionFiles.empty() &&
+          !aocommon::Polarization::HasFullStokesPolarization(polarizations)) {
         throw std::runtime_error(
             "Applying h5parm solutions AND beam correction on multiple "
             "polarizations is not yet supported.");
@@ -90,8 +128,7 @@ void Settings::Validate() const {
             "input measurement sets.");
       }
 
-      const std::size_t nfacets =
-          FacetReader::ReadFacets(facetRegionFilename).size();
+      const std::size_t nfacets = FacetReader::CountFacets(facetRegionFilename);
       for (const std::string& facetSolutionFile : facetSolutionFiles) {
         schaapcommon::h5parm::H5Parm h5parm =
             schaapcommon::h5parm::H5Parm(facetSolutionFile);
@@ -106,7 +143,12 @@ void Settings::Validate() const {
     }
   }
 
-  if (useIDG) {
+  if (facetRegionFilename.empty() && featherSize && *featherSize != 0) {
+    throw std::runtime_error(
+        "Parameter -feather-size was specified without enabling facetting.");
+  }
+
+  if (gridderType == GridderType::IDG) {
     const bool stokesIOnly =
         polarizations.size() == 1 &&
         *polarizations.begin() == aocommon::Polarization::StokesI;
@@ -166,7 +208,15 @@ void Settings::Validate() const {
     }
   }
 
-  if (gridWithBeam && !useIDG)
+  if (useMPI && parallelGridding > 1) {
+    throw std::runtime_error(
+        "MPI can not be combined with the parallel gridding option. When using "
+        "MPI, it is MPI that decides how many tasks to run on each node. "
+        "Multiple gridders can run on a single node by telling MPI (e.g. using "
+        "a hostfile) to run multiple tasks on that node.");
+  }
+
+  if (gridWithBeam && gridderType != GridderType::IDG)
     throw std::runtime_error(
         "Can't grid with the beam without IDG: specify '-use-idg' to use IDG.");
   if (gridWithBeam && applyPrimaryBeam)
@@ -178,7 +228,7 @@ void Settings::Validate() const {
         "Use of an aterm config file can't be combined with -grid-with-beam: "
         "add the beam to your aterm config and remove -grid-with-beam from the "
         "command line");
-  if (!useIDG && !atermConfigFilename.empty())
+  if (gridderType != GridderType::IDG && !atermConfigFilename.empty())
     throw std::runtime_error(
         "Use of an aterm config file required IDG enabled: add -use-idg");
 
@@ -216,7 +266,7 @@ void Settings::Validate() const {
   if (deconvolutionChannelCount != 0 &&
       deconvolutionChannelCount != channelsOut &&
       spectralFittingMode ==
-          schaapcommon::fitters::SpectralFittingMode::NoFitting)
+          schaapcommon::fitters::SpectralFittingMode::kNoFitting)
     throw std::runtime_error(
         "You have requested to deconvolve with a decreased number of channels "
         "(-deconvolution-channels), but you have not enabled spectral fitting. "
@@ -233,21 +283,26 @@ void Settings::Validate() const {
 
   if (saveSourceList &&
       (polarizations.size() != 1 ||
-       (*polarizations.begin()) != aocommon::Polarization::StokesI))
+       (*polarizations.begin() != aocommon::Polarization::StokesI &&
+        *polarizations.begin() != aocommon::Polarization::XX &&
+        *polarizations.begin() != aocommon::Polarization::YY &&
+        *polarizations.begin() != aocommon::Polarization::LL &&
+        *polarizations.begin() != aocommon::Polarization::RR)))
     throw std::runtime_error(
-        "Saving a source list currently only works for Stokes I imaging.");
+        "Saving a source list currently only works for Stokes I or pseudo "
+        "Stokes I (XX, YY, LL or RR) imaging.");
 
   if (saveSourceList && deconvolutionIterationCount == 0)
     throw std::runtime_error("A source list cannot be saved without cleaning.");
 
   if (!forcedSpectrumFilename.empty() &&
-      (spectralFittingMode !=
-           schaapcommon::fitters::SpectralFittingMode::LogPolynomial ||
-       spectralFittingTerms != 2))
+      spectralFittingMode !=
+          schaapcommon::fitters::SpectralFittingMode::kLogPolynomial)
     throw std::runtime_error(
-        "When using forced spectrum mode, currently it is required to fit "
-        "logarithmic polynomials (i.e. spectral index + further terms). This "
-        "implies you have to specify -fit-spectral-log-pol 2.");
+        "When using forced spectrum mode, it is required to fit logarithmic"
+        "polynomials (i.e. spectral index + further terms). This "
+        "implies you have to specify -fit-spectral-log-pol <N>, with N the"
+        "number of terms.");
 
   if (parallelGridding != 1 &&
       (applyFacetBeam || !facetSolutionFiles.empty()) &&
@@ -255,6 +310,13 @@ void Settings::Validate() const {
     throw std::runtime_error(
         "Parallel gridding in combination with a facet beam or facet solutions,"
         " requires an HDF5 library that supports multi-threading.");
+  }
+
+  if (reuseDirty && (gridWithBeam || !atermConfigFilename.empty())) {
+    throw std::runtime_error(
+        "Reusing dirty image and beam/aterm corrections"
+        " can not be combined, because the average beam is"
+        " computed when the dirty image is made.");
   }
 
   checkPolarizations();
@@ -294,11 +356,6 @@ void Settings::checkPolarizations() const {
         "output of imaging both polarizations will be the XY and imaginary XY "
         "images).");
   if (IsSpectralFittingEnabled()) {
-    if (joinedPolarizationDeconvolution)
-      throw std::runtime_error(
-          "You have requested spectral fitting, but you are joining multiple "
-          "polarizations. This is not supported. You probably want to turn off "
-          "the joining of polarizations (leave out -join-polarizations).");
     if (!joinedFrequencyDeconvolution)
       throw std::runtime_error(
           "You have requested spectral fitting, but you are not joining "
@@ -306,8 +363,8 @@ void Settings::checkPolarizations() const {
           "joining on (add -join-channels).");
   }
 
-  if (autoDeconvolutionThreshold && autoMask) {
-    if (autoDeconvolutionThresholdSigma >= autoMaskSigma)
+  if (autoDeconvolutionThresholdSigma && autoMaskSigma) {
+    if (*autoDeconvolutionThresholdSigma >= *autoMaskSigma)
       throw std::runtime_error(
           "The auto-masking threshold was smaller or equal to the "
           "auto-threshold. This does not make sense. Did you accidentally "
@@ -333,27 +390,23 @@ void Settings::Propagate(bool verbose) {
     parallelDeconvolutionMaxThreads = threadCount;
   }
 
-  // When using IDG with aterms, a PSF must be made, because the beam
-  // image is created during the PSF imaging stage.
-  if (useIDG && (!atermConfigFilename.empty() || gridWithBeam)) {
-    makePSF = true;
-  }
-
   // When using IDG, polarizations should always be joined
-  if (useIDG) {
+  if (gridderType == GridderType::IDG) {
     joinedPolarizationDeconvolution = true;
   }
 
   if (mode == ImagingMode || mode == PredictMode) {
-    RecalculatePaddedDimensions(verbose);
+    RecalculateDerivedDimensions(verbose);
     doReorder = determineReorder();
     dataColumnName = determineDataColumn(verbose);
   }
 }
 
-void Settings::RecalculatePaddedDimensions(bool verbose) {
-  paddedImageWidth = (size_t)ceil(trimmedImageWidth * imagePadding);
-  paddedImageHeight = (size_t)ceil(trimmedImageHeight * imagePadding);
+void Settings::RecalculateDerivedDimensions(bool verbose) {
+  paddedImageWidth =
+      static_cast<size_t>(ceil(trimmedImageWidth * imagePadding));
+  paddedImageHeight =
+      static_cast<size_t>(ceil(trimmedImageHeight * imagePadding));
   // Make the width and height divisable by four.
   paddedImageWidth += (4 - (paddedImageWidth % 4)) % 4;
   paddedImageHeight += (4 - (paddedImageHeight % 4)) % 4;
@@ -362,79 +415,110 @@ void Settings::RecalculatePaddedDimensions(bool verbose) {
       Logger::Debug << "Using image size of " << trimmedImageWidth << " x "
                     << trimmedImageHeight << ", padded to " << paddedImageWidth
                     << " x " << paddedImageHeight << ".\n";
+
+    if (!makePSFOnly || parallelDeconvolutionMaxSize > 0) {
+      parallelDeconvolutionGridWidth =
+          GetNumCells(trimmedImageWidth, parallelDeconvolutionMaxSize);
+      parallelDeconvolutionGridHeight =
+          GetNumCells(trimmedImageHeight, parallelDeconvolutionMaxSize);
+      if (ddPsfGridWidth > parallelDeconvolutionGridWidth ||
+          ddPsfGridHeight > parallelDeconvolutionGridHeight) {
+        Logger::Warn
+            << "Warning: The DD PSF grid (" << ddPsfGridWidth << "x"
+            << ddPsfGridHeight
+            << ") has more cells than parallel deconvolution grid ("
+            << parallelDeconvolutionGridWidth << "x"
+            << parallelDeconvolutionGridHeight
+            << ") in at least one dimension. Reducing the DD PSF grid to ";
+        ddPsfGridWidth =
+            std::min(ddPsfGridWidth, parallelDeconvolutionGridWidth);
+        ddPsfGridHeight =
+            std::min(ddPsfGridHeight, parallelDeconvolutionGridHeight);
+        Logger::Warn << ddPsfGridWidth << "x" << ddPsfGridHeight << ".\n";
+      }
+    }
   }
 }
 
-DeconvolutionSettings Settings::GetDeconvolutionSettings() const {
-  DeconvolutionSettings deconvolutionSettings;
+radler::Settings Settings::GetRadlerSettings() const {
+  radler::Settings radler_settings;
 
-  deconvolutionSettings.trimmedImageWidth = trimmedImageWidth;
-  deconvolutionSettings.trimmedImageHeight = trimmedImageHeight;
-  deconvolutionSettings.channelsOut = channelsOut;
-  deconvolutionSettings.pixelScaleX = pixelScaleX;
-  deconvolutionSettings.pixelScaleY = pixelScaleY;
-  deconvolutionSettings.threadCount = threadCount;
-  deconvolutionSettings.prefixName = prefixName;
+  radler_settings.trimmed_image_width = trimmedImageWidth;
+  radler_settings.trimmed_image_height = trimmedImageHeight;
+  radler_settings.channels_out = channelsOut;
+  radler_settings.pixel_scale.x = pixelScaleX;
+  radler_settings.pixel_scale.y = pixelScaleY;
+  radler_settings.thread_count = threadCount;
+  radler_settings.prefix_name = prefixName;
+  radler_settings.linked_polarizations = linkedPolarizations;
+  radler_settings.parallel.grid_width = parallelDeconvolutionGridWidth;
+  radler_settings.parallel.grid_height = parallelDeconvolutionGridHeight;
+  radler_settings.parallel.max_threads = parallelDeconvolutionMaxThreads;
+  radler_settings.auto_threshold_sigma = autoDeconvolutionThresholdSigma;
+  radler_settings.absolute_threshold =
+      absoluteDeconvolutionThreshold.value_or(0.0);
+  radler_settings.auto_mask_sigma = autoMaskSigma;
+  radler_settings.absolute_auto_mask_threshold = absoluteAutoMaskThreshold;
+  radler_settings.minor_loop_gain = deconvolutionGain;
+  radler_settings.major_loop_gain = deconvolutionMGain;
+  radler_settings.local_rms.method = localRMSMethod;
+  radler_settings.local_rms.window = localRMSWindow;
+  radler_settings.local_rms.image = localRMSImage;
+  radler_settings.save_source_list = saveSourceList;
+  radler_settings.minor_iteration_count = deconvolutionIterationCount;
+  radler_settings.major_iteration_count = majorIterationCount;
+  radler_settings.allow_negative_components = allowNegativeComponents;
+  radler_settings.stop_on_negative_components = stopOnNegativeComponents;
+  radler_settings.squared_joins = squaredJoins;
+  radler_settings.spectral_correction_frequency = spectralCorrectionFrequency;
+  radler_settings.spectral_correction = spectralCorrection;
+  radler_settings.border_ratio = deconvolutionBorderRatio;
+  radler_settings.fits_mask = fitsDeconvolutionMask;
+  radler_settings.casa_mask = casaDeconvolutionMask;
+  if (horizonMask) {
+    radler_settings.horizon_mask_distance = horizonMaskDistance;
+  }
+  if (!forcedSpectrumFilename.empty())
+    radler_settings.spectral_fitting.mode =
+        schaapcommon::fitters::SpectralFittingMode::kForcedTerms;
+  else
+    radler_settings.spectral_fitting.mode = spectralFittingMode;
+  radler_settings.spectral_fitting.terms = spectralFittingTerms;
+  radler_settings.spectral_fitting.forced_filename = forcedSpectrumFilename;
+  radler_settings.algorithm_type = algorithmType;
 
-  deconvolutionSettings.linkedPolarizations = linkedPolarizations;
-  deconvolutionSettings.parallelDeconvolutionMaxSize =
-      parallelDeconvolutionMaxSize;
-  deconvolutionSettings.parallelDeconvolutionMaxThreads =
-      parallelDeconvolutionMaxThreads;
-
-  deconvolutionSettings.deconvolutionThreshold = deconvolutionThreshold;
-  deconvolutionSettings.deconvolutionGain = deconvolutionGain;
-  deconvolutionSettings.deconvolutionMGain = deconvolutionMGain;
-  deconvolutionSettings.autoDeconvolutionThreshold = autoDeconvolutionThreshold;
-  deconvolutionSettings.autoMask = autoMask;
-  deconvolutionSettings.autoDeconvolutionThresholdSigma =
-      autoDeconvolutionThresholdSigma;
-  deconvolutionSettings.autoMaskSigma = autoMaskSigma;
-  deconvolutionSettings.localRMSMethod = localRMSMethod;
-  deconvolutionSettings.localRMSWindow = localRMSWindow;
-  deconvolutionSettings.localRMSImage = localRMSImage;
-  deconvolutionSettings.saveSourceList = saveSourceList;
-  deconvolutionSettings.deconvolutionIterationCount =
-      deconvolutionIterationCount;
-  deconvolutionSettings.majorIterationCount = majorIterationCount;
-  deconvolutionSettings.allowNegativeComponents = allowNegativeComponents;
-  deconvolutionSettings.stopOnNegativeComponents = stopOnNegativeComponents;
-  deconvolutionSettings.useMultiscale = useMultiscale;
-  deconvolutionSettings.useSubMinorOptimization = useSubMinorOptimization;
-  deconvolutionSettings.squaredJoins = squaredJoins;
-  deconvolutionSettings.spectralCorrectionFrequency =
-      spectralCorrectionFrequency;
-  deconvolutionSettings.spectralCorrection = spectralCorrection;
-  deconvolutionSettings.multiscaleFastSubMinorLoop = multiscaleFastSubMinorLoop;
-  deconvolutionSettings.multiscaleGain = multiscaleGain;
-  deconvolutionSettings.multiscaleDeconvolutionScaleBias =
-      multiscaleDeconvolutionScaleBias;
-  deconvolutionSettings.multiscaleMaxScales = multiscaleMaxScales;
-  deconvolutionSettings.multiscaleConvolutionPadding =
-      multiscaleConvolutionPadding;
-  deconvolutionSettings.multiscaleScaleList.assign(multiscaleScaleList.begin(),
+  switch (algorithmType) {
+    case radler::AlgorithmType::kMultiscale:
+      radler_settings.multiscale.fast_sub_minor_loop =
+          multiscaleFastSubMinorLoop;
+      radler_settings.multiscale.sub_minor_loop_gain = multiscaleGain;
+      radler_settings.multiscale.scale_bias = multiscaleDeconvolutionScaleBias;
+      radler_settings.multiscale.max_scales = multiscaleMaxScales;
+      radler_settings.multiscale.convolution_padding =
+          multiscaleConvolutionPadding;
+      radler_settings.multiscale.scale_list.assign(multiscaleScaleList.begin(),
                                                    multiscaleScaleList.end());
-  deconvolutionSettings.multiscaleShapeFunction = multiscaleShapeFunction;
-  deconvolutionSettings.deconvolutionBorderRatio = deconvolutionBorderRatio;
-  deconvolutionSettings.fitsDeconvolutionMask = fitsDeconvolutionMask;
-  deconvolutionSettings.casaDeconvolutionMask = casaDeconvolutionMask;
-  deconvolutionSettings.horizonMask = horizonMask;
-  deconvolutionSettings.horizonMaskDistance = horizonMaskDistance;
-  deconvolutionSettings.pythonDeconvolutionFilename =
-      pythonDeconvolutionFilename;
-  deconvolutionSettings.useMoreSaneDeconvolution = useMoreSaneDeconvolution;
-  deconvolutionSettings.useIUWTDeconvolution = useIUWTDeconvolution;
-  deconvolutionSettings.iuwtSNRTest = iuwtSNRTest;
-  deconvolutionSettings.moreSaneLocation = moreSaneLocation;
-  deconvolutionSettings.moreSaneArgs = moreSaneArgs;
-  deconvolutionSettings.moreSaneSigmaLevels.assign(moreSaneSigmaLevels.begin(),
-                                                   moreSaneSigmaLevels.end());
-  deconvolutionSettings.spectralFittingMode = spectralFittingMode;
-  deconvolutionSettings.spectralFittingTerms = spectralFittingTerms;
-  deconvolutionSettings.forcedSpectrumFilename = forcedSpectrumFilename;
-  deconvolutionSettings.deconvolutionChannelCount = deconvolutionChannelCount;
+      radler_settings.multiscale.shape = multiscaleShapeFunction;
+      break;
+    case radler::AlgorithmType::kIuwt:
+      // IUWT has no algorithm-specific settings
+      break;
+    case radler::AlgorithmType::kMoreSane:
+      radler_settings.more_sane.location = moreSaneLocation;
+      radler_settings.more_sane.arguments = moreSaneArgs;
+      radler_settings.more_sane.sigma_levels.assign(moreSaneSigmaLevels.begin(),
+                                                    moreSaneSigmaLevels.end());
+      break;
+    case radler::AlgorithmType::kPython:
+      radler_settings.python.filename = pythonDeconvolutionFilename;
+      break;
+    case radler::AlgorithmType::kGenericClean:
+      radler_settings.generic.use_sub_minor_optimization =
+          useSubMinorOptimization;
+      break;
+  }
 
-  return deconvolutionSettings;
+  return radler_settings;
 }
 
 bool Settings::determineReorder() const {
