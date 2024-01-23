@@ -1,0 +1,203 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+
+workflow:
+  rules:
+    # don't create a pipeline if its a commit pipeline, on a branch and that branch has open merge requests (we will get a MR build instead)
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - when: always
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+stages:
+  - versioning
+  - prepare
+  - linting
+  - build
+  - test
+  - documentation
+
+# The 'IMAGE' variables allow reusing docker images between different pipelines.
+# See https://confluence.skatelescope.org/display/SE/Caching+Docker+images+using+GitLab+CI+registry
+versioning:
+  stage: versioning
+  image: bitnami/git
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    # Unshallowing ensures that 'git log' works
+    - git fetch --unshallow
+    - echo BASE_IMAGE_2004=${CI_REGISTRY_IMAGE}/base_2004:$(git log -n 1 --pretty=format:%H -- docker/ubuntu_20_04_base) > versions.env
+    - echo BASE_IMAGE_2204=${CI_REGISTRY_IMAGE}/base_2204:$(git log -n 1 --pretty=format:%H -- docker/ubuntu_22_04_base) >> versions.env
+    - cat versions.env
+  artifacts:
+    reports:
+      dotenv: versions.env
+
+.prepare:
+  stage: prepare
+  needs: ["versioning"]
+  image: docker:20.10
+  services:
+    - docker:20.10-dind
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    - |
+      if ! docker manifest inspect $DOCKER_IMAGE > /dev/null; then
+        docker build $DOCKER_BUILD_ARG --tag $DOCKER_IMAGE -f $DOCKER_FILE .
+        docker push $DOCKER_IMAGE
+      fi
+  # Skip the job if there are no changes to the Docker file. This shortcut only
+  # works for push and merge request jobs.
+  # A manual pipeline run will thus create missing docker images.
+  #
+  # This is disabled since the detections of the changes by GitLab seems flaky.
+  # TODO(AST-887) Reenable this to test whether it's no longer flaky.
+  #
+  #rules:
+  #  - changes:
+  #    - $DOCKER_FILE
+
+prepare-base-2004:
+  extends: .prepare
+  variables:
+    DOCKER_IMAGE: $BASE_IMAGE_2004
+    DOCKER_FILE: docker/ubuntu_20_04_base
+
+prepare-base-2204:
+  extends: .prepare
+  variables:
+    DOCKER_IMAGE: $BASE_IMAGE_2204
+    DOCKER_FILE: docker/ubuntu_22_04_base
+
+.needs-2004:
+  needs:
+    - job: versioning
+    - job: prepare-base-2004
+      optional: true
+  image: $BASE_IMAGE_2004
+
+.needs-2204:
+  needs:
+    - job: versioning
+    - job: prepare-base-2204
+      optional: true
+  image: $BASE_IMAGE_2204
+
+format:
+  extends: .needs-2204
+  stage: linting
+  script:
+    - ./scripts/run-format.sh
+
+clang-tidy:
+  extends: .needs-2204
+  stage: linting
+  script:
+    - mkdir -p build/reports
+    - cd build
+    # Generate compile_commands.json for clang-tidy.
+    - cmake -DBUILD_TESTING=ON -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ..
+    - cd ..
+    - clang-tidy-12 -p build/ `find cpp/ -name *.cc` | scripts/clang-tidy-to-junit.py . > build/reports/linting.xml
+  artifacts:
+    when: always
+    paths:
+      - build/reports/linting.xml
+
+.build:
+  stage: build
+  script:
+    - cmake --version
+    - mkdir build && cd build
+    - cmake -DBUILD_TESTING=ON -DBUILD_PYTHON_BINDINGS=ON -DCMAKE_INSTALL_PREFIX=.. -DCMAKE_CXX_FLAGS="-coverage" -DCMAKE_EXE_LINKER_FLAGS="-coverage" ..
+    - make -j`nproc`
+    - make install
+  artifacts:
+    paths:
+      - build
+      - lib
+
+build-2004:
+  extends: [".needs-2004",".build"]
+
+build-2204:
+  extends: [".needs-2204",".build"]
+
+.test:
+  stage: test
+  script:
+    - cd build/
+    # In a test job, newly checked out sources can be more recent than the
+    # build job artifacts, which causes rebuilds in ctest.
+    # Re-running 'make' is more verbose and prevents rebuilds in ctest.
+    - make -j`nproc`
+    - ctest -j`nproc` --output-on-failure -T test
+    # Check whether the python radler modules can be found from the home directory after updating the PYTHONPATH
+    - PYVERSION=`python3 --version | grep -P -o ".*\s\K\d+\.\d+(?=\.\d+)"`
+    - export PYTHONPATH=${CI_PROJECT_DIR}/lib/python${PYVERSION}/dist-packages
+    - python3 -c "import site; print(site.getsitepackages()[0])"
+    - cd && python3 -c "import radler"
+
+test-2004:
+  extends: .test
+  needs: ["versioning","build-2004"]
+  image: $BASE_IMAGE_2004
+  after_script:
+    - gcovr -j`nproc` -e 'external/.*' -e '.*/CompilerIdCXX/.*' -e '.*/test/.*' build/
+
+test-2204:
+  extends: .test
+  needs: ["versioning","build-2204"]
+  image: $BASE_IMAGE_2204
+  after_script:
+    - mkdir -p build/reports
+    - scripts/junit-merge.py build/reports/unit-tests.xml $(find build -name unittests_*.xml)
+    - gcovr -j`nproc` -e 'external/.*' -e '.*/CompilerIdCXX/.*' -e '.*/test/.*' --xml build/reports/code-coverage.xml --json coverage.json build/
+  artifacts:
+    paths:
+      - coverage.json
+      - build/reports
+    reports:
+      junit: build/reports/unit-tests.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: build/reports/code-coverage.xml
+
+build-doc-2204:
+  extends: .needs-2204
+  stage: build
+  image: $BASE_IMAGE_2204
+  script:
+    - mkdir build && cd build
+    - cmake -DBUILD_PYTHON_BINDINGS=ON -DBUILD_DOCUMENTATION=ON .. -G Ninja
+    - ninja
+    - ninja doc
+  artifacts:
+    paths:
+    - build/doc/html
+
+build-docstrings-2204:
+  extends: .needs-2204
+  stage: build
+  image: $BASE_IMAGE_2204
+  script:
+    - mkdir build && cd build
+    - cmake -DBUILD_DOCSTRINGS=ON -G Ninja ..
+    - ninja
+    - ninja docstrings
+    - cp -r doc/docstrings ../python
+    # Check if the generated docstrings still match the doxygen comments
+    # If this check fails, you should either
+    # a) Run cmake with `-DBUILD_DOCSTRINGS=On` (if you have pybind11_mkdoc installed), and then `make_docstrings`, OR
+    # b) Download the docstrings file that is the artifact of this build job
+    # After this, you should copy the docstrings file into the source tree at `python/docstrings`, and commit the changes.
+    - git diff -U0 --exit-code ../python/docstrings
+  artifacts:
+    when: on_failure
+    paths:
+    - build/doc/docstrings

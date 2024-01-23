@@ -1,6 +1,9 @@
 #ifndef WSCLEAN_SETTINGS_H
 #define WSCLEAN_SETTINGS_H
 
+#include <cassert>
+#include <optional>
+
 #include "../gridding/wstackinggridder.h"
 
 #include "../gridding/visibilityweightingmode.h"
@@ -8,15 +11,14 @@
 
 #include "../structures/msselection.h"
 
-#include "../deconvolution/deconvolutionalgorithm.h"
-#include "../deconvolution/deconvolutionsettings.h"
-#include "../multiscale/multiscaletransforms.h"
-
 #include <aocommon/system.h>
 
 #include <schaapcommon/fitters/spectralfitter.h>
 
+#include <radler/settings.h>
+
 enum class DirectFTPrecision { Float, Double, LongDouble };
+enum class GridderType { WStacking, WGridder, TunedWGridder, DirectFT, IDG };
 
 /**
  * This class describes all settings for a single WSClean run.
@@ -30,10 +32,11 @@ class Settings {
 
   void Propagate(bool verbose = true);
 
-  void RecalculatePaddedDimensions(bool verbose = true);
+  void RecalculateDerivedDimensions(bool verbose = true);
 
   std::vector<std::string> filenames;
   enum Mode { ImagingMode, PredictMode, RestoreMode, RestoreListMode } mode;
+  GridderType gridderType = GridderType::WGridder;
   size_t paddedImageWidth, paddedImageHeight;
   size_t trimmedImageWidth, trimmedImageHeight;
   bool hasShift;
@@ -65,10 +68,10 @@ class Settings {
   std::vector<size_t> fieldIds;
   size_t startTimestep, endTimestep;
   size_t startChannel, endChannel;
-  size_t predictionChannels;
   std::string dataColumnName;
   std::set<aocommon::PolarizationEnum> polarizations;
   std::string facetRegionFilename;
+  std::optional<size_t> featherSize;
   std::set<size_t> spectralWindows;
   WeightMode weightMode;
   std::string prefixName;
@@ -86,13 +89,14 @@ class Settings {
   std::string beamModel;
   std::string beamMode;
   std::string beamNormalisationMode;
-  bool applyPrimaryBeam, reusePrimaryBeam, savePsfPb;
+  bool applyPrimaryBeam;
+  bool reusePrimaryBeam;
+  bool savePsfPb;
   double primaryBeamLimit;
   std::string mwaPath;
   size_t primaryBeamGridSize, primaryBeamUpdateTime;
-  bool directFT;
+  size_t ddPsfGridHeight, ddPsfGridWidth;
   DirectFTPrecision directFTPrecision;
-  bool useIDG, useWGridder;
   double wgridderAccuracy;
   std::string atermConfigFilename;
   double atermKernelSize;
@@ -100,11 +104,12 @@ class Settings {
   double beamAtermUpdateTime;  // in seconds.
   std::vector<std::string> facetSolutionFiles;
   std::vector<std::string> facetSolutionTables;
+  bool diagonalSolutions = false;
   bool applyFacetBeam;
   double facetBeamUpdateTime;  // in seconds.
   bool saveATerms;
   enum IDGMode { IDG_DEFAULT, IDG_GPU, IDG_CPU, IDG_HYBRID } idgMode;
-  enum GridMode gridMode;
+  enum GriddingKernelMode gridMode;
   enum VisibilityWeightingMode visibilityWeightingMode;
   double baselineDependentAveragingInWavelengths;
   bool simulateNoise;
@@ -116,18 +121,21 @@ class Settings {
    */
   std::set<aocommon::PolarizationEnum> linkedPolarizations;
   size_t parallelDeconvolutionMaxSize;
+  size_t parallelDeconvolutionGridWidth;   // derived setting
+  size_t parallelDeconvolutionGridHeight;  // derived setting
   size_t parallelDeconvolutionMaxThreads;
-  double deconvolutionThreshold;
+  std::optional<double> autoDeconvolutionThresholdSigma;
+  std::optional<double> absoluteDeconvolutionThreshold;
+  std::optional<double> autoMaskSigma;
+  std::optional<double> absoluteAutoMaskThreshold;
   double deconvolutionGain;
   double deconvolutionMGain;
-  bool autoDeconvolutionThreshold, autoMask;
-  double autoDeconvolutionThresholdSigma, autoMaskSigma;
   double localRMSWindow;
-  LocalRmsMethod localRMSMethod;
+  radler::LocalRmsMethod localRMSMethod;
   bool saveSourceList;
   size_t deconvolutionIterationCount, majorIterationCount;
   bool allowNegativeComponents, stopOnNegativeComponents;
-  bool useMultiscale, useSubMinorOptimization, squaredJoins;
+  bool useSubMinorOptimization, squaredJoins;
   double spectralCorrectionFrequency;
   std::vector<float> spectralCorrection;
   bool multiscaleFastSubMinorLoop;
@@ -135,7 +143,7 @@ class Settings {
   size_t multiscaleMaxScales;
   double multiscaleConvolutionPadding;
   aocommon::UVector<double> multiscaleScaleList;
-  MultiScaleTransforms::Shape multiscaleShapeFunction;
+  radler::MultiscaleShape multiscaleShapeFunction;
 
   double deconvolutionBorderRatio;
   std::string fitsDeconvolutionMask, casaDeconvolutionMask;
@@ -143,7 +151,7 @@ class Settings {
   double horizonMaskDistance;
   std::string localRMSImage;
   std::string pythonDeconvolutionFilename;
-  bool useMoreSaneDeconvolution, useIUWTDeconvolution, iuwtSNRTest;
+  bool iuwtSNRTest;
   std::string moreSaneLocation, moreSaneArgs;
   aocommon::UVector<double> moreSaneSigmaLevels;
   schaapcommon::fitters::SpectralFittingMode spectralFittingMode;
@@ -156,6 +164,11 @@ class Settings {
    * It is 0 when all channels should be used.
    */
   size_t deconvolutionChannelCount;
+
+  /**
+   * Type of deconvolution algorithm.
+   */
+  radler::AlgorithmType algorithmType;
   /**
    * @}
    */
@@ -165,7 +178,7 @@ class Settings {
    * Currently, it duplicates the existing settings into a DeconvolutionSettings
    * object.
    */
-  DeconvolutionSettings GetDeconvolutionSettings() const;
+  radler::Settings GetRadlerSettings() const;
 
   MSSelection GetMSSelection() const {
     MSSelection selection;
@@ -179,7 +192,17 @@ class Settings {
 
   bool IsSpectralFittingEnabled() const {
     return spectralFittingMode !=
-           schaapcommon::fitters::SpectralFittingMode::NoFitting;
+           schaapcommon::fitters::SpectralFittingMode::kNoFitting;
+  }
+
+  size_t GetFeatherSize() const {
+    if (featherSize) {
+      return *featherSize;
+    } else {
+      // Return the default: 1% of sqrt(width * height)
+      return std::ceil(std::sqrt(trimmedImageWidth * trimmedImageHeight) *
+                       0.01);
+    }
   }
 
  private:
@@ -240,7 +263,7 @@ inline Settings::Settings()
       antialiasingKernelSize(7),
       overSamplingFactor(1023),
       threadCount(aocommon::system::ProcessorCount()),
-      parallelReordering(1),
+      parallelReordering(4),
       parallelGridding(1),
       useMPI(false),
       masterDoesWork(true),
@@ -249,7 +272,6 @@ inline Settings::Settings()
       endTimestep(0),
       startChannel(0),
       endChannel(0),
-      predictionChannels(0),
       dataColumnName(),
       polarizations({aocommon::Polarization::StokesI}),
       facetRegionFilename(),
@@ -288,10 +310,9 @@ inline Settings::Settings()
       primaryBeamLimit(0.005),
       primaryBeamGridSize(32),
       primaryBeamUpdateTime(1800),
-      directFT(false),
+      ddPsfGridHeight(1),
+      ddPsfGridWidth(1),
       directFTPrecision(DirectFTPrecision::Double),
-      useIDG(false),
-      useWGridder(false),
       wgridderAccuracy(1e-4),
       atermConfigFilename(),
       atermKernelSize(5.0),
@@ -303,7 +324,7 @@ inline Settings::Settings()
       facetBeamUpdateTime(120.0),
       saveATerms(false),
       idgMode(IDG_DEFAULT),
-      gridMode(GridMode::KaiserBesselKernel),
+      gridMode(GriddingKernelMode::KaiserBessel),
       visibilityWeightingMode(
           VisibilityWeightingMode::NormalVisibilityWeighting),
       baselineDependentAveragingInWavelengths(0.0),
@@ -314,21 +335,15 @@ inline Settings::Settings()
       linkedPolarizations(),
       parallelDeconvolutionMaxSize(0),
       parallelDeconvolutionMaxThreads(0),
-      deconvolutionThreshold(0.0),
       deconvolutionGain(0.1),
       deconvolutionMGain(1.0),
-      autoDeconvolutionThreshold(false),
-      autoMask(false),
-      autoDeconvolutionThresholdSigma(0.0),
-      autoMaskSigma(0.0),
       localRMSWindow(25.0),
-      localRMSMethod(LocalRmsMethod::kNone),
+      localRMSMethod(radler::LocalRmsMethod::kNone),
       saveSourceList(false),
       deconvolutionIterationCount(0),
       majorIterationCount(20),
       allowNegativeComponents(true),
       stopOnNegativeComponents(false),
-      useMultiscale(false),
       useSubMinorOptimization(true),
       squaredJoins(false),
       spectralCorrectionFrequency(0.0),
@@ -339,22 +354,21 @@ inline Settings::Settings()
       multiscaleMaxScales(0),
       multiscaleConvolutionPadding(1.1),
       multiscaleScaleList(),
-      multiscaleShapeFunction(MultiScaleTransforms::TaperedQuadraticShape),
+      multiscaleShapeFunction(radler::MultiscaleShape::kTaperedQuadraticShape),
       deconvolutionBorderRatio(0.0),
       fitsDeconvolutionMask(),
       casaDeconvolutionMask(),
       horizonMask(false),
       horizonMaskDistance(0.0),
       pythonDeconvolutionFilename(),
-      useMoreSaneDeconvolution(false),
-      useIUWTDeconvolution(false),
       iuwtSNRTest(false),
       moreSaneLocation(),
       moreSaneArgs(),
       spectralFittingMode(
-          schaapcommon::fitters::SpectralFittingMode::NoFitting),
+          schaapcommon::fitters::SpectralFittingMode::kNoFitting),
       spectralFittingTerms(0),
       forcedSpectrumFilename(),
-      deconvolutionChannelCount(0) {}
+      deconvolutionChannelCount(0),
+      algorithmType(radler::AlgorithmType::kGenericClean) {}
 
 #endif

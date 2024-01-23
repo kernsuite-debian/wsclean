@@ -14,18 +14,17 @@
 
 #include "../gridding/msgridderbase.h"
 
-WSCFitsWriter::WSCFitsWriter(const ImagingTableEntry& entry, bool isImaginary,
-                             const Settings& settings,
-                             const std::optional<Deconvolution>& deconvolution,
-                             const ObservationInfo& observationInfo,
-                             size_t majorIterationNr,
-                             const std::string& commandLine,
-                             const OutputChannelInfo& channelInfo, bool isModel,
-                             double startTime) {
+WSCFitsWriter::WSCFitsWriter(
+    const ImagingTableEntry& entry, bool isImaginary, const Settings& settings,
+    const std::optional<radler::Radler>& deconvolution,
+    const ObservationInfo& observationInfo, double l_shift, double m_shift,
+    size_t majorIterationNr, const std::string& commandLine,
+    const OutputChannelInfo& channelInfo, bool isModel, double startTime) {
   _filenamePrefix = ImageFilename::GetPrefix(
       settings, entry.polarization, entry.outputChannelIndex,
       entry.outputIntervalIndex, isImaginary);
-  setGridderConfiguration(settings, observationInfo, startTime);
+  setGridderConfiguration(settings, observationInfo, l_shift, m_shift,
+                          startTime);
   setSettingsKeywords(settings, commandLine);
   setChannelKeywords(entry, entry.polarization, channelInfo);
   setDeconvolutionKeywords(settings);
@@ -36,19 +35,18 @@ WSCFitsWriter::WSCFitsWriter(const ImagingTableEntry& entry, bool isImaginary,
   if (isModel) _writer.SetUnit(aocommon::FitsWriter::JanskyPerPixel);
 }
 
-WSCFitsWriter::WSCFitsWriter(const ImagingTableEntry& entry,
-                             aocommon::PolarizationEnum polarization,
-                             bool isImaginary, const Settings& settings,
-                             const std::optional<Deconvolution>& deconvolution,
-                             const ObservationInfo& observationInfo,
-                             size_t majorIterationNr,
-                             const std::string& commandLine,
-                             const OutputChannelInfo& channelInfo, bool isModel,
-                             double startTime) {
+WSCFitsWriter::WSCFitsWriter(
+    const ImagingTableEntry& entry, aocommon::PolarizationEnum polarization,
+    bool isImaginary, const Settings& settings,
+    const std::optional<radler::Radler>& deconvolution,
+    const ObservationInfo& observationInfo, double l_shift, double m_shift,
+    size_t majorIterationNr, const std::string& commandLine,
+    const OutputChannelInfo& channelInfo, bool isModel, double startTime) {
   _filenamePrefix =
       ImageFilename::GetPrefix(settings, polarization, entry.outputChannelIndex,
                                entry.outputIntervalIndex, isImaginary);
-  setGridderConfiguration(settings, observationInfo, startTime);
+  setGridderConfiguration(settings, observationInfo, l_shift, m_shift,
+                          startTime);
   setSettingsKeywords(settings, commandLine);
   setChannelKeywords(entry, polarization, channelInfo);
   setDeconvolutionKeywords(settings);
@@ -63,6 +61,9 @@ WSCFitsWriter::WSCFitsWriter(aocommon::FitsReader& templateReader)
     : _writer(templateReader) {
   copyWSCleanKeywords(templateReader);
 }
+
+WSCFitsWriter::WSCFitsWriter(const aocommon::FitsWriter& writer)
+    : _writer(writer) {}
 
 void WSCFitsWriter::setSettingsKeywords(const Settings& settings,
                                         const std::string& commandLine) {
@@ -83,19 +84,13 @@ void WSCFitsWriter::setSettingsKeywords(const Settings& settings,
 
 void WSCFitsWriter::setGridderConfiguration(
     const Settings& settings, const ObservationInfo& observationInfo,
-    double startTime) {
-  const double ra = observationInfo.phaseCentreRA,
-               dec = observationInfo.phaseCentreDec,
-               pixelScaleX = settings.pixelScaleX,
-               pixelScaleY = settings.pixelScaleY;
-
-  _writer.SetImageDimensions(settings.trimmedImageWidth,
-                             settings.trimmedImageHeight, ra, dec, pixelScaleX,
-                             pixelScaleY);
-
+    double l_shift, double m_shift, double startTime) {
+  _writer.SetImageDimensions(
+      settings.trimmedImageWidth, settings.trimmedImageHeight,
+      observationInfo.phaseCentreRA, observationInfo.phaseCentreDec,
+      settings.pixelScaleX, settings.pixelScaleY);
   _writer.SetDate(startTime);
-  if (observationInfo.hasShiftedPhaseCentre)
-    _writer.SetPhaseCentreShift(observationInfo.shiftL, observationInfo.shiftM);
+  _writer.SetPhaseCentreShift(l_shift, m_shift);
   _writer.SetTelescopeName(observationInfo.telescopeName);
   _writer.SetObserver(observationInfo.observer);
   _writer.SetObjectName(observationInfo.fieldName);
@@ -109,7 +104,9 @@ void WSCFitsWriter::setGridderConfiguration(
 
 void WSCFitsWriter::setDeconvolutionKeywords(const Settings& settings) {
   _writer.SetExtraKeyword("WSCNITER", settings.deconvolutionIterationCount);
-  _writer.SetExtraKeyword("WSCTHRES", settings.deconvolutionThreshold);
+  if (settings.absoluteDeconvolutionThreshold)
+    _writer.SetExtraKeyword("WSCTHRES",
+                            *settings.absoluteDeconvolutionThreshold);
   _writer.SetExtraKeyword("WSCGAIN", settings.deconvolutionGain);
   _writer.SetExtraKeyword("WSCMGAIN", settings.deconvolutionMGain);
   _writer.SetExtraKeyword("WSCNEGCM", settings.allowNegativeComponents);
@@ -156,15 +153,68 @@ void WSCFitsWriter::copyWSCleanKeywords(aocommon::FitsReader& reader) {
     _writer.CopyDoubleKeywordIfExists(reader, dblKeywords[i]);
 }
 
-template <typename NumT>
-void WSCFitsWriter::WriteImage(const std::string& suffix, const NumT* image) {
+void WSCFitsWriter::WriteImage(const std::string& suffix,
+                               const aocommon::Image& image) {
   std::string name = _filenamePrefix + '-' + suffix;
-  _writer.Write(name, image);
+  WriteFullNameImage(name, image);
 }
-template void WSCFitsWriter::WriteImage(const std::string& suffix,
-                                        const double* image);
-template void WSCFitsWriter::WriteImage(const std::string& suffix,
-                                        const float* image);
+
+void WSCFitsWriter::WriteFullNameImage(const std::string& fullname,
+                                       const aocommon::Image& image) {
+  if (image.Width() != _writer.Width() || image.Height() != _writer.Height()) {
+    aocommon::FitsWriter writer(_writer);
+    writer.SetImageDimensions(image.Width(), image.Height(), _writer.RA(),
+                              _writer.Dec(), _writer.PixelSizeX(),
+                              _writer.PixelSizeY());
+    if (_writer.LShift() || _writer.MShift()) {
+      writer.SetPhaseCentreShift(_writer.LShift(), _writer.MShift());
+    }
+    writer.Write(fullname, image.Data());
+  } else {
+    _writer.Write(fullname, image.Data());
+  }
+}
+
+void WSCFitsWriter::WriteFullNameImage(
+    const std::string& fullname, const aocommon::Image& image,
+    const schaapcommon::facets::Facet& facet) {
+  aocommon::FitsWriter writer(_writer);
+  writer.SetImageDimensions(image.Width(), image.Height(), _writer.RA(),
+                            _writer.Dec(), _writer.PixelSizeX(),
+                            _writer.PixelSizeY());
+  int centreShiftX =
+      facet.GetTrimmedBoundingBox().Centre().x - _writer.Width() / 2;
+  int centreShiftY =
+      facet.GetTrimmedBoundingBox().Centre().y - _writer.Height() / 2;
+  double l_shift = _writer.LShift() - centreShiftX * _writer.PixelSizeX();
+  double m_shift = _writer.MShift() + centreShiftY * _writer.PixelSizeY();
+  writer.SetPhaseCentreShift(l_shift, m_shift);
+  writer.Write(fullname, image.Data());
+}
+
+void WSCFitsWriter::WriteFullNameImage(
+    const std::string& fullname,
+    const schaapcommon::facets::FacetImage& facetimage) {
+  aocommon::FitsWriter writer(_writer);
+  writer.SetImageDimensions(facetimage.Width(), facetimage.Height(),
+                            _writer.RA(), _writer.Dec(), _writer.PixelSizeX(),
+                            _writer.PixelSizeY());
+
+  if (!facetimage.GetFacet()) {
+    throw std::runtime_error(
+        "WSCFitsWriter::WriteFullNameImage can not write a FacetImage when its "
+        "facet is not set.");
+  }
+  schaapcommon::facets::PixelPosition centre_pixel =
+      facetimage.GetFacet()->GetUntrimmedBoundingBox().Centre();
+
+  int centreShiftX = centre_pixel.x - _writer.Width() / 2;
+  int centreShiftY = centre_pixel.y - _writer.Height() / 2;
+  double l_shift = _writer.LShift() - centreShiftX * _writer.PixelSizeX();
+  double m_shift = _writer.MShift() + centreShiftY * _writer.PixelSizeY();
+  writer.SetPhaseCentreShift(l_shift, m_shift);
+  writer.Write(fullname, facetimage.Data(0));
+}
 
 template <typename NumT>
 void WSCFitsWriter::WriteUV(const std::string& suffix, const NumT* image) {
@@ -180,15 +230,6 @@ template void WSCFitsWriter::WriteUV(const std::string& suffix,
                                      const double* image);
 template void WSCFitsWriter::WriteUV(const std::string& suffix,
                                      const float* image);
-
-template <typename NumT>
-void WSCFitsWriter::WritePSF(const std::string& fullname, const NumT* image) {
-  _writer.Write(fullname, image);
-}
-template void WSCFitsWriter::WritePSF(const std::string& fullname,
-                                      const double* image);
-template void WSCFitsWriter::WritePSF(const std::string& fullname,
-                                      const float* image);
 
 void WSCFitsWriter::Restore(const Settings& settings) {
   aocommon::FitsReader imgReader(settings.restoreInput),
@@ -253,16 +294,4 @@ void WSCFitsWriter::RestoreList(const Settings& settings) {
   aocommon::FitsWriter writer(WSCFitsWriter(imgReader).Writer());
   writer.SetBeamInfo(beamMaj, beamMin, beamPA);
   writer.Write(settings.restoreOutput, image.Data());
-}
-
-ObservationInfo WSCFitsWriter::ReadObservationInfo(
-    const aocommon::FitsReader& reader) {
-  ObservationInfo obsInfo;
-  obsInfo.phaseCentreRA = reader.PhaseCentreRA();
-  obsInfo.phaseCentreDec = reader.PhaseCentreDec();
-  obsInfo.shiftL = reader.PhaseCentreDL();
-  obsInfo.shiftM = reader.PhaseCentreDM();
-  obsInfo.telescopeName = reader.TelescopeName();
-  obsInfo.observer = reader.Observer();
-  return obsInfo;
 }

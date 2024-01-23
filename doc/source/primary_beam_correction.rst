@@ -37,7 +37,9 @@ An example to perform Stokes I imaging and full beam correction:
     wsclean -apply-primary-beam -size 1024 1024 -scale 20asec \
       observation.ms
 
-WSClean outputs the normal uncorrected image (``wsclean-image.fits``), the 8 components of the beam Jones matrix (``wsclean-beam-XX.fits``, ``wsclean-beam-XXi.fits``, ``wsclean-beam-XY.fits``, ...) and the primary beam corrected image (``wsclean-image-pb.fits``). Note that the dirty, residual and model images are not corrected.
+WSClean outputs the normal uncorrected image (``wsclean-image.fits``), the 16 components of the beam Mueller matrix (``wsclean-beam-0.fits``, ``wsclean-beam-1.fits``, ..., ``wsclean-beam-15.fits``) and the primary beam corrected image (``wsclean-image-pb.fits``). Note that the dirty, residual and model images are not corrected.
+
+.. note:: The single component beam images are not easy to interpret by themselves. Together, the 16 images form the complex Hermitian Mueller matrix for each pixel. See the :doc:`technical chapter on primary beam component images <primary_beam_component_images>` for more info.
 
 Example to make beam-corrected Stokes I, Q, U and V images:
 
@@ -48,9 +50,7 @@ Example to make beam-corrected Stokes I, Q, U and V images:
       -pol iquv -size 1024 1024 -scale 20asec \
       observation.ms
 
-WSClean outputs the 4 normal uncorrected images, the 8 components of the beam Jones matrix and the 4 primary beam images (which have ``pb`` in them).
-
-Other combinations of polarizations, such as ``xx,yy`` or ``iq`` are currently not supported and will result in an error. If you need other modes let me know.
+WSClean outputs the 4 normal uncorrected images, the 16 components of the beam Mueller matrix and the 4 primary beam images (which have ``pb`` in them). Other combinations of polarizations, such as ``xx,yy`` or ``iq`` are currently not supported and will result in an error. If you need other modes let me know.
 
 The beam correction can also be applied together with :doc:`multi-frequency output <making_image_cubes>`, :doc:`joined channel mode <wideband_deconvolution>` and/or the :doc:`snapshot mode <snapshot_imaging>`. In those cases, a ``pb`` image is saved for every output image. The channel-integrated "MFS" image is not corrected.
 
@@ -59,9 +59,10 @@ Beam correction works together with :doc:`baseline-dependent averaging <baseline
 Differential beam
 ~~~~~~~~~~~~~~~~~
 
-To correct an image for the beam when the phase-centre beam has been applied to the visibilities, the option '``-use-differential-lofar-beam``' can be added. ("``-apply-primary-beam``" also still needs to be given).
+To make primary-beam corrected images for observations in which the visibilities have already been (scalar) corrected for the beam at the phase-centre, the option '``-use-differential-lofar-beam``' can be added. ("``-apply-primary-beam``" is still required). In normal use-cases, this option should not be used, because WSClean determines itself what the correct beam is, and will make sure to output a correctly normalized image even if a scalar beam was applied previously. The combination "``-apply-primary-beam -use-differential-lofar-beam``" can be used to force application of the differential beam in cases the metadata of the measurement set does not contain the proper keys to force this.
 
-In summary: use "``-apply-primary-beam``" when no beam has been applied yet, and use "``-apply-primary-beam -use-differential-lofar-beam``" to apply the differential beam.
+.. warning::
+    This is an expert option that should rarely be used. Incorrect use of this feature will lead to an incorrect flux density values of the correct image.
 
 The ``REFERENCE_DIR`` column is used for determining what phase centre the beam has been applied to. Mathematically, WSClean then applies the differential beam Di as derived below. The data *V* being imaged have been premultiplied with the central beam *C* for baseline *ij*, and we want to
 return a matrix that corrects the data for the full beam *B*. Given our data *R*:
@@ -98,7 +99,7 @@ Usage of the MWA beam requires having installed the HDF5 file that is installed 
 Time-varying beams
 ------------------
 
-When using image plane beam correction, WSClean calculates the time-integrated beam by summing snapshot beams; a beam is calculated for every 30 min and every *output* channel. Be aware that the beam correction is a single correction, and is not time-dependent. Hence, if the beam changes over time, information might smear out over the polarizations. This is less of an issue when the beam was taken out in the visibilities.
+When using image plane beam correction, WSClean calculates the time-integrated beam by summing snapshot beams; a beam is calculated for every 30 min and every *output* channel. Be aware that the beam correction is a single correction, and is not time-dependent. Hence, if the beam changes over time, information might smear out over the polarizations, leading to poor sensitivity. This is less of an issue when the (central) beam was taken out in the visibilities.
 
 Installation information
 ------------------------

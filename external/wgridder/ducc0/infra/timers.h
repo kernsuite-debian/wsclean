@@ -18,8 +18,8 @@
 
 /** \file ducc0/infra/timers.h
  *  High precision wallclock timers.
- * 
- *  \copyright Copyright (C) 2019-2021 Max-Planck-Society
+ *
+ *  \copyright Copyright (C) 2019-2022 Max-Planck-Society
  *  \authors Peter Bell, Martin Reinecke
  */
 
@@ -135,7 +135,8 @@ class TimerHierarchy
               (tmp[i].first->second).report(indent+"|  ",twidth,slen,os);
               tsum+=tmp[i].second;
               }
-            printline(indent, twidth, slen, "<unaccounted>", total-tsum, total, os);
+            if (tsum<0.999*total)
+              printline(indent, twidth, slen, "<unaccounted>", total-tsum, total, os);
             if (indent!="") os << indent << "\n";
             }
           }
@@ -192,9 +193,17 @@ class TimerHierarchy
       curnode=&(it->second);
       }
 
+    TimerHierarchy(const TimerHierarchy &) = delete;
+    TimerHierarchy(TimerHierarchy &&) = delete;
+    TimerHierarchy& operator=(const TimerHierarchy &) = delete;
+    TimerHierarchy&operator=(TimerHierarchy &&) = delete;
+
   public:
     TimerHierarchy(const string &name="<root>")
       : last_time(clock::now()), root(name, nullptr), curnode(&root) {}
+    TimerHierarchy(const string &name, const string &firsttimer)
+      : TimerHierarchy(name)
+      { push(firsttimer); }
     /// Push a new category \a name to the stack.
     /** While this is on the stack, all elapsed time will be added to this
      *  category. */
@@ -216,13 +225,37 @@ class TimerHierarchy
       pop();
       push_internal(name);
       }
+
+    void reset(string name="")
+      {
+      last_time=clock::now();
+      root = tstack_node(name=="" ? root.name : name, nullptr);
+      curnode=&root;
+      }
+
+    class ScopeTimer
+      {
+      private:
+        TimerHierarchy &hierarchy;
+
+      public:
+        ScopeTimer() = delete;
+        ScopeTimer(const ScopeTimer &) = delete;
+        ScopeTimer &operator=(const ScopeTimer &) const = delete;
+        ScopeTimer(const string &name, TimerHierarchy &hierarchy_)
+          : hierarchy(hierarchy_) { hierarchy.push(name); }
+        ~ScopeTimer() { hierarchy.pop(); }
+      };
+    ScopeTimer scopeTimer(const string &name)
+      { return ScopeTimer(name, *this); }
+
     /// Returns a dictionary containing all used categories and their
     /// accumulated time.
     map<string, double> get_timings()
       {
       adjust_time();
       map<string, double> res;
-      root.add_timings("root", res);
+      root.add_timings(root.name, res);
       return res;
       }
     /// Writes a fancy timing report to \a os.
@@ -233,10 +266,26 @@ class TimerHierarchy
       { ostringstream oss; root.report(oss); return oss.str(); }
   };
 
+inline map<string,double> combine_timings(const map<string, double> &m1,
+                                   const map<string, double> &m2)
+  {
+  map<string, double> res = m1;
+  for (const auto &[k, v] : m2)
+    {
+    auto iter = res.find(k);
+    if (iter==res.end())
+      res[k] = v;
+    else
+      iter->second += v;
+    }
+  return res;
+  }
+
 }
 
 using detail_timers::SimpleTimer;
 using detail_timers::TimerHierarchy;
+using detail_timers::combine_timings;
 
 }
 

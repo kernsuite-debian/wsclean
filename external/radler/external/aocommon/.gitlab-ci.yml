@@ -1,0 +1,35 @@
+image: ubuntu:22.04
+
+before_script:
+ - apt-get update -qq
+ - export DEBIAN_FRONTEND=noninteractive && apt-get install -y -qq
+    casacore-data casacore-dev
+    cmake
+    g++
+    git
+    libboost-test-dev
+    libboost-date-time-dev
+    libcfitsio-dev
+    pkg-config
+    python3-pip
+    clang-format-14
+ - pip3 install gcovr black cmake-format
+
+format:
+  script:
+    - ./scripts/run-format.sh
+
+aocommon:
+  script:
+    - mkdir build
+    - cd build
+    - cmake -DCMAKE_CXX_FLAGS="-coverage" -DCMAKE_EXE_LINKER_FLAGS="-coverage" ../
+    - make
+    # gcovr to create badge
+    # This also writes the xml file to enable line coverage highlighting in MRs
+    - make coverage
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml

@@ -14,3 +14,5 @@ Deconvolution modes
    iuwt_compressed_sensing
    moresane_deconvolution
    parallel_deconvolution
+   direction_dependent_psfs
+   python_deconvolution

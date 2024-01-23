@@ -3,9 +3,15 @@
 
 #include <aocommon/polarization.h>
 
+#include <radler/work_table.h>
+
 #include <memory>
 #include <string>
 #include <vector>
+
+namespace radler {
+struct DeconvolutionTableEntry;
+}
 
 namespace schaapcommon {
 namespace facets {
@@ -14,7 +20,6 @@ class Facet;
 }  // namespace schaapcommon
 
 class CachedImageSet;
-struct DeconvolutionTableEntry;
 
 struct ImagingTableEntry {
   struct MSBandInfo {
@@ -48,9 +53,11 @@ struct ImagingTableEntry {
    * imaginary values.
    * @return A new DeconvolutionTableEntry.
    */
-  std::unique_ptr<DeconvolutionTableEntry> CreateDeconvolutionEntry(
+  std::unique_ptr<radler::WorkTableEntry> CreateDeconvolutionEntry(
       size_t channel_index_offset, CachedImageSet* psf_images,
       CachedImageSet& model_images, CachedImageSet& residual_images,
+      const std::vector<std::shared_ptr<schaapcommon::facets::Facet>>&
+          psf_facets,
       bool is_imaginary) const;
 
   /**
@@ -84,6 +91,16 @@ struct ImagingTableEntry {
    * Pointer to a Facet. If it is null, faceting is not used.
    */
   std::shared_ptr<schaapcommon::facets::Facet> facet;
+
+  /**
+   * Flag which indicates whether this entry is a direction dependent PSF
+   *
+   * Entries for which this flag is true are only processed while making the
+   * PSF. After that they are stripped from the ImagingTable, so they are not
+   * used for dirty/residual or model images.
+   *
+   */
+  bool isDdPsf;
 
   /**
    * Difference from the centre to the facet centre to the facet centre.

@@ -38,6 +38,12 @@ std::unique_ptr<GriddingTaskManager> GriddingTaskManager::Make(
   }
 }
 
+Resources GriddingTaskManager::GetResources() const {
+  return Resources(
+      _settings.threadCount,
+      GetAvailableMemory(_settings.memFraction, _settings.absMemLimit));
+}
+
 void GriddingTaskManager::Run(
     GriddingTask&& task, std::function<void(GriddingResult&)> finishCallback) {
   GriddingResult result = RunDirect(std::move(task));
@@ -45,7 +51,7 @@ void GriddingTaskManager::Run(
 }
 
 GriddingResult GriddingTaskManager::RunDirect(GriddingTask&& task) {
-  std::unique_ptr<MSGridderBase> gridder(makeGridder());
+  std::unique_ptr<MSGridderBase> gridder(makeGridder(GetResources()));
   return runDirect(std::move(task), *gridder);
 }
 
@@ -65,15 +71,14 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
   }
 
   gridder.SetFacetGroupIndex(task.facetGroupIndex);
-  gridder.SetAdditivePredict(task.facet != nullptr);
+  gridder.SetIsFacet(task.facet != nullptr);
   if (task.facet != nullptr) {
     gridder.SetFacetIndex(task.facetIndex);
     gridder.SetImageWidth(task.facet->GetUntrimmedBoundingBox().Width());
     gridder.SetImageHeight(task.facet->GetUntrimmedBoundingBox().Height());
     gridder.SetTrimSize(task.facet->GetTrimmedBoundingBox().Width(),
                         task.facet->GetTrimmedBoundingBox().Height());
-    gridder.SetFacetDirectionRA(task.facet->RA());
-    gridder.SetFacetDirectionDec(task.facet->Dec());
+    gridder.SetFacetDirection(task.facet->RA(), task.facet->Dec());
   } else {
     gridder.SetImageWidth(_settings.paddedImageWidth);
     gridder.SetImageHeight(_settings.paddedImageHeight);
@@ -83,8 +88,20 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
   gridder.SetImagePadding(_settings.imagePadding);
   gridder.SetPhaseCentreDec(task.observationInfo.phaseCentreDec);
   gridder.SetPhaseCentreRA(task.observationInfo.phaseCentreRA);
-  gridder.SetPhaseCentreDM(task.observationInfo.shiftM);
-  gridder.SetPhaseCentreDL(task.observationInfo.shiftL);
+  gridder.SetLShift(task.l_shift);
+  gridder.SetMShift(task.m_shift);
+
+  if (_settings.hasShift) {
+    double main_image_dl = 0.0;
+    double main_image_dm = 0.0;
+    aocommon::ImageCoordinates::RaDecToLM(_settings.shiftRA, _settings.shiftDec,
+                                          task.observationInfo.phaseCentreRA,
+                                          task.observationInfo.phaseCentreDec,
+                                          main_image_dl, main_image_dm);
+    gridder.SetMainImageDL(main_image_dl);
+    gridder.SetMainImageDM(main_image_dm);
+  }
+
   gridder.SetPolarization(task.polarization);
   gridder.SetIsComplex(task.polarization == aocommon::Polarization::XY ||
                        task.polarization == aocommon::Polarization::YX);
@@ -96,7 +113,15 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
         std::unique_ptr<MetaDataCache>(new MetaDataCache()));
   gridder.SetImageWeights(task.imageWeights.get());
   if (task.operation == GriddingTask::Invert) {
-    gridder.SetDoImagePSF(task.imagePSF);
+    if (task.imagePSF) {
+      if (_settings.ddPsfGridWidth > 1 || _settings.ddPsfGridHeight > 1) {
+        gridder.SetPsfMode(PsfMode::kDirectionDependent);
+      } else {
+        gridder.SetPsfMode(PsfMode::kSingle);
+      }
+    } else {
+      gridder.SetPsfMode(PsfMode::kNone);
+    }
     gridder.SetDoSubtractModel(task.subtractModel);
     gridder.SetStoreImagingWeights(task.storeImagingWeights);
     gridder.Invert();
@@ -127,33 +152,36 @@ GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
   return result;
 }
 
-std::unique_ptr<MSGridderBase> GriddingTaskManager::constructGridder() const {
-  if (_settings.useIDG) {
-    return std::unique_ptr<MSGridderBase>(new IdgMsGridder(_settings));
-  } else if (_settings.useWGridder) {
-    return std::unique_ptr<MSGridderBase>(new WGriddingMSGridder(_settings));
-  } else if (_settings.directFT) {
-    switch (_settings.directFTPrecision) {
-      case DirectFTPrecision::Float:
-        return std::unique_ptr<MSGridderBase>(
-            new DirectMSGridder<float>(_settings));
-        break;
-      default:
-      case DirectFTPrecision::Double:
-        return std::unique_ptr<MSGridderBase>(
-            new DirectMSGridder<double>(_settings));
-        break;
-      case DirectFTPrecision::LongDouble:
-        return std::unique_ptr<MSGridderBase>(
-            new DirectMSGridder<long double>(_settings));
-        break;
-    }
-  } else
-    return std::unique_ptr<MSGridderBase>(new WSMSGridder(_settings));
+std::unique_ptr<MSGridderBase> GriddingTaskManager::constructGridder(
+    const Resources& resources) const {
+  switch (_settings.gridderType) {
+    case GridderType::IDG:
+      return std::make_unique<IdgMsGridder>(_settings, resources);
+    case GridderType::WGridder:
+      return std::make_unique<WGriddingMSGridder>(_settings, resources, false);
+    case GridderType::TunedWGridder:
+      return std::make_unique<WGriddingMSGridder>(_settings, resources, true);
+    case GridderType::DirectFT:
+      switch (_settings.directFTPrecision) {
+        case DirectFTPrecision::Float:
+          return std::make_unique<DirectMSGridder<float>>(_settings, resources);
+        case DirectFTPrecision::Double:
+          return std::make_unique<DirectMSGridder<double>>(_settings,
+                                                           resources);
+        case DirectFTPrecision::LongDouble:
+          return std::make_unique<DirectMSGridder<long double>>(_settings,
+                                                                resources);
+      }
+      break;
+    case GridderType::WStacking:
+      return std::make_unique<WSMSGridder>(_settings, resources);
+  }
+  return {};
 }
 
-std::unique_ptr<MSGridderBase> GriddingTaskManager::makeGridder() const {
-  std::unique_ptr<MSGridderBase> gridder(constructGridder());
+std::unique_ptr<MSGridderBase> GriddingTaskManager::makeGridder(
+    const Resources& resources) const {
+  std::unique_ptr<MSGridderBase> gridder(constructGridder(resources));
   gridder->SetGridMode(_settings.gridMode);
   return gridder;
 }

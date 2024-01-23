@@ -6,6 +6,8 @@
 
 #include "../math/renderer.h"
 
+#include <filesystem>
+
 #include <aocommon/logger.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/fits/fitswriter.h>
@@ -18,22 +20,23 @@ using aocommon::Logger;
 using aocommon::units::Angle;
 
 void ImageOperations::FitBeamSize(const Settings& settings, double& bMaj,
-                                  double& bMin, double& bPA, const float* image,
+                                  double& bMin, double& bPA,
+                                  const aocommon::Image& image,
                                   double beamEstimate) {
   schaapcommon::fitters::GaussianFitter beamFitter;
   Logger::Info << "Fitting beam... ";
   Logger::Info.Flush();
   if (settings.circularBeam) {
     bMaj = beamEstimate;
-    beamFitter.Fit2DCircularGaussianCentred(image, settings.trimmedImageWidth,
-                                            settings.trimmedImageHeight, bMaj,
+    beamFitter.Fit2DCircularGaussianCentred(image.Data(), image.Width(),
+                                            image.Height(), bMaj,
                                             settings.beamFittingBoxSize);
     bMin = bMaj;
     bPA = 0.0;
   } else {
-    beamFitter.Fit2DGaussianCentred(
-        image, settings.trimmedImageWidth, settings.trimmedImageHeight,
-        beamEstimate, bMaj, bMin, bPA, settings.beamFittingBoxSize);
+    beamFitter.Fit2DGaussianCentred(image.Data(), image.Width(), image.Height(),
+                                    beamEstimate, bMaj, bMin, bPA,
+                                    settings.beamFittingBoxSize);
   }
   bMaj = bMaj * 0.5 * (settings.pixelScaleX + settings.pixelScaleY);
   bMin = bMin * 0.5 * (settings.pixelScaleX + settings.pixelScaleY);
@@ -42,7 +45,7 @@ void ImageOperations::FitBeamSize(const Settings& settings, double& bMaj,
 void ImageOperations::DetermineBeamSize(const Settings& settings, double& bMaj,
                                         double& bMin, double& bPA,
                                         double& bTheoretical,
-                                        const float* image,
+                                        const aocommon::Image& image,
                                         double initialEstimate) {
   bTheoretical = initialEstimate;
   if (settings.gaussianTaperBeamSize != 0.0) {
@@ -82,21 +85,34 @@ void ImageOperations::DetermineBeamSize(const Settings& settings, double& bMaj,
 void ImageOperations::MakeMFSImage(
     const Settings& settings,
     const std::vector<OutputChannelInfo>& infoPerChannel,
-    OutputChannelInfo& mfsInfo, const string& suffix, size_t intervalIndex,
-    aocommon::PolarizationEnum pol, bool isImaginary, bool isPSF) {
+    OutputChannelInfo& mfsInfo, const std::string& suffix, size_t intervalIndex,
+    aocommon::PolarizationEnum pol, ImageFilenameType image_type,
+    std::optional<size_t> directionIndex) {
   double lowestFreq = 0.0, highestFreq = 0.0;
-  const size_t size = settings.trimmedImageWidth * settings.trimmedImageHeight;
-  aocommon::UVector<float> mfsImage(size, 0.0);
-  aocommon::UVector<double> addedImage(size), weightImage(size, 0.0);
+  aocommon::Image mfsImage;
+  aocommon::UVector<double> addedImage;
+  aocommon::UVector<double> weightImage;
   double weightSum = 0.0;
   aocommon::FitsWriter writer;
+  const std::string suffix_with_extension =
+      suffix.empty() ? ".fits" : '-' + suffix + ".fits";
   for (size_t ch = 0; ch != settings.channelsOut; ++ch) {
-    std::string prefixStr =
-        isPSF ? ImageFilename::GetPSFPrefix(settings, ch, intervalIndex)
-              : ImageFilename::GetPrefix(settings, pol, ch, intervalIndex,
-                                         isImaginary);
-    const std::string name(prefixStr + '-' + suffix);
+    const std::string prefix = ImageFilename::GetPrefix(
+        image_type, settings, pol, ch, intervalIndex, directionIndex);
+    const std::string name = prefix + suffix_with_extension;
+    // In the case of beam images, not all 16 beam images might be present, so
+    // immediately leave in that case.
+    if (image_type == ImageFilenameType::Beam && !std::filesystem::exists(name))
+      return;
     aocommon::FitsReader reader(name);
+    const size_t size = reader.ImageWidth() * reader.ImageHeight();
+    if (mfsImage.Empty()) {
+      mfsImage =
+          aocommon::Image(reader.ImageWidth(), reader.ImageHeight(), 0.0);
+      weightImage.assign(size, 0.0);
+      addedImage.resize(size);
+    }
+    assert(mfsImage.Size() == size);
     if (ch == 0) {
       WSCFitsWriter wscWriter(reader);
       writer = wscWriter.Writer();
@@ -108,12 +124,7 @@ void ImageOperations::MakeMFSImage(
       highestFreq =
           std::max(highestFreq, reader.Frequency() + reader.Bandwidth() * 0.5);
     }
-    double weight;
-    if (!reader.ReadDoubleKeyIfExists("WSCIMGWG", weight)) {
-      Logger::Error << "Error: image " << name
-                    << " did not have the WSCIMGWG keyword.\n";
-      weight = 0.0;
-    }
+    const double weight = infoPerChannel[ch].weight;
     weightSum += weight;
     reader.Read(addedImage.data());
     for (size_t i = 0; i != size; ++i) {
@@ -123,41 +134,33 @@ void ImageOperations::MakeMFSImage(
       }
     }
   }
-  for (size_t i = 0; i != size; ++i) mfsImage[i] /= weightImage[i];
+  for (size_t i = 0; i != mfsImage.Size(); ++i) mfsImage[i] /= weightImage[i];
 
-  if (isPSF) {
-    double smallestTheoreticBeamSize = 0.0;
-    for (std::vector<OutputChannelInfo>::const_reverse_iterator r =
-             infoPerChannel.rbegin();
-         r != infoPerChannel.rend(); ++r) {
-      if (std::isfinite(r->theoreticBeamSize)) {
-        smallestTheoreticBeamSize = r->theoreticBeamSize;
-        break;
-      }
-    }
-    double pixelScale = std::min(settings.pixelScaleX, settings.pixelScaleY);
-    if (smallestTheoreticBeamSize < pixelScale)
-      smallestTheoreticBeamSize = pixelScale;
+  if (image_type == ImageFilenameType::Psf) {
+    const double pixelScale =
+        std::min(settings.pixelScaleX, settings.pixelScaleY);
+    const double smallestTheoreticBeamSize =
+        std::max(SmallestTheoreticBeamSize(infoPerChannel), pixelScale);
 
     ImageOperations::DetermineBeamSize(
         settings, mfsInfo.beamMaj, mfsInfo.beamMin, mfsInfo.beamPA,
-        mfsInfo.theoreticBeamSize, mfsImage.data(), smallestTheoreticBeamSize);
+        mfsInfo.theoreticBeamSize, mfsImage, smallestTheoreticBeamSize);
   }
   if (std::isfinite(mfsInfo.beamMaj))
     writer.SetBeamInfo(mfsInfo.beamMaj, mfsInfo.beamMin, mfsInfo.beamPA);
   else
     writer.SetNoBeamInfo();
 
-  std::string mfsName(ImageFilename::GetMFSPrefix(settings, pol, intervalIndex,
-                                                  isImaginary, isPSF) +
-                      '-' + suffix);
-  Logger::Info << "Writing " << mfsName << "...\n";
+  std::string mfs_name(ImageFilename::GetMFSPrefix(settings, pol, intervalIndex,
+                                                   image_type, directionIndex) +
+                       suffix_with_extension);
+  Logger::Info << "Writing " << mfs_name << "...\n";
   writer.SetFrequency((lowestFreq + highestFreq) * 0.5,
                       highestFreq - lowestFreq);
   writer.SetExtraKeyword("WSCIMGWG", weightSum);
   writer.RemoveExtraKeyword("WSCCHANS");
   writer.RemoveExtraKeyword("WSCCHANE");
-  writer.Write(mfsName, mfsImage.data());
+  writer.Write(mfs_name, mfsImage.Data());
 }
 
 void ImageOperations::RenderMFSImage(const Settings& settings,
@@ -167,11 +170,13 @@ void ImageOperations::RenderMFSImage(const Settings& settings,
                                      bool isImaginary, bool isPBCorrected) {
   const size_t size = settings.trimmedImageWidth * settings.trimmedImageHeight;
 
-  std::string mfsPrefix(ImageFilename::GetMFSPrefix(
-      settings, pol, intervalIndex, isImaginary, false));
-  std::string postfix = isPBCorrected ? "-pb.fits" : ".fits";
-  aocommon::FitsReader residualReader(mfsPrefix + "-residual" + postfix);
-  aocommon::FitsReader modelReader(mfsPrefix + "-model" + postfix);
+  ImageFilenameType filename_type =
+      isImaginary ? ImageFilenameType::Imaginary : ImageFilenameType::Normal;
+  const std::string mfs_prefix(
+      ImageFilename::GetMFSPrefix(settings, pol, intervalIndex, filename_type));
+  const std::string postfix = isPBCorrected ? "-pb.fits" : ".fits";
+  aocommon::FitsReader residualReader(mfs_prefix + "-residual" + postfix);
+  aocommon::FitsReader modelReader(mfs_prefix + "-model" + postfix);
   aocommon::UVector<float> image(size), modelImage(size);
   residualReader.Read(image.data());
   modelReader.Read(modelImage.data());
@@ -215,7 +220,7 @@ void ImageOperations::RenderMFSImage(const Settings& settings,
       settings.pixelScaleX, settings.pixelScaleY, settings.threadCount);
   Logger::Info << "DONE\n";
 
-  Logger::Info << "Writing " << mfsPrefix << "-image" << postfix << "...\n";
+  Logger::Info << "Writing " << mfs_prefix << "-image" << postfix << "...\n";
   aocommon::FitsWriter imageWriter(residualReader);
-  imageWriter.Write(mfsPrefix + "-image" + postfix, image.data());
+  imageWriter.Write(mfs_prefix + "-image" + postfix, image.data());
 }

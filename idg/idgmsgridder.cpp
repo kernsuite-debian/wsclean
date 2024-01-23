@@ -7,6 +7,7 @@
 
 #include <idg-api.h>
 
+#include <aocommon/coordinatesystem.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/logger.h>
 
@@ -28,15 +29,14 @@
 #include <EveryBeam/aterms/atermconfig.h>
 #include <EveryBeam/options.h>
 #include <EveryBeam/load.h>
-#include <EveryBeam/coords/coordutils.h>
 
 using everybeam::ATermSettings;
 using everybeam::aterms::ATermBase;
 using everybeam::aterms::ATermBeam;
 using everybeam::aterms::ATermConfig;
-using everybeam::coords::CoordinateSystem;
 #endif  // HAVE_EVERYBEAM
 
+using aocommon::CoordinateSystem;
 using aocommon::Image;
 using aocommon::Logger;
 
@@ -44,20 +44,21 @@ namespace {
 constexpr const size_t kGridderIndex = 0;
 }
 
-IdgMsGridder::IdgMsGridder(const Settings& settings)
+IdgMsGridder::IdgMsGridder(const Settings& settings, const Resources& resources)
     : MSGridderBase(settings),
       _averageBeam(nullptr),
       _outputProvider(nullptr),
       _proxyType(idg::api::Type::CPU_OPTIMIZED),
-      _buffersize(0) {
+      _buffersize(0),
+      _resources(resources) {
   IdgConfiguration::Read(_proxyType, _buffersize, _options);
   setIdgType();
   _bufferset = std::unique_ptr<idg::api::BufferSet>(
       idg::api::BufferSet::create(_proxyType));
   if (settings.gridWithBeam || !settings.atermConfigFilename.empty())
     _options["a_term_kernel_size"] = float(_settings.atermKernelSize);
-  _options["max_threads"] = int(settings.threadCount);
-  if (settings.gridMode == GridMode::BlackmanHarrisKernel)
+  _options["max_threads"] = int(resources.NCpus());
+  if (settings.gridMode == GriddingKernelMode::BlackmanHarris)
     _options["taper"] = std::string("blackman-harris");
 }
 
@@ -90,8 +91,8 @@ void IdgMsGridder::Invert() {
     max_w = std::max(max_w, msData.maxWWithFlags);
   }
 
-  const double shiftl = PhaseCentreDL();
-  const double shiftm = PhaseCentreDM();
+  const double shiftl = LShift();
+  const double shiftm = MShift();
   const double shiftp =
       std::sqrt(1.0 - shiftl * shiftl - shiftm * shiftm) - 1.0;
   _bufferset->init(width, ActualPixelSizeX(), max_w + 1.0, shiftl, shiftm,
@@ -99,24 +100,16 @@ void IdgMsGridder::Invert() {
   Logger::Debug << "IDG subgrid size: " << _bufferset->get_subgridsize()
                 << '\n';
 
-  if (DoImagePSF()) {
+  if (GetPsfMode() != PsfMode::kNone) {
     // Computing the PSF
-    // For the PSF the aterm is computed but not applied
-    // The aterm is computed so that the average beam can be computed
+    // For the PSF the aterm is not applied
     _bufferset->set_apply_aterm(false);
     _bufferset->unset_matrix_inverse_beam();
-    _bufferset->init_compute_avg_beam(
-        idg::api::compute_flags::compute_and_grid);
     resetVisibilityCounters();
     for (const MSData& msData : msDataVector) {
       // Adds the gridding result to _image member
       gridMeasurementSet(msData);
     }
-    _bufferset->finalize_compute_avg_beam();
-    _averageBeam->SetScalarBeam(_bufferset->get_scalar_beam(), width, height);
-    _averageBeam->SetMatrixInverseBeam(_bufferset->get_matrix_inverse_beam(),
-                                       _bufferset->get_subgridsize(),
-                                       _bufferset->get_subgridsize());
     _image.assign(n_image_polarizations * width * height, 0.0);
     _bufferset->get_image(_image.data());
 
@@ -184,8 +177,7 @@ void IdgMsGridder::gridMeasurementSet(const MSGridderBase::MSData& msData) {
                                         n_idg_polarizations);
   aocommon::UVector<std::complex<float>> modelBuffer(
       _selectedBand.ChannelCount() * n_idg_polarizations);
-  aocommon::UVector<bool> isSelected(
-      _selectedBand.ChannelCount() * n_idg_polarizations, true);
+  aocommon::UVector<bool> isSelected(_selectedBand.ChannelCount(), true);
   aocommon::UVector<std::complex<float>> dataBuffer(
       _selectedBand.ChannelCount() * n_idg_polarizations);
 
@@ -233,13 +225,33 @@ void IdgMsGridder::gridMeasurementSet(const MSGridderBase::MSData& msData) {
     rowData.antenna1 = metaData.antenna1;
     rowData.antenna2 = metaData.antenna2;
     rowData.timeIndex = timeIndex;
-    if (n_vis_polarizations == 2) {
-      readAndWeightVisibilities<2, DDGainMatrix::kFull>(
+
+    if (n_vis_polarizations == 1) {
+      GetInstrumentalVisibilities<1>(
           *msReader, msData.antennaNames, rowData, _selectedBand,
-          weightBuffer.data(), modelBuffer.data(), isSelected.data());
+          weightBuffer.data(), modelBuffer.data(), isSelected.data(), metaData);
+      // The data is placed in the first quarter of the buffers: reverse copy it
+      // and expand it to 4 polarizations. TODO at a later time, IDG should
+      // be able to directly accept 1 polarization instead of 4.
+      size_t source_index = dataBuffer.size() / 4;
+      for (size_t i = dataBuffer.size(); i != 0; i -= 4) {
+        dataBuffer[i - 1] = dataBuffer[source_index - 1];
+        dataBuffer[i - 2] = 0.0;
+        dataBuffer[i - 3] = 0.0;
+        dataBuffer[i - 4] = dataBuffer[source_index - 1];
+        weightBuffer[i - 1] = weightBuffer[source_index - 1];
+        weightBuffer[i - 2] = weightBuffer[source_index - 1];
+        weightBuffer[i - 3] = weightBuffer[source_index - 1];
+        weightBuffer[i - 4] = weightBuffer[source_index - 1];
+        source_index--;
+      }
+    } else if (n_vis_polarizations == 2) {
+      GetInstrumentalVisibilities<2>(
+          *msReader, msData.antennaNames, rowData, _selectedBand,
+          weightBuffer.data(), modelBuffer.data(), isSelected.data(), metaData);
       // The data is placed in the first half of the buffers: reverse copy it
       // and expand it to 4 polarizations. TODO at a later time, IDG should
-      // directly accept 2 pols instead of 4.
+      // be able to directly accept 2 pols instead of 4.
       size_t source_index = dataBuffer.size() / 2;
       for (size_t i = dataBuffer.size(); i != 0; i -= 4) {
         rowData.data[i - 1] = rowData.data[source_index - 1];
@@ -254,9 +266,9 @@ void IdgMsGridder::gridMeasurementSet(const MSGridderBase::MSData& msData) {
       }
     } else {
       assert(n_vis_polarizations == 4);
-      readAndWeightVisibilities<4, DDGainMatrix::kFull>(
+      GetInstrumentalVisibilities<4>(
           *msReader, msData.antennaNames, rowData, _selectedBand,
-          weightBuffer.data(), modelBuffer.data(), isSelected.data());
+          weightBuffer.data(), modelBuffer.data(), isSelected.data(), metaData);
     }
 
     rowData.uvw[1] = -metaData.vInM;  // DEBUG vdtol, flip axis
@@ -322,8 +334,8 @@ void IdgMsGridder::Predict(std::vector<Image>&& images) {
     max_w = std::max(max_w, msData.maxWWithFlags);
   }
 
-  const double shiftl = PhaseCentreDL();
-  const double shiftm = PhaseCentreDM();
+  const double shiftl = LShift();
+  const double shiftm = MShift();
   const double shiftp =
       std::sqrt(1.0 - shiftl * shiftl - shiftm * shiftm) - 1.0;
   _bufferset->init(width, ActualPixelSizeX(), max_w + 1.0, shiftl, shiftm,
@@ -436,19 +448,27 @@ void IdgMsGridder::computePredictionBuffer(
   const size_t n_vis_polarizations = _outputProvider->NPolarizations();
   for (std::pair<long unsigned, std::complex<float>*>& row :
        available_row_ids) {
-    if (n_vis_polarizations == 2) {
+    if (n_vis_polarizations == 1) {
+      // Remove the XY/YX pols from the data and place the result in the first
+      // quarter of the array
+      for (size_t i = 0; i != _selectedBand.ChannelCount(); ++i) {
+        row.second[i] = (row.second[i * 4] + row.second[i * 4 + 3]) / 2.0f;
+      }
+      WriteInstrumentalVisibilities<1>(*_outputProvider, antennaNames,
+                                       _selectedBand, row.second);
+    } else if (n_vis_polarizations == 2) {
       // Remove the XY/YX pols from the data and place the result in the first
       // half of the array
       for (size_t i = 0; i != _selectedBand.ChannelCount(); ++i) {
         row.second[i * 2] = row.second[i * 4];
         row.second[i * 2 + 1] = row.second[i * 4 + 3];
       }
-      writeVisibilities<2, DDGainMatrix::kFull>(*_outputProvider, antennaNames,
-                                                _selectedBand, row.second);
+      WriteInstrumentalVisibilities<2>(*_outputProvider, antennaNames,
+                                       _selectedBand, row.second);
     } else {
       assert(n_vis_polarizations == 4);
-      writeVisibilities<4, DDGainMatrix::kFull>(*_outputProvider, antennaNames,
-                                                _selectedBand, row.second);
+      WriteInstrumentalVisibilities<4>(*_outputProvider, antennaNames,
+                                       _selectedBand, row.second);
     }
   }
   _bufferset->get_degridder(kGridderIndex)->finished_reading();
@@ -562,13 +582,11 @@ bool IdgMsGridder::prepareForMeasurementSet(
   bands.emplace_back(_selectedBand.begin(), _selectedBand.end());
   const size_t nChannels = _selectedBand.ChannelCount();
 
-  uint64_t memSize =
-      getAvailableMemory(_settings.memFraction, _settings.absMemLimit);
   // Only one-third of the mem is allocated to the buffers, so that memory
   // remains available for the images and other things done by IDG.
-  memSize = memSize / 3;
   // Never use more than 16 GB
-  memSize = std::min<uint64_t>(16ul * 1024ul * 1024ul * 1024ul, memSize);
+  const size_t memSize = std::min<uint64_t>(16ul * 1024ul * 1024ul * 1024ul,
+                                            _resources.Memory() / 3);
   uint64_t memPerTimestep =
       idg::api::BufferSet::get_memory_per_timestep(nStations, nChannels);
 #ifdef HAVE_EVERYBEAM
@@ -622,15 +640,15 @@ std::unique_ptr<class ATermBase> IdgMsGridder::getATermMaker(
   size_t nr_stations = ms->antenna().nrow();
   if (!_settings.atermConfigFilename.empty() || _settings.gridWithBeam) {
     // IDG uses a flipped coordinate system which is moved by half a pixel:
-    everybeam::coords::CoordinateSystem system;
+    CoordinateSystem system;
     system.width = _bufferset->get_subgridsize();
     system.height = system.width;
     system.ra = PhaseCentreRA();
     system.dec = PhaseCentreDec();
     system.dl = -_bufferset->get_subgrid_pixelsize();
     system.dm = -_bufferset->get_subgrid_pixelsize();
-    system.phase_centre_dl = PhaseCentreDL() - 0.5 * system.dl;
-    system.phase_centre_dm = PhaseCentreDM() + 0.5 * system.dm;
+    system.l_shift = LShift() - 0.5 * system.dl;
+    system.m_shift = MShift() + 0.5 * system.dm;
 
     everybeam::ATermSettings aterm_settings;
     aterm_settings.save_aterms_prefix = _settings.prefixName;

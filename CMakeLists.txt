@@ -5,14 +5,18 @@ project(wsclean)
 include(ExternalProject)
 include(CMakeVersionInfo.txt)
 
-#if(NOT CMAKE_BUILD_TYPE)
-#  set(CMAKE_BUILD_TYPE "Release")
-#endif()
+add_compile_options(
+  -O3
+  -Wall
+  -Wnon-virtual-dtor
+  -Wzero-as-null-pointer-constant
+  -Wduplicated-branches
+  -Wundef
+  -Wvla
+  -Wpointer-arith
+  -Wextra
+  -Wno-unused-parameter)
 
-# Using pybind11 requires using -fvisibility=hidden.
-# See https://pybind11.readthedocs.io/en/stable/faq.html
-add_compile_options(-O3 -Wall -Wzero-as-null-pointer-constant
-                    -fvisibility=hidden)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(STATUS "Debug build selected: setting linking flag --no-undefined")
   string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--no-undefined")
@@ -37,6 +41,7 @@ if(PORTABLE)
 else()
   if(DEFINED TARGET_CPU)
     add_compile_options(-march=${TARGET_CPU})
+    set(RADLER_TARGET_CPU "-DTARGET_CPU=${TARGET_CPU}")
   else()
     check_cxx_compiler_flag("-march=native" COMPILER_HAS_MARCH_NATIVE)
     if(COMPILER_HAS_MARCH_NATIVE)
@@ -48,7 +53,7 @@ else()
   endif()
 endif()
 
-set(ExternalSubmoduleDirectories aocommon pybind11 schaapcommon)
+set(ExternalSubmoduleDirectories aocommon pybind11 radler schaapcommon)
 foreach(ExternalSubmodule ${ExternalSubmoduleDirectories})
   if(NOT EXISTS ${CMAKE_SOURCE_DIR}/external/${ExternalSubmodule})
     message(
@@ -131,7 +136,7 @@ find_package(
   Boost
   COMPONENTS date_time filesystem system program_options
   REQUIRED)
-find_library(PTHREAD_LIB pthread REQUIRED)
+find_package(Threads REQUIRED)
 find_library(DL_LIB dl REQUIRED)
 
 # Once we bump minimum CMake version to >= 3.2, we can use `find_package(GSL REQUIRED)`.
@@ -170,12 +175,12 @@ endif(MPI_FOUND)
 
 find_package(EveryBeam NO_MODULE QUIET)
 if(${EVERYBEAM_FOUND})
-  if(${EVERYBEAM_VERSION} VERSION_LESS "0.3.0" OR ${EVERYBEAM_VERSION}
-                                                  VERSION_GREATER_EQUAL "0.4.0")
+  if(${EVERYBEAM_VERSION} VERSION_LESS "0.5.2" OR ${EVERYBEAM_VERSION}
+                                                  VERSION_GREATER_EQUAL "0.6.0")
     message(STATUS "EveryBeam version is incompatible")
     message(
       FATAL_ERROR
-        "WSClean needs EveryBeam version 0.3.x - with x >= 0 - but found version ${EVERYBEAM_VERSION}"
+        "WSClean needs EveryBeam version 0.5.x with x>=2 - but found version ${EVERYBEAM_VERSION}"
     )
   else()
     include_directories(${EVERYBEAM_INCLUDE_DIRS})
@@ -186,15 +191,14 @@ else(${EVERYBEAM_FOUND})
   message(
     STATUS
       "EveryBeam library not found: Functionality for calculating beams for telescopes such as LOFAR will not be available."
-      set
-      (EVERYBEAM_LIB ""))
+  )
+  set(EVERYBEAM_LIB "")
 endif(${EVERYBEAM_FOUND})
 
 find_package(IDGAPI NO_MODULE QUIET)
 
 if(IDGAPI_FOUND)
-  if(${IDGAPI_VERSION} VERSION_LESS "0.8.1" OR ${EVERYBEAM_VERSION}
-                                               VERSION_GREATER_EQUAL "0.9")
+  if(${IDGAPI_VERSION} VERSION_LESS "0.8.1")
     message(STATUS "IDG version is incompatible")
     message(
       FATAL_ERROR
@@ -228,6 +232,40 @@ include(CheckCXXSourceCompiles)
 # GSL is required for WSClean, so always available
 add_definitions(-DHAVE_GSL)
 
+# Radler
+set(RADLER_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/external/radler)
+set(RADLER_LIB
+    ${RADLER_INSTALL_PREFIX}/lib/libradler${CMAKE_SHARED_LIBRARY_SUFFIX})
+ExternalProject_Add(
+  radler-module
+  SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/radler
+  BINARY_DIR ${CMAKE_BINARY_DIR}/external/radler/build
+  BUILD_ALWAYS TRUE
+  BUILD_BYPRODUCTS ${RADLER_LIB}
+  CMAKE_ARGS
+    -DCOMPILE_AS_EXTERNAL_PROJECT=On
+    -DPORTABLE=${PORTABLE}
+    -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}
+    -DCMAKE_INCLUDE_PATH=${CMAKE_INCLUDE_PATH}
+    -DCMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}
+    -DCFITSIO_ROOT_DIR=${CFITSIO_ROOT_DIR}
+    # The casacore root is set to the location where casacore was found.
+    # Note that CASACORE_ROOT_DIR isn't set/updated by the find script, so we
+    # shouldn't set Radler's CASACORE_ROOT_DIR to WSClean's one.
+    -DCASACORE_ROOT_DIR=${CASACORE_INCLUDE_DIR}/..
+    -DHDF5_DIR=${HDF5_DIR}
+    -DAOCOMMON_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/external/aocommon/include/
+    -DSCHAAPCOMMON_SOURCE_DIR=${CMAKE_SOURCE_DIR}/external/schaapcommon/
+    -DPYBIND11_SOURCE_DIR=${CMAKE_SOURCE_DIR}/external/pybind11
+    -DBUILD_TESTING=OFF
+    -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
+    -DCMAKE_INSTALL_PREFIX=${RADLER_INSTALL_PREFIX}
+    -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    ${RADLER_TARGET_CPU})
+
+set(RADLER_INCLUDE_DIR ${RADLER_INSTALL_PREFIX}/include)
+include_directories(${RADLER_INCLUDE_DIR})
+
 # The following section will set the "rpath" correctly, so that
 # LD_LIBRARY_PATH doesn't have to be set.
 
@@ -257,6 +295,17 @@ if(BUILD_PACKAGES)
   add_subdirectory(CPack)
 endif()
 
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+  # GCC 8.x requires linking with stdc++fs for the filesystem library
+  # https://gcc.gnu.org/onlinedocs/gcc-9.1.0/libstdc++/manual/manual/status.html#status.iso.2017
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8.0)
+    message(
+      FATAL_ERROR "The GCC version is too old, upgrade to GCC 8.0 or newer")
+  elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    link_libraries(stdc++fs)
+  endif()
+endif()
+
 add_library(
   wsclean-object OBJECT
   main/commandline.cpp
@@ -264,21 +313,9 @@ add_library(
   main/stopwatch.cpp
   main/wsclean.cpp
   main/settings.cpp
-  deconvolution/casamaskreader.cpp
-  deconvolution/componentlist.cpp
-  deconvolution/deconvolution.cpp
-  deconvolution/deconvolutionalgorithm.cpp
-  deconvolution/deconvolutiontable.cpp
-  deconvolution/genericclean.cpp
-  deconvolution/imageset.cpp
-  deconvolution/moresane.cpp
-  deconvolution/paralleldeconvolution.cpp
-  deconvolution/peakfinder.cpp
-  deconvolution/pythondeconvolution.cpp
-  deconvolution/simpleclean.cpp
-  deconvolution/subminorloop.cpp
   gridding/directmsgridder.cpp
   gridding/msgridderbase.cpp
+  gridding/visibilitymodifier.cpp
   gridding/wsmsgridder.cpp
   gridding/wstackinggridder.cpp
   idg/averagebeam.cpp
@@ -287,14 +324,9 @@ add_library(
   io/facetreader.cpp
   io/parsetreader.cpp
   io/wscfitswriter.cpp
-  iuwt/imageanalysis.cpp
-  iuwt/iuwtdecomposition.cpp
-  iuwt/iuwtdeconvolutionalgorithm.cpp
-  iuwt/iuwtmask.cpp
   math/imageoperations.cpp
   math/renderer.cpp
-  math/polynomialchannelfitter.cpp
-  math/rmsimage.cpp
+  math/tophatconvolution.cpp
   model/model.cpp
   msproviders/averagingmsrowprovider.cpp
   msproviders/mscolumns.cpp
@@ -313,24 +345,27 @@ add_library(
   msproviders/msreaders/partitionedmsreader.cpp
   msproviders/msreaders/timestepbufferreader.cpp
   msproviders/msweightcolumn.cpp
-  multiscale/multiscalealgorithm.cpp
-  multiscale/multiscaletransforms.cpp
-  multiscale/threadeddeconvolutiontools.cpp
   scheduling/griddingtaskmanager.cpp
   scheduling/griddingresult.cpp
   scheduling/griddingtask.cpp
   scheduling/metadatacache.cpp
   scheduling/threadedscheduler.cpp
+  structures/facetutil.cpp
   structures/imageweights.cpp
   structures/imagingtable.cpp
   structures/imagingtableentry.cpp
   structures/msselection.cpp
   structures/observationinfo.cpp
   structures/primarybeam.cpp
+  structures/resources.cpp
   system/pythonfilepath.cpp
   wgridder/wgriddingmsgridder.cpp
   wgridder/wgriddinggridder_simple.cpp
+  external/wgridder/ducc0/math/gridding_kernel.cc
+  external/wgridder/ducc0/math/gl_integrator.cc
   external/wgridder/ducc0/infra/threading.cc
+  external/wgridder/ducc0/infra/mav.cc
+  external/wgridder/ducc0/wgridder/wgridder.cc
   ${IDG_FILES}
   ${MPI_CPP_FILES})
 
@@ -339,16 +374,12 @@ add_library(
 # allowed. Note that visibilities can be NaN hence this can not be turned
 # on for all files.
 set_source_files_properties(
-  deconvolution/subminorloop.cpp
-  deconvolution/genericclean.cpp
-  deconvolution/imageset.cpp
-  deconvolution/simpleclean.cpp
-  multiscale/multiscalealgorithm.cpp
-  multiscale/multiscaletransforms.cpp
-  multiscale/threadeddeconvolutiontools.cpp
-  wsclean/wstackinggridder.cpp
-  wgridder/wgriddinggridder_simple.cpp
+  wsclean/wstackinggridder.cpp wgridder/wgriddinggridder_simple.cpp
   PROPERTIES COMPILE_FLAGS -ffast-math)
+
+# Add radler-module dependency to wsclean-object to ensure all
+# wsclean targets can link against ${RADLER_LIB}
+add_dependencies(wsclean-object radler-module)
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
 
@@ -367,7 +398,7 @@ set(ALL_LIBRARIES
     ${CFITSIO_LIBRARY}
     ${GSL_LIB}
     ${GSL_CBLAS_LIB}
-    ${PTHREAD_LIB}
+    Threads::Threads
     ${IDGAPI_LIBRARIES}
     ${HDF5_LIBRARIES}
     ${MPI_LIBRARIES}
@@ -377,6 +408,9 @@ set(ALL_LIBRARIES
 # Perform the BLAS check from aocommon
 include("${CMAKE_CURRENT_LIST_DIR}/external/aocommon/CMake/CheckBLAS.cmake")
 check_blas(LIBRARIES ${ALL_LIBRARIES})
+# Radler lib cannot be checked on BLAS consistenty as it doesn't exist
+# at cmake time.
+list(APPEND ALL_LIBRARIES ${RADLER_LIB})
 
 add_library(wsclean-lib STATIC ${WSCLEANFILES})
 target_link_libraries(wsclean-lib PRIVATE pybind11::embed ${ALL_LIBRARIES})
@@ -391,7 +425,7 @@ add_executable(wsclean main/main.cpp)
 target_link_libraries(wsclean wsclean-lib)
 
 if(MPI_FOUND)
-  add_executable(wsclean-mp distributed/wsclean-mp.cpp distributed/slave.cpp)
+  add_executable(wsclean-mp distributed/wsclean-mp.cpp distributed/worker.cpp)
   target_link_libraries(wsclean-mp wsclean-lib)
 endif(MPI_FOUND)
 
@@ -399,25 +433,21 @@ add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp)
 target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
                       ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
 
-add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp
-                                            ${WSCLEANFILES})
-target_link_libraries(wsuvbinning ${ALL_LIBRARIES})
+add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp)
+target_link_libraries(wsuvbinning PRIVATE wsclean-lib ${ALL_LIBRARIES})
 
 add_executable(
   wspredictionexample EXCLUDE_FROM_ALL gridding/examples/wspredictionexample.cpp
                                        gridding/wstackinggridder.cpp)
 target_link_libraries(wspredictionexample ${ALL_LIBRARIES})
 
-add_executable(
-  mscaleexample EXCLUDE_FROM_ALL
-  multiscale/mscaleexample.cpp multiscale/multiscalealgorithm.cpp
-  multiscale/multiscaletransforms.cpp deconvolution/simpleclean.cpp)
-target_link_libraries(mscaleexample ${ALL_LIBRARIES})
-
 install(TARGETS wsclean DESTINATION bin)
 install(TARGETS wsclean-lib DESTINATION lib)
 install(TARGETS chgcentre DESTINATION bin)
 install(FILES interface/wscleaninterface.h DESTINATION include)
+# Installing the radler library to ${CMAKE_INSTALL_FULL_LIBDIR}
+# ensures that users do not manually have to set the LD_LIBRARY_PATH
+install(FILES ${RADLER_LIB} DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR})
 
 if(MPI_FOUND)
   install(TARGETS wsclean-mp DESTINATION bin)

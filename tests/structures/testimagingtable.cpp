@@ -1,5 +1,7 @@
 #include "../../structures/imagingtable.h"
 
+#include <radler/work_table.h>
+
 #include <array>
 
 #include <boost/test/unit_test.hpp>
@@ -15,8 +17,7 @@ void TestGroupCounts(const ImagingTable& table, size_t indepentGroupCount,
                      size_t facetGroupCount, size_t facetCount,
                      size_t squaredGroupCount) {
   BOOST_TEST(table.IndependentGroupCount() == indepentGroupCount);
-  BOOST_TEST(table.FacetGroupCount() == facetGroupCount);
-  BOOST_TEST(table.FacetGroups().size() == facetGroupCount);
+  BOOST_TEST(table.FacetGroups(false).size() == facetGroupCount);
   BOOST_TEST(table.FacetCount() == facetCount);
   BOOST_TEST(table.Facets().size() == facetCount);
   BOOST_TEST(table.SquaredGroupCount() == squaredGroupCount);
@@ -62,8 +63,8 @@ BOOST_AUTO_TEST_CASE(add_update_clear) {
   ++iterator;
   BOOST_TEST((iterator == table.end()));
 
-  // No Update called -> only EntryCount is correct.
-  TestGroupCounts(table, 0, 0, 0, 0);
+  // No Update called -> EntryCount and facet groups are correct.
+  TestGroupCounts(table, 0, 1, 0, 0);
 
   table.Update();
   TestGroupCounts(table, 2, 1, 1, 1);
@@ -126,14 +127,13 @@ BOOST_AUTO_TEST_CASE(facet_groups) {
   table.AddEntry(entry0_2.take());
   table.AddEntry(entry1_0.take());
 
-  BOOST_TEST(table.FacetGroupCount() == 0u);
   table.Update();
-  BOOST_TEST_REQUIRE(table.FacetGroupCount() == 2u);
+  BOOST_TEST_REQUIRE(table.FacetGroups(false).size() == 2u);
   TestGroupCounts(table, 1, 2, 1, 1);
 
   // Test GetFacetGroup. The ImagingTable orders the groups by group index.
-  ImagingTable group0 = table.GetFacetGroup(0);
-  ImagingTable group1 = table.GetFacetGroup(1);
+  ImagingTable group0 = ImagingTable(table.FacetGroups(false)[0]);
+  ImagingTable group1 = ImagingTable(table.FacetGroups(false)[1]);
   BOOST_TEST_REQUIRE(group1.EntryCount() == 3u);
   BOOST_TEST_REQUIRE(group0.EntryCount() == 1u);
   BOOST_TEST(&group1[0] == entry0_0.get());
@@ -145,7 +145,7 @@ BOOST_AUTO_TEST_CASE(facet_groups) {
   TestGroupCounts(group1, 1, 1, 1, 1);
 
   // Test FacetGroups. The ImagingTable orders the groups by group index.
-  const ImagingTable::Groups& groups = table.FacetGroups();
+  const ImagingTable::Groups groups = table.FacetGroups(false);
   BOOST_TEST_REQUIRE(groups.size() == 2u);
   BOOST_TEST_REQUIRE(groups[1].size() == 3u);
   BOOST_TEST_REQUIRE(groups[0].size() == 1u);
@@ -249,6 +249,16 @@ BOOST_AUTO_TEST_CASE(squared_groups) {
 
 BOOST_AUTO_TEST_CASE(create_deconvolution_table_single_entry) {
   ImagingTable table;
+  CachedImageSet psf_images;
+  CachedImageSet model_images;
+  CachedImageSet residual_images;
+
+  // Check for exception on empty table
+  BOOST_CHECK_THROW(std::unique_ptr<radler::WorkTable> deconvolution_table =
+                        table.CreateDeconvolutionTable(
+                            1, psf_images, model_images, residual_images),
+                    std::runtime_error);
+
   test::UniquePtr<ImagingTableEntry> entry;
   entry->polarization = aocommon::PolarizationEnum::StokesV;
   entry->bandStartFrequency = 42.0;
@@ -259,24 +269,29 @@ BOOST_AUTO_TEST_CASE(create_deconvolution_table_single_entry) {
   entry->imageCount = 2;
   table.AddEntry(entry.take());
 
-  CachedImageSet psf_images;
-  CachedImageSet model_images;
-  CachedImageSet residual_images;
-  std::unique_ptr<DeconvolutionTable> deconvolution_table =
+  // Check for invalid table
+  // Update was not called after adding entry
+  BOOST_CHECK_THROW(std::unique_ptr<radler::WorkTable> deconvolution_table =
+                        table.CreateDeconvolutionTable(
+                            1, psf_images, model_images, residual_images),
+                    std::runtime_error);
+  table.Update();
+
+  std::unique_ptr<radler::WorkTable> deconvolution_table =
       table.CreateDeconvolutionTable(1, psf_images, model_images,
                                      residual_images);
   BOOST_TEST_REQUIRE(deconvolution_table->OriginalGroups().size() == 1u);
   BOOST_TEST_REQUIRE(deconvolution_table->OriginalGroups()[0].size() == 2u);
 
-  const std::vector<std::vector<int>>& deconvolution_groups =
+  const std::vector<std::vector<size_t>>& deconvolution_groups =
       deconvolution_table->DeconvolutionGroups();
   BOOST_TEST_REQUIRE(deconvolution_groups.size() == 1);
-  BOOST_TEST_REQUIRE(deconvolution_groups.front() == std::vector<int>(1, 0));
+  BOOST_TEST_REQUIRE(deconvolution_groups.front() == std::vector<size_t>(1, 0));
 
   BOOST_TEST_REQUIRE(deconvolution_table->Size() == entry->imageCount);
 
   size_t index = 0;
-  for (const DeconvolutionTableEntry& deconvolution_entry :
+  for (const radler::WorkTableEntry& deconvolution_entry :
        *deconvolution_table) {
     BOOST_TEST(&deconvolution_entry ==
                deconvolution_table->OriginalGroups()[0][index]);
@@ -293,8 +308,9 @@ BOOST_AUTO_TEST_CASE(create_deconvolution_table_single_entry) {
     BOOST_TEST(deconvolution_entry.image_weight == entry->imageWeight);
 
     if (index == 0) {
+      BOOST_TEST_REQUIRE(deconvolution_entry.psf_accessors.size() == 1);
       auto* psf_accessor = dynamic_cast<CachedImageAccessor*>(
-          deconvolution_entry.psf_accessor.get());
+          deconvolution_entry.psf_accessors.front().get());
       BOOST_TEST_REQUIRE(psf_accessor);
       BOOST_TEST(&psf_accessor->GetImageSet() == &psf_images);
       BOOST_TEST(psf_accessor->GetPolarization() == entry->polarization);
@@ -302,7 +318,7 @@ BOOST_AUTO_TEST_CASE(create_deconvolution_table_single_entry) {
                  entry->outputChannelIndex);
       BOOST_TEST(!psf_accessor->GetIsImaginary());
     } else {
-      BOOST_TEST(!deconvolution_entry.psf_accessor);
+      BOOST_TEST(deconvolution_entry.psf_accessors.empty());
     }
 
     auto* model_accessor = dynamic_cast<CachedImageAccessor*>(
@@ -336,9 +352,10 @@ BOOST_AUTO_TEST_CASE(create_deconvolution_table_multiple_groups) {
     entries[i]->imageCount = 1;
     table.AddEntry(entries[i].take());
   }
+  table.Update();
 
   CachedImageSet images;
-  std::unique_ptr<DeconvolutionTable> deconvolution_table =
+  std::unique_ptr<radler::WorkTable> deconvolution_table =
       table.CreateDeconvolutionTable(entries.size(), images, images, images);
 
   BOOST_TEST_REQUIRE(deconvolution_table->Size() == entries.size());
@@ -347,26 +364,26 @@ BOOST_AUTO_TEST_CASE(create_deconvolution_table_multiple_groups) {
   BOOST_TEST_REQUIRE(deconvolution_table->DeconvolutionGroups().size() ==
                      entries.size());
 
-  auto entry_iterator = deconvolution_table->begin();
+  auto entry_iterator = deconvolution_table->Begin();
   for (int index = 0; index < int(entries.size()); ++index, ++entry_iterator) {
-    BOOST_TEST((entry_iterator != deconvolution_table->end()));
+    BOOST_TEST((entry_iterator != deconvolution_table->End()));
 
-    const DeconvolutionTableEntry& deconvolution_entry = *entry_iterator;
+    const radler::WorkTableEntry& deconvolution_entry = *entry_iterator;
     BOOST_TEST(deconvolution_entry.original_channel_index ==
                entries[index]->outputChannelIndex);
     // Only use image_weight for checking if the entry is the correct entry.
     // The single entry test above checks if the other fields are copied.
     BOOST_TEST(deconvolution_entry.image_weight == entries[index]->imageWeight);
 
-    const DeconvolutionTable::Group& group =
+    const radler::WorkTable::Group& group =
         deconvolution_table->OriginalGroups()[index];
     BOOST_TEST_REQUIRE(group.size() == 1);
     BOOST_TEST(group[0] == &deconvolution_entry);
 
     BOOST_TEST(deconvolution_table->DeconvolutionGroups()[index] ==
-               std::vector<int>(1, index));
+               std::vector<size_t>(1, index));
   }
-  BOOST_TEST((entry_iterator == deconvolution_table->end()));
+  BOOST_TEST((entry_iterator == deconvolution_table->End()));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
