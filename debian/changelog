@@ -1,3 +1,11 @@
+wsclean (3.4-1kern1) jammy; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * New upstream version 3.4
+  * Build for jammy
+
+ -- KERN packaging <packaging@kernsuite.info>  Tue, 23 Jan 2024 11:08:53 +0000
+
 wsclean (3.1-1kern5) focal; urgency=medium
 
   [ Athanaseus Javas Ramaila ]
