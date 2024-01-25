@@ -6,7 +6,7 @@ Uploaders: Gijs Molenaar <gijs@pythonic.nl>,
            Ole Streicher <olebole@debian.org>
 Build-Depends: casacore-dev,
                cmake,
-               debhelper (>= 11),
+               debhelper-compat (= 13),
                libboost-dev,
                libboost-filesystem-dev,
                libboost-program-options-dev,
@@ -17,11 +17,10 @@ Build-Depends: casacore-dev,
                libgsl0-dev,
                libhdf5-dev,
                libopenmpi-dev,
-               lofarbeam-dev,
                libopenblas-dev,
                python3-dev,
                atool
-Standards-Version: 4.6.1
+Standards-Version: 4.6.2.0
 Vcs-Git: https://salsa.debian.org/debian-astro-team/wsclean.git
 Vcs-Browser: https://salsa.debian.org/debian-astro-team/wsclean
 Homepage: https://sourceforge.net/projects/wsclean/
