@@ -1,3 +1,10 @@
+wsclean (3.4-2kern1) jammy; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Update install lib
+
+ -- KERN packaging <packaging@kernsuite.info>  Sat, 03 Feb 2024 20:07:20 +0000
+
 wsclean (3.4-1kern1) jammy; urgency=medium
 
   [ Athanaseus Javas Ramaila ]
