@@ -1,3 +1,4 @@
 usr/bin/wsclean
 usr/bin/chgcentre
 usr/bin/wsclean-mp
+usr/lib/*/libradler.so

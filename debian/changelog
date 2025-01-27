@@ -1,3 +1,17 @@
+wsclean (3.4-2kern3) jammy; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Install radler
+
+ -- KERN packaging <packaging@kernsuite.info>  Mon, 27 Jan 2025 13:24:12 +0200
+
+wsclean (3.4-2kern2) jammy; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * Shared library radler
+
+ -- KERN packaging <packaging@kernsuite.info>  Mon, 13 Jan 2025 11:20:23 +0200
+
 wsclean (3.4-2kern1) jammy; urgency=medium
 
   [ Athanaseus Javas Ramaila ]
