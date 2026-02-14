@@ -7,11 +7,20 @@
 #include <casacore/casa/BasicSL/Constants.h>
 
 #include <cassert>
+#include <cmath>
 #include <utility>
 
 #include <aocommon/matrix2x2.h>
 
-#include <boost/algorithm/string.hpp>
+namespace {
+// Same as std::polar, but this function is also defined for
+// NaN input values. Function std::polar has an assert(r >= 0.0), which
+// fails when r is NaN in debug builds.
+template <typename Num>
+constexpr std::complex<Num> StablePolar(Num r, Num theta) noexcept {
+  return std::complex<Num>(r * std::cos(theta), r * std::sin(theta));
+}
+}  // namespace
 
 namespace schaapcommon {
 namespace h5parm {
@@ -19,30 +28,28 @@ JonesParameters::JonesParameters(
     const std::vector<double>& freqs, const std::vector<double>& times,
     const std::vector<std::string>& antenna_names, GainType gain_type,
     InterpolationType interpolation_type, hsize_t direction,
-    std::vector<std::vector<std::vector<double>>>&& parm_values, bool invert,
-    float sigma_mmse)
-    : parm_values_(std::move(parm_values)) {
-  const unsigned int num_parms = GetNParms(gain_type);
+    std::vector<std::vector<std::vector<double>>>&& parm_values, bool invert) {
+  const size_t num_parms = GetNParms(gain_type);
   parms_.resize(num_parms, antenna_names.size(), freqs.size() * times.size());
   for (size_t ant = 0; ant < antenna_names.size(); ++ant) {
-    MakeComplex(ant, freqs, gain_type, invert);
+    MakeComplex(parm_values, ant, freqs, gain_type, invert);
   }
   if (invert) {
-    Invert(parms_, sigma_mmse, gain_type);
+    Invert(parms_, gain_type);
   }
 }
 
 JonesParameters::JonesParameters(
     const std::vector<double>& freqs, const std::vector<double>& times,
     const std::vector<std::string>& antenna_names, GainType gain_type,
-    const std::vector<std::vector<std::complex<double>>>& solution, bool invert,
-    float sigma_mmse) {
+    const std::vector<std::vector<std::complex<double>>>& solution,
+    bool invert) {
   /*
    * Solution is in format [n_ants * n_pols, n_chans]
    * Expected format of the parm_values is [n_chans, n_ants, n_pols]
    * So we reorder the matrices below
    */
-  const unsigned int num_parms = GetNParms(gain_type);
+  const size_t num_parms = GetNParms(gain_type);
   parms_.resize(num_parms, antenna_names.size(), freqs.size() * times.size());
 
   for (uint i = 0; i < solution.size(); i++) {
@@ -55,7 +62,7 @@ JonesParameters::JonesParameters(
   }
 
   if (invert) {
-    Invert(parms_, sigma_mmse, gain_type);
+    Invert(parms_, gain_type);
   }
 }
 
@@ -64,23 +71,25 @@ JonesParameters::JonesParameters(
     const std::vector<std::string>& antenna_names, GainType gain_type,
     InterpolationType interpolation_type, hsize_t direction,
     schaapcommon::h5parm::SolTab* sol_tab,
-    schaapcommon::h5parm::SolTab* sol_tab2, bool invert, float sigma_mmse,
-    unsigned int parm_size, MissingAntennaBehavior missing_antenna_behavior) {
-  const unsigned int num_parms = GetNParms(gain_type);
+    schaapcommon::h5parm::SolTab* sol_tab2, bool invert, size_t parm_size,
+    MissingAntennaBehavior missing_antenna_behavior) {
+  const size_t num_parms = GetNParms(gain_type);
 
   parms_.resize(num_parms, antenna_names.size(), freqs.size() * times.size());
   if (parm_size == 0U) {
     parm_size = GetNParmValues(gain_type);
   }
-  parm_values_.resize(parm_size);
-  for (auto& parm_values : parm_values_) {
+  // Indexed as parm_values[parameter][antenna][time-frequency index]
+  std::vector<std::vector<std::vector<double>>> parm_values(parm_size);
+  for (auto& parm_values : parm_values) {
     parm_values.resize(antenna_names.size());
   }
   for (size_t ant = 0; ant < antenna_names.size(); ++ant) {
     try {
-      FillParmValues(sol_tab, sol_tab2, freqs, times, antenna_names, ant,
-                     gain_type, interpolation_type, direction);
-      MakeComplex(ant, freqs, gain_type, invert);
+      FillParmValues(parm_values, sol_tab, sol_tab2, freqs, times,
+                     antenna_names, ant, gain_type, interpolation_type,
+                     direction);
+      MakeComplex(parm_values, ant, freqs, gain_type, invert);
     } catch (const std::exception& e) {
       if (std::string(e.what()).rfind("SolTab has no element", 0) != 0) {
         throw;
@@ -115,61 +124,64 @@ JonesParameters::JonesParameters(
     }
   }
   if (invert) {
-    Invert(parms_, sigma_mmse, gain_type);
+    Invert(parms_, gain_type);
   }
 }
 
-void JonesParameters::MakeComplex(size_t ant, const std::vector<double>& freqs,
-                                  GainType gain_type, bool invert) {
-  for (unsigned int tf = 0; tf < parms_.shape()[2]; ++tf) {
+void JonesParameters::MakeComplex(
+    const std::vector<std::vector<std::vector<double>>>& parm_values,
+    size_t ant, const std::vector<double>& freqs, GainType gain_type,
+    bool invert) {
+  const size_t tf_size = parms_.shape()[2];
+  for (size_t tf = 0; tf < tf_size; ++tf) {
     const double freq = freqs[tf % freqs.size()];
 
     switch (gain_type) {
       case GainType::kDiagonalComplex:
         parms_(0, ant, tf) =
-            casacore::polar(parm_values_[0][ant][tf], parm_values_[1][ant][tf]);
+            StablePolar(parm_values[0][ant][tf], parm_values[1][ant][tf]);
         parms_(1, ant, tf) =
-            casacore::polar(parm_values_[2][ant][tf], parm_values_[3][ant][tf]);
+            StablePolar(parm_values[2][ant][tf], parm_values[3][ant][tf]);
         break;
       case GainType::kFullJones:
         parms_(0, ant, tf) =
-            casacore::polar(parm_values_[0][ant][tf], parm_values_[1][ant][tf]);
+            StablePolar(parm_values[0][ant][tf], parm_values[1][ant][tf]);
         parms_(1, ant, tf) =
-            casacore::polar(parm_values_[2][ant][tf], parm_values_[3][ant][tf]);
+            StablePolar(parm_values[2][ant][tf], parm_values[3][ant][tf]);
         parms_(2, ant, tf) =
-            casacore::polar(parm_values_[4][ant][tf], parm_values_[5][ant][tf]);
+            StablePolar(parm_values[4][ant][tf], parm_values[5][ant][tf]);
         parms_(3, ant, tf) =
-            casacore::polar(parm_values_[6][ant][tf], parm_values_[7][ant][tf]);
+            StablePolar(parm_values[6][ant][tf], parm_values[7][ant][tf]);
         break;
       case GainType::kScalarComplex:
         parms_(0, ant, tf) =
-            casacore::polar(parm_values_[0][ant][tf], parm_values_[1][ant][tf]);
+            StablePolar(parm_values[0][ant][tf], parm_values[1][ant][tf]);
         parms_(1, ant, tf) = parms_(0, ant, tf);
         break;
       case GainType::kTec:
-        parms_(0, ant, tf) = casacore::polar(
-            1., parm_values_[0][ant][tf] * -8.44797245e9 / freq);
-        if (parm_values_.size() == 1) {  // No TEC:0, only TEC:
-          parms_(1, ant, tf) = casacore::polar(
-              1., parm_values_[0][ant][tf] * -8.44797245e9 / freq);
+        parms_(0, ant, tf) =
+            StablePolar(1., parm_values[0][ant][tf] * -8.44797245e9 / freq);
+        if (parm_values.size() == 1) {  // No TEC:0, only TEC:
+          parms_(1, ant, tf) =
+              StablePolar(1., parm_values[0][ant][tf] * -8.44797245e9 / freq);
         } else {  // TEC:0 and TEC:1
-          parms_(1, ant, tf) = casacore::polar(
-              1., parm_values_[1][ant][tf] * -8.44797245e9 / freq);
+          parms_(1, ant, tf) =
+              StablePolar(1., parm_values[1][ant][tf] * -8.44797245e9 / freq);
         }
         break;
       case GainType::kClock:
-        parms_(0, ant, tf) = casacore::polar(
-            1., parm_values_[0][ant][tf] * freq * casacore::C::_2pi);
-        if (parm_values_.size() == 1) {  // No Clock:0, only Clock:
-          parms_(1, ant, tf) = casacore::polar(
-              1., parm_values_[0][ant][tf] * freq * casacore::C::_2pi);
+        parms_(0, ant, tf) =
+            StablePolar(1., parm_values[0][ant][tf] * freq * 2.0 * M_PI);
+        if (parm_values.size() == 1) {  // No Clock:0, only Clock:
+          parms_(1, ant, tf) =
+              StablePolar(1.0, parm_values[0][ant][tf] * freq * 2.0 * M_PI);
         } else {  // Clock:0 and Clock:1
-          parms_(1, ant, tf) = casacore::polar(
-              1., parm_values_[1][ant][tf] * freq * casacore::C::_2pi);
+          parms_(1, ant, tf) =
+              StablePolar(1.0, parm_values[1][ant][tf] * freq * 2.0 * M_PI);
         }
         break;
       case GainType::kRotationAngle: {
-        double phi = parm_values_[0][ant][tf];
+        double phi = parm_values[0][ant][tf];
         if (invert) {
           phi = -phi;
         }
@@ -183,7 +195,7 @@ void JonesParameters::MakeComplex(size_t ant, const std::vector<double>& freqs,
       case GainType::kRotationMeasure: {
         const double lambda2 =
             (casacore::C::c / freq) * (casacore::C::c / freq);
-        double chi = parm_values_[0][ant][tf] * lambda2;
+        double chi = parm_values[0][ant][tf] * lambda2;
         if (invert) {
           chi = -chi;
         }
@@ -196,43 +208,43 @@ void JonesParameters::MakeComplex(size_t ant, const std::vector<double>& freqs,
       } break;
       case GainType::kDiagonalPhase:
       case GainType::kScalarPhase:
-        parms_(0, ant, tf) = casacore::polar(1., parm_values_[0][ant][tf]);
+        parms_(0, ant, tf) = StablePolar(1., parm_values[0][ant][tf]);
         if (gain_type == GainType::kScalarPhase) {  // Same value for x and y
-          parms_(1, ant, tf) = casacore::polar(1., parm_values_[0][ant][tf]);
+          parms_(1, ant, tf) = StablePolar(1., parm_values[0][ant][tf]);
         } else {  // Different value for x and y
-          parms_(1, ant, tf) = casacore::polar(1., parm_values_[1][ant][tf]);
+          parms_(1, ant, tf) = StablePolar(1., parm_values[1][ant][tf]);
         }
         break;
       case GainType::kDiagonalAmplitude:
       case GainType::kScalarAmplitude:
-        parms_(0, ant, tf) = parm_values_[0][ant][tf];
+        parms_(0, ant, tf) = parm_values[0][ant][tf];
         if (gain_type ==
             GainType::kScalarAmplitude) {  // Same value for x and y
-          parms_(1, ant, tf) = parm_values_[0][ant][tf];
+          parms_(1, ant, tf) = parm_values[0][ant][tf];
         } else {  // Different value for x and y
-          parms_(1, ant, tf) = parm_values_[1][ant][tf];
+          parms_(1, ant, tf) = parm_values[1][ant][tf];
         }
         break;
       case GainType::kDiagonalRealImaginary:
-        parms_(0, ant, tf) = std::complex<float>(parm_values_[0][ant][tf],
-                                                 parm_values_[1][ant][tf]);
-        parms_(1, ant, tf) = std::complex<float>(parm_values_[2][ant][tf],
-                                                 parm_values_[3][ant][tf]);
+        parms_(0, ant, tf) = std::complex<float>(parm_values[0][ant][tf],
+                                                 parm_values[1][ant][tf]);
+        parms_(1, ant, tf) = std::complex<float>(parm_values[2][ant][tf],
+                                                 parm_values[3][ant][tf]);
         break;
       case GainType::kFullJonesRealImaginary:
-        parms_(0, ant, tf) = std::complex<float>(parm_values_[0][ant][tf],
-                                                 parm_values_[1][ant][tf]);
-        parms_(1, ant, tf) = std::complex<float>(parm_values_[2][ant][tf],
-                                                 parm_values_[3][ant][tf]);
-        parms_(2, ant, tf) = std::complex<float>(parm_values_[4][ant][tf],
-                                                 parm_values_[5][ant][tf]);
-        parms_(3, ant, tf) = std::complex<float>(parm_values_[6][ant][tf],
-                                                 parm_values_[7][ant][tf]);
+        parms_(0, ant, tf) = std::complex<float>(parm_values[0][ant][tf],
+                                                 parm_values[1][ant][tf]);
+        parms_(1, ant, tf) = std::complex<float>(parm_values[2][ant][tf],
+                                                 parm_values[3][ant][tf]);
+        parms_(2, ant, tf) = std::complex<float>(parm_values[4][ant][tf],
+                                                 parm_values[5][ant][tf]);
+        parms_(3, ant, tf) = std::complex<float>(parm_values[6][ant][tf],
+                                                 parm_values[7][ant][tf]);
     }
   }
 }
 
-unsigned int JonesParameters::GetNParms(GainType gain_type) {
+size_t JonesParameters::GetNParms(GainType gain_type) {
   switch (gain_type) {
     case GainType::kFullJones:
     case GainType::kRotationAngle:
@@ -244,7 +256,7 @@ unsigned int JonesParameters::GetNParms(GainType gain_type) {
   }
 }
 
-unsigned int JonesParameters::GetNParmValues(GainType gain_type) {
+size_t JonesParameters::GetNParmValues(GainType gain_type) {
   switch (gain_type) {
     case GainType::kFullJones:
     case GainType::kFullJonesRealImaginary:
@@ -270,77 +282,50 @@ unsigned int JonesParameters::GetNParmValues(GainType gain_type) {
 }
 
 void JonesParameters::FillParmValues(
+    std::vector<std::vector<std::vector<double>>>& parm_values,
     schaapcommon::h5parm::SolTab* sol_tab,
-    schaapcommon::h5parm::SolTab* sol_tab2, const std::vector<double>& freqs,
-    const std::vector<double>& times,
-    const std::vector<std::string>& antenna_names, size_t ant,
+    schaapcommon::h5parm::SolTab* sol_tab2,
+    const std::vector<double>& frequencies, const std::vector<double>& times,
+    const std::vector<std::string>& antenna_names, size_t antenna,
     GainType gain_type, InterpolationType interpolation_type,
     hsize_t direction) {
-  auto get_flagged_values = [times, freqs, direction, interpolation_type](
-                                SolTab* sol_tab,
-                                const std::string& antenna_name,
-                                unsigned int pol) -> std::vector<double> {
-    std::vector<double> parmvalues = sol_tab->GetValuesOrWeights(
-        "val", antenna_name, times, freqs, pol, direction,
-        interpolation_type == InterpolationType::NEAREST);
-    std::vector<double> weights = sol_tab->GetValuesOrWeights(
-        "weight", antenna_name, times, freqs, pol, direction,
-        interpolation_type == InterpolationType::NEAREST);
-    ApplyFlags(parmvalues, weights);
-    return parmvalues;
-  };
+  const bool nearest = interpolation_type == InterpolationType::NEAREST;
 
-  const std::string& ant_name = antenna_names[ant];
   if (gain_type == GainType::kFullJones ||
       gain_type == GainType::kDiagonalComplex ||
       gain_type == GainType::kScalarComplex) {
-    for (size_t pol = 0; pol < parm_values_.size() / 2; ++pol) {
+    for (size_t pol = 0; pol < parm_values.size() / 2; ++pol) {
       // Place amplitude in even and phase in odd elements
-      parm_values_[pol * 2][ant] = get_flagged_values(sol_tab, ant_name, pol);
+      parm_values[pol * 2][antenna] = sol_tab->GetValues(
+          antenna_names[antenna], times, frequencies, pol, direction, nearest);
       if (sol_tab2 == nullptr) {
         throw std::runtime_error(
             "soltab2 cannot be a nullpointer for correct_type=FULLJONES and "
             "correct_type=GAIN");
       }
-      parm_values_[pol * 2 + 1][ant] =
-          get_flagged_values(sol_tab2, ant_name, pol);
+      parm_values[pol * 2 + 1][antenna] = sol_tab2->GetValues(
+          antenna_names[antenna], times, frequencies, pol, direction, nearest);
     }
   } else {
-    for (size_t pol = 0; pol < parm_values_.size(); ++pol) {
-      parm_values_[pol][ant] = get_flagged_values(sol_tab, ant_name, pol);
+    for (size_t pol = 0; pol < parm_values.size(); ++pol) {
+      parm_values[pol][antenna] = sol_tab->GetValues(
+          antenna_names[antenna], times, frequencies, pol, direction, nearest);
     }
-  }
-}
-
-void JonesParameters::ApplyFlags(std::vector<double>& values,
-                                 const std::vector<double>& weights) {
-  assert(values.size() == weights.size());
-  auto weight_it = weights.cbegin();
-
-  for (double& value : values) {
-    if (*weight_it == 0.) {
-      value = std::numeric_limits<double>::quiet_NaN();
-    }
-    ++weight_it;
   }
 }
 
 void JonesParameters::Invert(casacore::Cube<casacore::Complex>& parms,
-                             float sigma_mmse, GainType gain_type) {
-  for (unsigned int tf = 0; tf < parms.shape()[2]; ++tf) {
-    for (unsigned int ant = 0; ant < parms.shape()[1]; ++ant) {
+                             GainType gain_type) {
+  const size_t tf_size = parms.shape()[2];
+  const size_t ant_size = parms.shape()[1];
+  for (size_t tf = 0; tf < tf_size; ++tf) {
+    for (size_t ant = 0; ant < ant_size; ++ant) {
       if (parms.shape()[0] == 2) {
-        parms(0, ant, tf) = 1.f / parms(0, ant, tf);
-        parms(1, ant, tf) = 1.f / parms(1, ant, tf);
+        parms(0, ant, tf) = 1.0f / parms(0, ant, tf);
+        parms(1, ant, tf) = 1.0f / parms(1, ant, tf);
       } else if (gain_type == GainType::kFullJones ||
                  gain_type == GainType::kFullJonesRealImaginary) {
         aocommon::MC2x2F v(&parms(0, ant, tf));
-
-        // Add the variance of the nuisance term to the elements on the
-        // diagonal.
-        const float variance = sigma_mmse * sigma_mmse;
-        v[0] += variance;
-        v[3] += variance;
         v.Invert();
         v.AssignTo(&parms(0, ant, tf));
       } else if (gain_type == GainType::kRotationMeasure ||

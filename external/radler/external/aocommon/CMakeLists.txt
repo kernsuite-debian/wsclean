@@ -6,8 +6,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -Wall -Werror=zero-as-null-pointer-constant -ggdb")
+add_compile_options(
+  -Wall
+  -Wnon-virtual-dtor
+  -Wzero-as-null-pointer-constant
+  -Wduplicated-branches
+  -Wundef
+  -Wvla
+  -Wpointer-arith
+  -Wextra
+  -Wno-unused-parameter
+  -ggdb)
+
+# Use may optionally set `TARGET_CPU` if `PORTABLE=OFF`
+option(PORTABLE "Build portable binaries (with slightly decreased performance)"
+       OFF)
+include(CMake/SetTargetCPU.cmake)
 
 # add target to generate API documentation with Doxygen
 find_package(Threads REQUIRED)
@@ -48,6 +62,8 @@ add_executable(
   tests/tangle.cpp
   tests/tbanddata.cpp
   tests/tbarrier.cpp
+  tests/tcounting_semaphore.cpp
+  tests/tdynamicfor.cpp
   tests/tfits.cpp
   tests/tfluxdensity.cpp
   tests/thmatrix4x4.cpp
@@ -58,19 +74,25 @@ add_executable(
   tests/tmatrix2x2diag.cpp
   tests/tmatrix4x4.cpp
   tests/tmultibanddata.cpp
-  tests/tparallelfor.cpp
+  tests/toptionalnumber.cpp
   tests/tpolarization.cpp
   tests/tpyuniqueptr.cpp
   tests/tqueue.cpp
   tests/tradeccoord.cpp
+  tests/trecursivefor.cpp
   tests/tstaticfor.cpp
   tests/tserialstream.cpp
   tests/tspan.cpp
+  tests/ttaskqueue.cpp
   tests/tthreadpool.cpp
   tests/tthrowruntimeerror.cpp
   tests/ttransform_if.cpp
   tests/tutensor.cpp
-  tests/tuvector.cpp)
+  tests/tuvector.cpp
+  tests/avx/tDiagonalMatrixComplexDouble2x2.cpp
+  tests/avx/tDiagonalMatrixComplexFloat2x2.cpp
+  tests/avx/tMatrixComplexDouble2x2.cpp
+  tests/avx/tMatrixComplexFloat2x2.cpp)
 target_link_libraries(
   runtests
   ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}
@@ -88,9 +110,10 @@ add_custom_command(
 
 add_custom_target(
   coverage
-  COMMAND gcovr -r .. -e '.*/tests/.*' -e '.*/CompilerIdCXX/.*'
-  COMMAND gcovr -r .. -e '.*/tests/.*' -e '.*/CompilerIdCXX/.*' --xml >
-          coverage.xml
+  COMMAND gcovr --gcov-ignore-parse-errors -r .. -e '.*/tests/.*' -e
+          '.*/CompilerIdCXX/.*' -e '_deps/.*'
+  COMMAND gcovr --gcov-ignore-parse-errors -r .. -e '.*/tests/.*' -e
+          '.*/CompilerIdCXX/.*' -e '_deps/.*' --xml > coverage.xml
   DEPENDS execute_runtests)
 
 # CMAKE_CXX_FLAGS does not contain all flags.

@@ -13,6 +13,8 @@
 
 #include "../structures/msselection.h"
 
+namespace wsclean {
+
 void ObservationInfo::Serialize(aocommon::SerialOStream& stream) const {
   stream.Double(phaseCentreRA)
       .Double(phaseCentreDec)
@@ -40,7 +42,9 @@ ObservationInfo ReadObservationInfo(casacore::MeasurementSet& ms,
       aTable, aTable.columnName(casacore::MSAntennaEnums::POSITION));
   casacore::MPosition ant1Pos = antPosColumn(0);
 
-  size_t fieldRow = (fieldId == MSSelection::ALL_FIELDS) ? 0 : fieldId;
+  size_t fieldRow =
+      (fieldId == schaapcommon::reordering::MSSelection::kAllFields) ? 0
+                                                                     : fieldId;
   casacore::MEpoch::ScalarColumn timeColumn(
       ms, ms.columnName(casacore::MSMainEnums::TIME));
   casacore::MSField fTable(ms.field());
@@ -85,3 +89,5 @@ ObservationInfo ReadObservationInfo(casacore::MeasurementSet& ms,
 
   return obsInfo;
 }
+
+}  // namespace wsclean

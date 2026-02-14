@@ -1,6 +1,6 @@
 #include "settings.h"
 
-#include "../io/facetreader.h"
+#include <sstream>
 
 #include <aocommon/logger.h>
 
@@ -9,9 +9,11 @@
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 #include <casacore/tables/Tables/TableRecord.h>
 
-#include <sstream>
+#include "../io/facetreader.h"
 
 using aocommon::Logger;
+
+namespace wsclean {
 
 namespace {
 /**
@@ -71,15 +73,18 @@ void Settings::Validate() const {
     throw std::runtime_error(s.str());
   }
 
-  if (diagonalSolutions) {
-    if (facetSolutionFiles.empty()) {
+  if (visibilityReadMode != VisibilityReadMode::kFull) {
+    if (!UseFacetCorrections()) {
       throw std::runtime_error(
-          "-diagonal-solutions must be combined with -apply-facet-solutions");
+          "-scalar-visibilities and -diagonal-visibilities must be combined "
+          "with -apply-facet-solutions or -apply-facet-beam");
     }
-    if (polarizations.size() != 1 ||
-        *polarizations.begin() != aocommon::PolarizationEnum::StokesI) {
+    if (visibilityReadMode == VisibilityReadMode::kDiagonal &&
+        (polarizations.size() != 1 ||
+         *polarizations.begin() != aocommon::PolarizationEnum::StokesI)) {
       throw std::runtime_error(
-          "-diagonal-solutions can only be used when making Stokes I images");
+          "-diagonal-visibilities can only be used when making Stokes I "
+          "images");
     }
   }
 
@@ -134,10 +139,15 @@ void Settings::Validate() const {
             schaapcommon::h5parm::H5Parm(facetSolutionFile);
         const size_t nsources = h5parm.GetNumSources();
         if (nsources != nfacets) {
-          throw std::runtime_error(
-              "Number of source directions in one of the h5 facet solution "
-              "files does not match the number of facets in the facet "
-              "definition file.");
+          const std::string message =
+              "The number of source directions (" + std::to_string(nsources) +
+              ") in h5 facet solution file " + facetSolutionFile +
+              " does not match the number of facets (" +
+              std::to_string(nfacets) + ") in the facet region file.";
+          if (solutionDirectionsCheck)
+            throw std::runtime_error(message);
+          else
+            Logger::Warn << message << '\n';
         }
       }
     }
@@ -208,12 +218,31 @@ void Settings::Validate() const {
     }
   }
 
-  if (useMPI && parallelGridding > 1) {
-    throw std::runtime_error(
-        "MPI can not be combined with the parallel gridding option. When using "
-        "MPI, it is MPI that decides how many tasks to run on each node. "
-        "Multiple gridders can run on a single node by telling MPI (e.g. using "
-        "a hostfile) to run multiple tasks on that node.");
+  if (UseMpi()) {
+    if (!masterDoesWork && nMpiNodes <= 1) {
+      throw std::runtime_error(
+          "Master was told not to work, but no other workers available.");
+    }
+    if (channelToNode.size() != channelsOut) {
+      throw std::runtime_error(
+          "Channel-to-node map should have exactly channels-out entries.");
+    }
+    for (size_t node : channelToNode) {
+      if (!masterDoesWork && node == 0) {
+        throw std::runtime_error(
+            "Master was told not to work, but the channel-to-node map assigned "
+            "a channel to node 0.");
+      }
+      if (node >= nMpiNodes) {
+        throw std::runtime_error("Invalid node number in channel-to-node map.");
+      }
+    }
+    const std::size_t kMessageLimit{std::numeric_limits<std::int32_t>::max()};
+    if (maxMpiMessageSize > kMessageLimit) {
+      throw std::runtime_error("MPI message size larger than " +
+                               std::to_string(kMessageLimit) +
+                               " is not supported.");
+    }
   }
 
   if (gridWithBeam && gridderType != GridderType::IDG)
@@ -281,16 +310,23 @@ void Settings::Validate() const {
         "primary beam correction: add -apply-primary-beam to your commandline "
         "or use IDG to apply the beam.");
 
-  if (saveSourceList &&
-      (polarizations.size() != 1 ||
-       (*polarizations.begin() != aocommon::Polarization::StokesI &&
-        *polarizations.begin() != aocommon::Polarization::XX &&
-        *polarizations.begin() != aocommon::Polarization::YY &&
-        *polarizations.begin() != aocommon::Polarization::LL &&
-        *polarizations.begin() != aocommon::Polarization::RR)))
-    throw std::runtime_error(
-        "Saving a source list currently only works for Stokes I or pseudo "
-        "Stokes I (XX, YY, LL or RR) imaging.");
+  if (saveSourceList) {
+    if (polarizations.size() != 1 ||
+        (*polarizations.begin() != aocommon::Polarization::StokesI &&
+         *polarizations.begin() != aocommon::Polarization::XX &&
+         *polarizations.begin() != aocommon::Polarization::YY &&
+         *polarizations.begin() != aocommon::Polarization::LL &&
+         *polarizations.begin() != aocommon::Polarization::RR)) {
+      throw std::runtime_error(
+          "Saving a source list currently only works for Stokes I or pseudo "
+          "Stokes I (XX, YY, LL or RR) imaging.");
+    } else if (!IsSpectralFittingEnabled() && channelsOut > 1 &&
+               joinedFrequencyDeconvolution) {
+      throw std::runtime_error(
+          "Saving a source list with multiple channels requires specifying a "
+          "fitting method");
+    }
+  }
 
   if (saveSourceList && deconvolutionIterationCount == 0)
     throw std::runtime_error("A source list cannot be saved without cleaning.");
@@ -304,12 +340,18 @@ void Settings::Validate() const {
         "implies you have to specify -fit-spectral-log-pol <N>, with N the"
         "number of terms.");
 
-  if (parallelGridding != 1 &&
-      (applyFacetBeam || !facetSolutionFiles.empty()) &&
+  if (parallelGridding != 1 && UseFacetCorrections() &&
       !schaapcommon::h5parm::H5Parm::IsThreadSafe()) {
     throw std::runtime_error(
         "Parallel gridding in combination with a facet beam or facet solutions,"
         " requires an HDF5 library that supports multi-threading.");
+  }
+
+  if (UseFacetCorrections() && polarizations.size() > 1 &&
+      !joinedPolarizationDeconvolution) {
+    throw std::runtime_error(
+        "Applying beam or solutions per facet for multiple polarizations "
+        "required joining or linking the polarizations.");
   }
 
   if (reuseDirty && (gridWithBeam || !atermConfigFilename.empty())) {
@@ -323,8 +365,8 @@ void Settings::Validate() const {
 }
 
 void Settings::checkPolarizations() const {
-  bool hasXY = polarizations.count(aocommon::Polarization::XY) != 0;
-  bool hasYX = polarizations.count(aocommon::Polarization::YX) != 0;
+  const bool hasXY = polarizations.count(aocommon::Polarization::XY) != 0;
+  const bool hasYX = polarizations.count(aocommon::Polarization::YX) != 0;
   if (joinedPolarizationDeconvolution) {
     if (polarizations.size() == 1)
       throw std::runtime_error(
@@ -369,6 +411,26 @@ void Settings::checkPolarizations() const {
           "The auto-masking threshold was smaller or equal to the "
           "auto-threshold. This does not make sense. Did you accidentally "
           "reverse the auto-mask and auto-threshold values?");
+  }
+  if (hasXY && hasYX && gridderType != GridderType::WStacking) {
+    throw std::runtime_error(
+        "Combined XY/YX imaging is not possible with gridders other than the "
+        "w-stacking gridder. Either add '-gridder wstacking' to the command "
+        "line, or image a different set of polarizations (e.g. iquv).");
+  }
+  if (UseFacetCorrections()) {
+    const bool is_i =
+        (polarizations == std::set{aocommon::PolarizationEnum::StokesI});
+    const bool is_xx_yy =
+        (polarizations == std::set{aocommon::PolarizationEnum::XX,
+                                   aocommon::PolarizationEnum::YY});
+    const bool is_iquv =
+        aocommon::Polarization::HasFullStokesPolarization(polarizations);
+    if (!(is_i || is_xx_yy || is_iquv)) {
+      throw std::runtime_error(
+          "Facet imaging with facet corrections is only possible for Stokes I, "
+          "XX+YY or Stokes IQUV imaging");
+    }
   }
 }
 
@@ -462,6 +524,7 @@ radler::Settings Settings::GetRadlerSettings() const {
   radler_settings.minor_loop_gain = deconvolutionGain;
   radler_settings.major_loop_gain = deconvolutionMGain;
   radler_settings.local_rms.method = localRMSMethod;
+  radler_settings.local_rms.strength = localRMSStrength;
   radler_settings.local_rms.window = localRMSWindow;
   radler_settings.local_rms.image = localRMSImage;
   radler_settings.save_source_list = saveSourceList;
@@ -488,6 +551,7 @@ radler::Settings Settings::GetRadlerSettings() const {
   radler_settings.algorithm_type = algorithmType;
 
   switch (algorithmType) {
+    case radler::AlgorithmType::kAdaptiveScalePixel:
     case radler::AlgorithmType::kMultiscale:
       radler_settings.multiscale.fast_sub_minor_loop =
           multiscaleFastSubMinorLoop;
@@ -521,12 +585,54 @@ radler::Settings Settings::GetRadlerSettings() const {
   return radler_settings;
 }
 
+aocommon::PolarizationEnum Settings::GetProviderPolarization(
+    aocommon::PolarizationEnum entry_polarization) const {
+  const bool xx_and_yy =
+      polarizations ==
+      std::set{aocommon::PolarizationEnum::XX, aocommon::PolarizationEnum::YY};
+  const bool stokes_i =
+      polarizations.size() == 1 &&
+      (*polarizations.begin()) == aocommon::Polarization::StokesI;
+  if (gridderType == GridderType::IDG) {
+    if (stokes_i) {
+      if ((ddPsfGridWidth > 1 || ddPsfGridHeight > 1) && gridWithBeam) {
+        return aocommon::Polarization::StokesI;
+      } else {
+        return aocommon::Polarization::DiagonalInstrumental;
+      }
+    } else {
+      return aocommon::Polarization::Instrumental;
+    }
+  } else if (visibilityReadMode == VisibilityReadMode::kDiagonal) {
+    return aocommon::Polarization::DiagonalInstrumental;
+  } else if (visibilityReadMode == VisibilityReadMode::kScalar) {
+    return entry_polarization;
+  } else if ((xx_and_yy || stokes_i) && UseFacetCorrections()) {
+    return aocommon::Polarization::Instrumental;
+  } else {
+    bool requires_instrumental = false;
+    for (aocommon::PolarizationEnum p : polarizations) {
+      if (aocommon::Polarization::IsStokes(p) &&
+          p != aocommon::PolarizationEnum::StokesI) {
+        requires_instrumental = UseFacetCorrections();
+        break;
+      }
+    }
+    if (requires_instrumental) {
+      return aocommon::Polarization::Instrumental;
+    } else {
+      return entry_polarization;
+    }
+  }
+}
+
 bool Settings::determineReorder() const {
-  return ((channelsOut != 1) || (polarizations.size() >= 4) ||
-          (deconvolutionMGain != 1.0) ||
-          (baselineDependentAveragingInWavelengths != 0.0) || simulateNoise ||
-          forceReorder) &&
-         !forceNoReorder;
+  const bool prefer_reordering =
+      (channelsOut != 1) || (polarizations.size() >= 4) ||
+      (deconvolutionMGain != 1.0) ||
+      (baselineDependentAveragingInWavelengths != 0.0) || simulateNoise ||
+      !facetRegionFilename.empty();
+  return (prefer_reordering || forceReorder) && !forceNoReorder;
 }
 
 std::string Settings::determineDataColumn(bool verbose) const {
@@ -556,3 +662,5 @@ std::string Settings::determineDataColumn(bool verbose) const {
 void Settings::logImportantSettings() const {
   Logger::Debug << "Number of threads selected: " << threadCount << '\n';
 }
+
+}  // namespace wsclean

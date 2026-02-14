@@ -52,7 +52,7 @@ BOOST_AUTO_TEST_CASE(take) {
 
   i = pypointer.take();
   BOOST_TEST(i.get() == i_raw);
-  BOOST_CHECK_THROW(pypointer.take(), std::runtime_error);
+  BOOST_CHECK_THROW((void)pypointer.take(), std::runtime_error);
   BOOST_CHECK_THROW((void)*pypointer, std::runtime_error);
   BOOST_CHECK_THROW((void)pypointer.operator->(), std::runtime_error);
 }

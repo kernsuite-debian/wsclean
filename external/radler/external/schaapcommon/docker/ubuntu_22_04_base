@@ -3,9 +3,10 @@
 
 # base
 FROM ubuntu:22.04
-RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get upgrade -y && \
+RUN export DEBIAN_FRONTEND=noninteractive \
+    && apt-get update && apt-get upgrade -y \
 # install astronomy packages
-    apt-get -y install libcfitsio-dev wcslib-dev libfftw3-dev libgsl-dev \
+    && apt-get -y install libcfitsio-dev wcslib-dev libfftw3-dev libgsl-dev \
 # install misc packages
     wget git make cmake g++ doxygen \
 # install dependencies
@@ -16,6 +17,4 @@ RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get upgrade -
 # Same for clang-tidy-12.
     && ln -sf clang-format-12 /usr/bin/clang-format \
     && ln -sf clang-tidy-12 /usr/bin/clang-tidy \
-# 20220624: The latest GCOVR (5.1) is broken, so use 5.0.
-# jinja2<3.1 is required for the html details of GCOVR 5.0
-    && python3 -m pip install gcovr==5.0 'jinja2<3.1' black cmake-format
+    && python3 -m pip install gcovr black cmake-format isort

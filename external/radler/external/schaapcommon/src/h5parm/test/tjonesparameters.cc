@@ -7,13 +7,14 @@
 #include "h5parm.h"
 
 using schaapcommon::h5parm::AxisInfo;
+using schaapcommon::h5parm::GainType;
 using schaapcommon::h5parm::H5Parm;
 using schaapcommon::h5parm::JonesParameters;
 using schaapcommon::h5parm::SolTab;
 
 const std::vector<double> kFreqs{130e6, 131e6};
 const std::vector<double> kTimes{0., 1.};
-const unsigned int kNAnts = 4;
+const size_t kNAnts = 4;
 const JonesParameters::InterpolationType kInterpolationType =
     JonesParameters::InterpolationType::LINEAR;
 const hsize_t kDirection = 42;
@@ -21,12 +22,11 @@ const hsize_t kDirection = 42;
 class SolTabMock : public SolTab {
  public:
   SolTabMock() : called(0) {}
-  std::vector<double> GetValuesOrWeights(const std::string& val_or_weight,
-                                         const std::string& ant_name,
-                                         const std::vector<double>& times,
-                                         const std::vector<double>& freqs,
-                                         unsigned int pol, unsigned int dir,
-                                         bool nearest) const override {
+  std::vector<double> GetValues(const std::string& ant_name,
+                                const std::vector<double>& times,
+                                const std::vector<double>& frequencies,
+                                size_t polarization, size_t direction,
+                                bool nearest) const override {
     ++called;
     auto res = std::vector<double>(kNAnts, 200.);
 
@@ -38,23 +38,18 @@ class SolTabMock : public SolTab {
                                " in antenna"));
     }
 
-    if (val_or_weight == "val") {
-      res.back() = 100.;
-    } else {
-      res.back() = 0.;
-    }
+    res.back() = 100.0;
     return res;
   }
 
   mutable int called;
 };
 
-JonesParameters PrepareJonesParameters(JonesParameters::CorrectType ct,
-                                       bool invert = false,
+JonesParameters PrepareJonesParameters(GainType ct, bool invert = false,
                                        float sigma_mmse = 0.,
-                                       unsigned int parm_size = 0) {
+                                       size_t parm_size = 0) {
   std::vector<std::string> antNames;
-  for (unsigned int i = 0; i < kNAnts; ++i) {
+  for (size_t i = 0; i < kNAnts; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -72,8 +67,7 @@ JonesParameters PrepareJonesParameters(JonesParameters::CorrectType ct,
 BOOST_AUTO_TEST_SUITE(jonesparameters)
 
 BOOST_AUTO_TEST_CASE(make_complex_gain) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::GAIN);
+  JonesParameters jones = PrepareJonesParameters(GainType::kDiagonalComplex);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -85,8 +79,7 @@ BOOST_AUTO_TEST_CASE(make_complex_gain) {
 }
 
 BOOST_AUTO_TEST_CASE(make_scalar_gain) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::SCALARGAIN);
+  JonesParameters jones = PrepareJonesParameters(GainType::kScalarComplex);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -99,7 +92,7 @@ BOOST_AUTO_TEST_CASE(make_scalar_gain) {
 
 BOOST_AUTO_TEST_CASE(make_complex_fulljones) {
   JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::FULLJONES, true, 1.);
+      PrepareJonesParameters(GainType::kFullJones, true, 1.);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 4);
@@ -108,8 +101,7 @@ BOOST_AUTO_TEST_CASE(make_complex_fulljones) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_tec) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::TEC, false, 0., 1U);
+  JonesParameters jones = PrepareJonesParameters(GainType::kTec, false, 0., 1U);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -118,8 +110,7 @@ BOOST_AUTO_TEST_CASE(make_complex_tec) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_tec2) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::TEC, true, 0., 2U);
+  JonesParameters jones = PrepareJonesParameters(GainType::kTec, true, 0., 2U);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_CLOSE(parms(0, 0, 0).real(), -0.993747, 1e-3);
@@ -127,8 +118,7 @@ BOOST_AUTO_TEST_CASE(make_complex_tec2) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_r_angle) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::ROTATIONANGLE);
+  JonesParameters jones = PrepareJonesParameters(GainType::kRotationAngle);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 4);
@@ -138,7 +128,7 @@ BOOST_AUTO_TEST_CASE(make_complex_r_angle) {
 
 BOOST_AUTO_TEST_CASE(make_complex_r_angle_inverted) {
   JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::ROTATIONANGLE, true);
+      PrepareJonesParameters(GainType::kRotationAngle, true);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_CLOSE(parms(0, 0, 0).real(), 0.487187, 1e-3);
@@ -146,8 +136,7 @@ BOOST_AUTO_TEST_CASE(make_complex_r_angle_inverted) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_r_measure) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::ROTATIONMEASURE);
+  JonesParameters jones = PrepareJonesParameters(GainType::kRotationMeasure);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 4);
@@ -156,17 +145,16 @@ BOOST_AUTO_TEST_CASE(make_complex_r_measure) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_r_measure_inverted) {
-  JonesParameters jones = PrepareJonesParameters(
-      JonesParameters::CorrectType::ROTATIONMEASURE, true, 0.5, 4);
+  JonesParameters jones =
+      PrepareJonesParameters(GainType::kRotationMeasure, true, 0.5, 4);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_CLOSE(parms(0, 0, 0).real(), -0.185403, 1e-3);
   BOOST_CHECK_CLOSE(parms(0, 0, 0).imag(), 0.0, 1e-3);
 }
 
-BOOST_AUTO_TEST_CASE(make_complex_phase) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::PHASE);
+BOOST_AUTO_TEST_CASE(make_diagonal_phase) {
+  JonesParameters jones = PrepareJonesParameters(GainType::kDiagonalPhase);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -174,9 +162,8 @@ BOOST_AUTO_TEST_CASE(make_complex_phase) {
   BOOST_CHECK_CLOSE(parms(0, 0, 0).imag(), -0.87329, 1e-3);
 }
 
-BOOST_AUTO_TEST_CASE(make_complex_scalar_phase) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::SCALARPHASE);
+BOOST_AUTO_TEST_CASE(make_scalar_phase) {
+  JonesParameters jones = PrepareJonesParameters(GainType::kScalarPhase);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -185,8 +172,7 @@ BOOST_AUTO_TEST_CASE(make_complex_scalar_phase) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_amplitude) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::AMPLITUDE);
+  JonesParameters jones = PrepareJonesParameters(GainType::kDiagonalAmplitude);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -194,9 +180,8 @@ BOOST_AUTO_TEST_CASE(make_complex_amplitude) {
   BOOST_CHECK_CLOSE(parms(0, 0, 0).imag(), 0., 1e-3);
 }
 
-BOOST_AUTO_TEST_CASE(make_complex_scalar_amplitude) {
-  JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::SCALARAMPLITUDE);
+BOOST_AUTO_TEST_CASE(make_scalar_amplitude) {
+  JonesParameters jones = PrepareJonesParameters(GainType::kScalarAmplitude);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -205,8 +190,8 @@ BOOST_AUTO_TEST_CASE(make_complex_scalar_amplitude) {
 }
 
 BOOST_AUTO_TEST_CASE(make_complex_clock) {
-  JonesParameters jones = PrepareJonesParameters(
-      JonesParameters::CorrectType::CLOCK, false, 0., 1U);
+  JonesParameters jones =
+      PrepareJonesParameters(GainType::kClock, false, 0., 1U);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -216,7 +201,7 @@ BOOST_AUTO_TEST_CASE(make_complex_clock) {
 
 BOOST_AUTO_TEST_CASE(make_complex_clock2) {
   JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::CLOCK, true, 50, 2U);
+      PrepareJonesParameters(GainType::kClock, true, 50, 2U);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_CLOSE(parms(0, 0, 0).real(), 1., 1e-3);
@@ -225,7 +210,7 @@ BOOST_AUTO_TEST_CASE(make_complex_clock2) {
 
 BOOST_AUTO_TEST_CASE(make_complex_gain_re_im) {
   JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::GAIN_RE_IM);
+      PrepareJonesParameters(GainType::kDiagonalRealImaginary);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 2);
@@ -235,7 +220,7 @@ BOOST_AUTO_TEST_CASE(make_complex_gain_re_im) {
 
 BOOST_AUTO_TEST_CASE(make_complex_fulljones_re_im) {
   JonesParameters jones =
-      PrepareJonesParameters(JonesParameters::CorrectType::FULLJONES_RE_IM);
+      PrepareJonesParameters(GainType::kFullJonesRealImaginary);
   const auto parms = jones.GetParms();
 
   BOOST_CHECK_EQUAL(parms.shape()[0], 4);
@@ -245,7 +230,7 @@ BOOST_AUTO_TEST_CASE(make_complex_fulljones_re_im) {
 
 BOOST_AUTO_TEST_CASE(fulljones_with_nullptr) {
   std::vector<std::string> antNames;
-  for (unsigned int i = 0; i < kNAnts; ++i) {
+  for (size_t i = 0; i < kNAnts; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -254,15 +239,14 @@ BOOST_AUTO_TEST_CASE(fulljones_with_nullptr) {
   SolTabMock mock = SolTabMock();
 
   BOOST_CHECK_THROW(
-      JonesParameters jones(kFreqs, kTimes, antNames,
-                            JonesParameters::CorrectType::FULLJONES,
+      JonesParameters jones(kFreqs, kTimes, antNames, GainType::kFullJones,
                             kInterpolationType, kDirection, &mock, nullptr),
       std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(missing_antenna_error) {
   std::vector<std::string> antNames;
-  for (unsigned int i = 0; i < kNAnts + 1; ++i) {
+  for (size_t i = 0; i < kNAnts + 1; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -270,16 +254,15 @@ BOOST_AUTO_TEST_CASE(missing_antenna_error) {
 
   SolTabMock mock = SolTabMock();
 
-  BOOST_CHECK_THROW(
-      JonesParameters jones(kFreqs, kTimes, antNames,
-                            JonesParameters::CorrectType::AMPLITUDE,
-                            kInterpolationType, kDirection, &mock, nullptr),
-      std::runtime_error);
+  BOOST_CHECK_THROW(JonesParameters jones(
+                        kFreqs, kTimes, antNames, GainType::kDiagonalAmplitude,
+                        kInterpolationType, kDirection, &mock, nullptr),
+                    std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(missing_antenna_flag) {
   std::vector<std::string> antNames;
-  for (unsigned int i = 0; i < kNAnts + 1; ++i) {
+  for (size_t i = 0; i < kNAnts + 1; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -287,8 +270,7 @@ BOOST_AUTO_TEST_CASE(missing_antenna_flag) {
 
   SolTabMock mock = SolTabMock();
 
-  JonesParameters jones(kFreqs, kTimes, antNames,
-                        JonesParameters::CorrectType::AMPLITUDE,
+  JonesParameters jones(kFreqs, kTimes, antNames, GainType::kDiagonalAmplitude,
                         kInterpolationType, kDirection, &mock, nullptr, false,
                         0, 0, JonesParameters::MissingAntennaBehavior::kFlag);
 
@@ -300,7 +282,7 @@ BOOST_AUTO_TEST_CASE(missing_antenna_flag) {
 
 BOOST_AUTO_TEST_CASE(missing_antenna_unit_diag) {
   std::vector<std::string> antNames;
-  for (unsigned int i = 0; i < kNAnts + 1; ++i) {
+  for (size_t i = 0; i < kNAnts + 1; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -308,8 +290,7 @@ BOOST_AUTO_TEST_CASE(missing_antenna_unit_diag) {
 
   SolTabMock mock = SolTabMock();
 
-  JonesParameters jones(kFreqs, kTimes, antNames,
-                        JonesParameters::CorrectType::AMPLITUDE,
+  JonesParameters jones(kFreqs, kTimes, antNames, GainType::kDiagonalAmplitude,
                         kInterpolationType, kDirection, &mock, nullptr, false,
                         0, 0, JonesParameters::MissingAntennaBehavior::kUnit);
 
@@ -323,7 +304,7 @@ BOOST_AUTO_TEST_CASE(missing_antenna_unit_diag) {
 
 BOOST_AUTO_TEST_CASE(missing_antenna_unit_full) {
   std::vector<std::string> antNames;
-  for (unsigned int i = 0; i < kNAnts + 1; ++i) {
+  for (size_t i = 0; i < kNAnts + 1; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -331,8 +312,7 @@ BOOST_AUTO_TEST_CASE(missing_antenna_unit_full) {
 
   SolTabMock mock = SolTabMock();
 
-  JonesParameters jones(kFreqs, kTimes, antNames,
-                        JonesParameters::CorrectType::ROTATIONANGLE,
+  JonesParameters jones(kFreqs, kTimes, antNames, GainType::kRotationAngle,
                         kInterpolationType, kDirection, &mock, nullptr, false,
                         0, 0, JonesParameters::MissingAntennaBehavior::kUnit);
 
@@ -349,21 +329,66 @@ BOOST_AUTO_TEST_CASE(missing_antenna_unit_full) {
   BOOST_CHECK_EQUAL(parms(3, kNAnts, 0).imag(), 0.);
 }
 
-BOOST_AUTO_TEST_CASE(correcttype_to_str) {
-  std::vector<std::string> correction_names = {
+BOOST_AUTO_TEST_CASE(gain_type_to_human_readable_str) {
+  const std::vector<std::string> kGainTypeNames = {
+      "diagonal complex",
+      "full-Jones",
+      "scalar complex",
+      "TEC",
+      "clock",
+      "rotation angle",
+      "scalar phase",
+      "diagonal phase",
+      "rotation measure",
+      "scalar amplitude",
+      "diagonal amplitude",
+      "diagonal complex (real/imaginary)",
+      "full-Jones (real/imaginary)"};
+  const std::vector<GainType> kGainTypes = {GainType::kDiagonalComplex,
+                                            GainType::kFullJones,
+                                            GainType::kScalarComplex,
+                                            GainType::kTec,
+                                            GainType::kClock,
+                                            GainType::kRotationAngle,
+                                            GainType::kScalarPhase,
+                                            GainType::kDiagonalPhase,
+                                            GainType::kRotationMeasure,
+                                            GainType::kScalarAmplitude,
+                                            GainType::kDiagonalAmplitude,
+                                            GainType::kDiagonalRealImaginary,
+                                            GainType::kFullJonesRealImaginary};
+  BOOST_REQUIRE_EQUAL(kGainTypeNames.size(), kGainTypes.size());
+  for (size_t i = 0; i != kGainTypeNames.size(); ++i) {
+    const std::string human_string =
+        JonesParameters::GainTypeToHumanReadableString(kGainTypes[i]);
+    BOOST_CHECK_EQUAL(kGainTypeNames[i], human_string);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(h5_parm_type_string_to_gain_type) {
+  const std::vector<std::string> kH5TypeStrings = {
       "gain",        "fulljones",       "tec",           "clock",
       "scalarphase", "scalaramplitude", "rotationangle", "rotationmeasure",
       "phase",       "amplitude"};
-
-  for (const std::string& correction_name : correction_names) {
-    JonesParameters::CorrectType correction_type =
-        JonesParameters::StringToCorrectType(correction_name);
-    std::string correction_name_back =
-        JonesParameters::CorrectTypeToString(correction_type);
-    BOOST_CHECK_EQUAL(correction_name, correction_name_back);
+  const std::vector<GainType> kGainTypes = {GainType::kDiagonalComplex,
+                                            GainType::kFullJones,
+                                            GainType::kTec,
+                                            GainType::kClock,
+                                            GainType::kScalarPhase,
+                                            GainType::kScalarAmplitude,
+                                            GainType::kRotationAngle,
+                                            GainType::kRotationMeasure,
+                                            GainType::kDiagonalPhase,
+                                            GainType::kDiagonalAmplitude};
+  BOOST_REQUIRE_EQUAL(kH5TypeStrings.size(), kGainTypes.size());
+  for (size_t i = 0; i != kH5TypeStrings.size(); ++i) {
+    const GainType result_gain_type =
+        JonesParameters::H5ParmTypeStringToGainType(kH5TypeStrings[i]);
+    BOOST_CHECK(result_gain_type == kGainTypes[i]);
   }
-  BOOST_CHECK_THROW(JonesParameters::StringToCorrectType("nosuchcorrection"),
-                    std::runtime_error);
+  BOOST_CHECK_THROW(
+      JonesParameters::H5ParmTypeStringToGainType("nosuchcorrection"),
+      std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

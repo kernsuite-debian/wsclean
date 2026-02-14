@@ -6,6 +6,10 @@
 #include <aocommon/multibanddata.h>
 #include <aocommon/polarization.h>
 
+#include <schaapcommon/reordering/storagemanagertype.h>
+
+#include "../structures/msselection.h"
+
 #include <casacore/casa/Arrays/Array.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 
@@ -17,7 +21,8 @@
 namespace casacore {
 class MeasurementSet;
 }  // namespace casacore
-class MSSelection;
+
+namespace wsclean {
 class MSReader;
 
 /**
@@ -30,7 +35,7 @@ class MSReader;
  * passed to the @ref MSReader. MSProvider provides the visibilities weighted
  * with the visibility weight and converts the visibilities to a requested
  * polarization. The @ref ContiguousMS and
- * @ref PartitionedMS classes implement the MSProvider interface.
+ * @ref ReorderedMs classes implement the MSProvider interface.
  *
  * The class maintains an index for the write position. The index for the
  * reading position is maintained by the closely connected @ref MSReader class.
@@ -141,12 +146,12 @@ class MSProvider {
   virtual const aocommon::BandData& Band() = 0;
 
   /**
-   * Get a list of polarizations in the measurement set for a given data desc
+   * Get a set of polarizations in the measurement set for a given data desc
    * id. This will always list the individual polarizations, and not return one
    * of the special polarization values (like FullJones or Instrumental).
    */
-  static std::vector<aocommon::PolarizationEnum> GetMSPolarizations(
-      size_t dataDescId, const casacore::MeasurementSet& ms);
+  static std::set<aocommon::PolarizationEnum> GetMSPolarizations(
+      size_t data_desc_id, const casacore::MeasurementSet& ms);
 
   virtual std::unique_ptr<MSReader> MakeReader() = 0;
 
@@ -155,46 +160,16 @@ class MSProvider {
    */
   void ResetModelColumn();
 
-  static void CopyData(std::complex<float>* dest, size_t startChannel,
-                       size_t endChannel,
-                       const std::vector<aocommon::PolarizationEnum>& polsIn,
-                       const casacore::Array<std::complex<float>>& data,
-                       aocommon::PolarizationEnum polOut);
+  static void GetRowRange(
+      casacore::MeasurementSet& ms,
+      const schaapcommon::reordering::MSSelection& selection, size_t& startRow,
+      size_t& endRow);
 
-  template <typename NumType>
-  static void CopyWeights(NumType* dest, size_t startChannel, size_t endChannel,
-                          const std::vector<aocommon::PolarizationEnum>& polsIn,
-                          const casacore::Array<std::complex<float>>& data,
-                          const casacore::Array<float>& weights,
-                          const casacore::Array<bool>& flags,
-                          aocommon::PolarizationEnum polOut);
-
-  template <typename NumType>
-  static bool IsCFinite(const std::complex<NumType>& c) {
-    return std::isfinite(c.real()) && std::isfinite(c.imag());
-  }
-
-  template <bool add>
-  static void ReverseCopyData(
-      casacore::Array<std::complex<float>>& dest, size_t startChannel,
-      size_t endChannel,
-      const std::vector<aocommon::PolarizationEnum>& polsDest,
-      const std::complex<float>* source, aocommon::PolarizationEnum polSource);
-
-  static void ReverseCopyWeights(
-      casacore::Array<float>& dest, size_t startChannel, size_t endChannel,
-      const std::vector<aocommon::PolarizationEnum>& polsDest,
-      const float* source, aocommon::PolarizationEnum polSource);
-
-  static void GetRowRange(casacore::MeasurementSet& ms,
-                          const MSSelection& selection, size_t& startRow,
-                          size_t& endRow);
-
-  static void GetRowRangeAndIDMap(casacore::MeasurementSet& ms,
-                                  const MSSelection& selection,
-                                  size_t& startRow, size_t& endRow,
-                                  const std::set<size_t>& dataDescIdMap,
-                                  std::vector<size_t>& idToMSRow);
+  static void GetRowRangeAndIDMap(
+      casacore::MeasurementSet& ms,
+      const schaapcommon::reordering::MSSelection& selection, size_t& startRow,
+      size_t& endRow, const std::set<size_t>& dataDescIdMap,
+      std::vector<size_t>& idToMSRow);
 
   static void CopyRealToComplex(std::complex<float>* dest, const float* source,
                                 size_t n) {
@@ -206,7 +181,9 @@ class MSProvider {
     }
   }
 
-  static void InitializeModelColumn(casacore::MeasurementSet& ms);
+  static void InitializeModelColumn(
+      casacore::MeasurementSet& ms, const std::string& model_column_name,
+      schaapcommon::reordering::StorageManagerType type);
 
   static casacore::ArrayColumn<float> InitializeImagingWeightColumn(
       casacore::MeasurementSet& ms);
@@ -234,5 +211,7 @@ class MSProvider {
     }
   }
 };
+
+}  // namespace wsclean
 
 #endif

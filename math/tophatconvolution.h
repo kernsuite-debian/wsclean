@@ -3,12 +3,12 @@
 
 #include <aocommon/image.h>
 
-namespace tophat_convolution {
+namespace wsclean::tophat_convolution {
 
 /**
  * Perform a convolution with a radial tophat with a given radius (in pixels).
  */
-void Convolve(aocommon::Image& input, double radius, size_t n_threads);
+void Convolve(aocommon::Image& input, double radius);
 
 /**
  * Produce an image with a radial tophat function. This means that
@@ -25,6 +25,6 @@ void Convolve(aocommon::Image& input, double radius, size_t n_threads);
 aocommon::Image MakeTopHatImage(size_t width, size_t height,
                                 double tophat_radius);
 
-}  // namespace tophat_convolution
+}  // namespace wsclean::tophat_convolution
 
 #endif

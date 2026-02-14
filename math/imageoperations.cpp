@@ -13,30 +13,90 @@
 #include <aocommon/fits/fitswriter.h>
 #include <aocommon/units/angle.h>
 
-#include <schaapcommon/fft/restoreimage.h>
+#include <schaapcommon/math/restoreimage.h>
 #include <schaapcommon/fitters/gaussianfitter.h>
 
 using aocommon::Logger;
 using aocommon::units::Angle;
 
+namespace wsclean {
+namespace math {
+
+void CorrectImagesForMuellerMatrix(const aocommon::HMC4x4& mueller_correction,
+                                   std::array<aocommon::Image*, 4>& images) {
+  assert(images[0] && images[1] && images[2] && images[3]);
+  assert(images[0]->Width() == images[1]->Width() &&
+         images[0]->Height() == images[1]->Height());
+  assert(images[0]->Width() == images[2]->Width() &&
+         images[0]->Height() == images[2]->Height());
+  assert(images[0]->Width() == images[3]->Width() &&
+         images[0]->Height() == images[3]->Height());
+
+  float* a = images[0]->Data();
+  float* b = images[1]->Data();
+  float* c = images[2]->Data();
+  float* d = images[3]->Data();
+
+  for (size_t i = 0; i != images[0]->Size(); ++i) {
+    double stokes_values[4] = {*a, *b, *c, *d};
+    aocommon::Vector4 v;
+    aocommon::Polarization::StokesToLinear(stokes_values, v.data());
+    v = mueller_correction * v;
+    aocommon::Polarization::LinearToStokes(v.data(), stokes_values);
+    *a = stokes_values[0];
+    ++a;
+    *b = stokes_values[1];
+    ++b;
+    *c = stokes_values[2];
+    ++c;
+    *d = stokes_values[3];
+    ++d;
+  }
+}
+
+void CorrectDualImagesForMuellerMatrix(
+    const aocommon::HMC4x4& mueller_correction,
+    std::array<aocommon::Image*, 2>& images) {
+  assert(images[0] && images[1]);
+  assert(images[0]->Width() == images[1]->Width() &&
+         images[0]->Height() == images[1]->Height());
+
+  float* a = images[0]->Data();
+  float* b = images[1]->Data();
+
+  for (size_t i = 0; i != images[0]->Size(); ++i) {
+    const aocommon::Vector4 v =
+        mueller_correction * aocommon::Vector4{*a, 0.0, 0.0, *b};
+    *a = v[0].real();
+    ++a;
+    *b = v[3].real();
+    ++b;
+  }
+}
+
+}  // namespace math
+
 void ImageOperations::FitBeamSize(const Settings& settings, double& bMaj,
                                   double& bMin, double& bPA,
                                   const aocommon::Image& image,
                                   double beamEstimate) {
-  schaapcommon::fitters::GaussianFitter beamFitter;
   Logger::Info << "Fitting beam... ";
   Logger::Info.Flush();
   if (settings.circularBeam) {
     bMaj = beamEstimate;
-    beamFitter.Fit2DCircularGaussianCentred(image.Data(), image.Width(),
-                                            image.Height(), bMaj,
-                                            settings.beamFittingBoxSize);
+    schaapcommon::fitters::Fit2DCircularGaussianCentred(
+        image.Data(), image.Width(), image.Height(), bMaj,
+        settings.beamFittingBoxSize);
     bMin = bMaj;
     bPA = 0.0;
   } else {
-    beamFitter.Fit2DGaussianCentred(image.Data(), image.Width(), image.Height(),
-                                    beamEstimate, bMaj, bMin, bPA,
-                                    settings.beamFittingBoxSize);
+    const schaapcommon::math::Ellipse ellipse =
+        schaapcommon::fitters::Fit2DGaussianCentred(
+            image.Data(), image.Width(), image.Height(), beamEstimate,
+            settings.beamFittingBoxSize);
+    bMaj = ellipse.major;
+    bMin = ellipse.minor;
+    bPA = ellipse.position_angle;
   }
   bMaj = bMaj * 0.5 * (settings.pixelScaleX + settings.pixelScaleY);
   bMin = bMin * 0.5 * (settings.pixelScaleX + settings.pixelScaleY);
@@ -214,13 +274,15 @@ void ImageOperations::RenderMFSImage(const Settings& settings,
       v = 0.0;
     }
   }
-  schaapcommon::fft::RestoreImage(
+  schaapcommon::math::RestoreImage(
       image.data(), modelImage.data(), settings.trimmedImageWidth,
       settings.trimmedImageHeight, beamMaj, beamMin, beamPA,
-      settings.pixelScaleX, settings.pixelScaleY, settings.threadCount);
+      settings.pixelScaleX, settings.pixelScaleY);
   Logger::Info << "DONE\n";
 
   Logger::Info << "Writing " << mfs_prefix << "-image" << postfix << "...\n";
   aocommon::FitsWriter imageWriter(residualReader);
   imageWriter.Write(mfs_prefix + "-image" + postfix, image.data());
 }
+
+}  // namespace wsclean

@@ -19,12 +19,12 @@ namespace radler {
  * should be used.
  */
 enum class LocalRmsMethod {
-  /// No local RMS
+  /// No local RMS.
   kNone,
-  /// Spatially varying RMS image
+  /// Spatially varying RMS image.
   kRmsWindow,
   /// Spatially varying RMS image with min. Computed as max(window RMS, 0.3 x
-  /// window min)
+  /// window min).
   kRmsAndMinimumWindow
 };
 
@@ -39,6 +39,14 @@ enum class AlgorithmType {
    * Smirnov, 2017).
    */
   kGenericClean,
+  /**
+   * The adaptive scale pixel algorith described by Bhatnagar & Cornwell (2004),
+   * extended with support for multi-frequency deconvolution and sub-image
+   * deconvolution. The algorithm is rather slow and generally does not result
+   * in better results compared to Radler's multiscale algorithm. In specific
+   * cases with diffuse structures it may be useful.
+   */
+  kAdaptiveScalePixel,
   /**
    * An algorithm similar to the MORESANE algorithm (A Dabbech et al., 2014),
    * but reimplemented in C++ and extended for multi frequency/polarization
@@ -92,27 +100,34 @@ enum class MultiscaleShape {
   kGaussianShape
 };
 
-/// Class to collect and set (Radler) deconvolution related settings
+/// Class to collect and set (Radler) deconvolution related settings.
 struct Settings {
-  /**
-   * @{
-   * Settings that are duplicates from top level settings, and also used outside
-   * deconvolution.
-   */
-  /// Trimmed image width
+  /// Trimmed image width.
   size_t trimmed_image_width = 0;
-  /// Trimmed image height
+
+  /// Trimmed image height.
   size_t trimmed_image_height = 0;
+
+  /**
+   * Number of spectral channels for input and output. This may be higher than
+   * the number of channels used during deconvolution (see the constructor of
+   * @ref WorkTable). If that's the case, channels are interpolated before
+   * deconvolution and extrapolated after (using the @ref spectral_fitting
+   * settings).
+   */
   size_t channels_out = 1;
-  /// Pixel scale in radians
+
+  /// Pixel scale in radians.
   struct PixelScale {
     double x = 0.0;
     double y = 0.0;
   } pixel_scale;
+
+  /// Number of parallel threads used in computations.
   size_t thread_count = aocommon::system::ProcessorCount();
-  /// Prefix for saving various output files (e.g. horizon mask)
+
+  /// Prefix for saving various output files (e.g. horizon mask).
   std::string prefix_name = "wsclean";
-  /** @} */
 
   /**
    * List of polarizations that is integrated over when performing peak finding.
@@ -139,6 +154,7 @@ struct Settings {
 
     /**
      * Number of sub-images to run in parallel. It must be larger than zero.
+     * By default all processor cores will be used.
      */
     size_t max_threads = aocommon::system::ProcessorCount();
   } parallel;
@@ -290,6 +306,13 @@ struct Settings {
   std::string casa_mask;
 
   /**
+   * If in one major iteration the peak raises by this factor, the iteration is
+   * considered to be diverging. When parallel deconvolution is used, a diverged
+   * subimage that diverges is reset to its state before the major iteration.
+   */
+  double divergence_limit = 4.0;
+
+  /**
    * The horizon mask distance allows masking out emission beyond the horizon.
    * The value is a floating point value in radians.
    *
@@ -303,7 +326,7 @@ struct Settings {
 
   /**
    * The filename for storing the horizon mask FITS image.
-   * If unset/empty, Radler uses: prefix_name + "-horizon-mask.fits"
+   * If unset/empty, Radler uses: prefix_name + "-horizon-mask.fits".
    */
   std::string horizon_mask_filename;
 
@@ -325,6 +348,13 @@ struct Settings {
      * calculated RMS image.
      */
     std::string image;
+    /**
+     * The strength with which the local RMS is applied. With a value
+     * of 1, peaks are compared relative to the calculated local RMS. With
+     * a value of 0, peaks are compared relative to the global RMS.
+     * The RMS is scaled using the equation local_rms ^ strength.
+     */
+    double strength = 1.0;
   } local_rms;
 
   /**
@@ -354,14 +384,18 @@ struct Settings {
   /** @} */
 
   /**
+   * The algorithm to use: single-scale, multi-scale, etc. This setting
+   * affects the interpretation of some of the other settings.
+   */
+  AlgorithmType algorithm_type = AlgorithmType::kGenericClean;
+
+  /**
    * @{
    * These deconvolution settings are algorithm-specific. For each algorithm
    * type, a single struct holds all algorithm-specific settings for that type.
    */
 
-  AlgorithmType algorithm_type = AlgorithmType::kGenericClean;
-
-  /// Settings specific to python algorithm
+  /// Settings specific to the Python algorithm.
   struct Python {
     /// Path to a python file containing the deconvolution algorithm to be used.
     std::string filename;
@@ -387,7 +421,7 @@ struct Settings {
     std::vector<double> sigma_levels;
   } more_sane;
 
-  /// Settings specific to multiscale algorithm
+  /// Settings specific to multi-scale algorithm.
   struct Multiscale {
     /**
      * Use the fast variant of this algorithm. When @c true, the minor loops are

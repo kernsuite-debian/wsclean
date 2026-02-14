@@ -26,6 +26,9 @@ std::ostream& boost_test_print_type(std::ostream& stream,
     case AlgorithmType::kGenericClean:
       stream << "Generic clean";
       break;
+    case AlgorithmType::kAdaptiveScalePixel:
+      stream << "Adaptive scale pixel clean";
+      break;
     case AlgorithmType::kMultiscale:
       stream << "Multiscale clean";
       break;
@@ -92,8 +95,9 @@ struct SettingsFixture {
   Settings settings;
 };
 
-std::array<AlgorithmType, 2> kAlgorithmTypes{
+constexpr std::array<AlgorithmType, 3> kAlgorithmTypes{
     AlgorithmType::kGenericClean, AlgorithmType::kMultiscale,
+    AlgorithmType::kAdaptiveScalePixel
     /* Fails AlgorithmType::kIuwt */
 };
 
@@ -104,8 +108,7 @@ BOOST_DATA_TEST_CASE_F(SettingsFixture, centered_source,
                        algorithm_type) {
   // The tested function will output log messages. Unit tests shouldn't output
   // to stdout, so prevent the logged output from appearing:
-  aocommon::Logger::SetVerbosity(
-      aocommon::Logger::VerbosityLevel::kQuietVerbosity);
+  aocommon::Logger::SetVerbosity(aocommon::LogVerbosityLevel::kQuiet);
   settings.algorithm_type = algorithm_type;
 
   aocommon::Image psf_image(kWidth, kHeight);
@@ -137,8 +140,7 @@ BOOST_DATA_TEST_CASE_F(SettingsFixture, offcentered_source,
                        algorithm_type) {
   // The tested function will output log messages. Unit tests shouldn't output
   // to stdout, so prevent the logged output from appearing:
-  aocommon::Logger::SetVerbosity(
-      aocommon::Logger::VerbosityLevel::kQuietVerbosity);
+  aocommon::Logger::SetVerbosity(aocommon::LogVerbosityLevel::kQuiet);
   settings.algorithm_type = algorithm_type;
   aocommon::Image psf_image(kWidth, kHeight);
   aocommon::Image residual_image(kWidth, kHeight);
@@ -172,8 +174,7 @@ BOOST_DATA_TEST_CASE_F(SettingsFixture, offcentered_source,
 BOOST_AUTO_TEST_CASE(diffuse_source) {
   // The tested function will output log messages. Unit tests shouldn't output
   // to stdout, so prevent the logged output from appearing:
-  aocommon::Logger::SetVerbosity(
-      aocommon::Logger::VerbosityLevel::kQuietVerbosity);
+  aocommon::Logger::SetVerbosity(aocommon::LogVerbosityLevel::kQuiet);
   aocommon::FitsReader imgReader(VELA_DIRTY_IMAGE_PATH);
   aocommon::FitsReader psfReader(VELA_PSF_PATH);
 

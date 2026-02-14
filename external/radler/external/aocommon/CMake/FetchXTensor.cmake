@@ -18,9 +18,14 @@ if (NOT xtensor-fftw_GIT_TAG)
   set(xtensor-fftw_GIT_TAG e6be85a376624da10629b6525c81759e02020308)
 endif()
 
-# By default, only load the basic 'xtensor' and 'xtl' modules.
+# By default, only load the basic 'xtensor' library.
 if (NOT XTENSOR_LIBRARIES)
-  set(XTENSOR_LIBRARIES xtl xtensor) # Load xtl first, since xtensor uses it.
+  set(XTENSOR_LIBRARIES xtensor)
+endif()
+
+# The 'xtensor' library requires the 'xtl' library.
+if (NOT xtl IN_LIST XTENSOR_LIBRARIES)
+  list(APPEND XTENSOR_LIBRARIES xtl)
 endif()
 
 include(FetchContent)
@@ -47,21 +52,28 @@ foreach(LIB ${XTENSOR_LIBRARIES})
     GIT_SHALLOW ${XT_SHALLOW}
     GIT_TAG ${XT_GIT_TAG})
 
-  if ("${LIB}" STREQUAL "xtensor-fftw")
-    # Unlike the other libraries, xtensor-fftw does not define a CMake target.
-    # Its CMakeLists.txt also loads FFTW using custom options.
-    # -> Do not build this library, and define an INTERFACE target manually.
-    FetchContent_GetProperties(${LIB})
-    if(NOT ${${LIB}_POPULATED})
-      FetchContent_Populate(${LIB})
-    endif()
-    add_library(${LIB} INTERFACE)
-    target_include_directories(${LIB} SYSTEM INTERFACE "${${LIB}_SOURCE_DIR}/include")
-  else()
-    FetchContent_MakeAvailable(${LIB})
-    # Ensure XTensor headers are included as system headers.
-    get_target_property(IID ${LIB} INTERFACE_INCLUDE_DIRECTORIES)
-    set_target_properties(${LIB} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${IID}")
-  endif()
+  # FetchContent_MakeAvailable makes ${LIB} part of the project.
+  # Headers from ${LIB} are then installed along with the project.
+  # However, most projects only use ${LIB} internally, at compile time,
+  # and should not install ${LIB}, including its headers:
+  # - For libraries, XTensor shouldn't be part the public API.
+  # - For applications, installing headers isn't needed at all.
+  #
+  # Instead of FetchContent_MakeAvailable, we therefore use
+  # FetchContent_Populate and define an INTERFACE target manually.
+  # This approach also supports xtensor-fftw, which does not define a CMake
+  # target and also loads FFTW using custom options
 
+  FetchContent_GetProperties(${LIB})
+  if(NOT ${${LIB}_POPULATED})
+    FetchContent_Populate(${LIB})
+  endif()
+  add_library(${LIB} INTERFACE)
+  target_include_directories(${LIB} SYSTEM INTERFACE "${${LIB}_SOURCE_DIR}/include")
 endforeach()
+
+# Since xtensor uses xtl and possibly xsimd headers, create dependencies.
+target_link_libraries(xtensor INTERFACE xtl)
+if (xsimd IN_LIST XTENSOR_LIBRARIES)
+  target_link_libraries(xtensor INTERFACE xsimd)
+endif()

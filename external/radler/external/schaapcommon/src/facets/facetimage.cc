@@ -4,6 +4,7 @@
 #include "facetimage.h"
 
 #include <algorithm>
+#include <cassert>
 #include <functional>
 
 namespace schaapcommon {
@@ -83,15 +84,8 @@ void FacetImage::CopyToFacet(const std::vector<const float*>& images) {
 }
 
 void FacetImage::AddToImage(const std::vector<float*>& images) const {
-  if (images.size() != data_.size()) {
-    throw std::invalid_argument(
-        "Image term count does not match facet term count.");
-  }
-
-  if (data_.front().empty()) {
-    throw std::runtime_error(
-        "Facet data buffer is not initialized. Call SetFacet() first.");
-  }
+  assert(images.size() == data_.size());
+  assert(!data_.front().empty());
 
   for (size_t term = 0; term != data_.size(); ++term) {
     const float* data_y = data_[term].data();
@@ -111,6 +105,50 @@ void FacetImage::AddToImage(const std::vector<float*>& images) const {
       data_y += Width();
       image_y += image_width_;
     }
+  }
+}
+
+aocommon::Image FacetImage::MakeMask() const {
+  assert(!data_.front().empty());
+
+  aocommon::Image mask(Width(), Height(), 0.0);
+  float* mask_y = mask.Data();
+
+  for (const std::vector<std::pair<int, int>>& intersections :
+       horizontal_intersections_) {
+    for (const std::pair<int, int>& intersection : intersections) {
+      float* mask_begin = mask_y + intersection.first - OffsetX();
+      float* mask_end = mask_y + intersection.second - OffsetX();
+      std::fill(mask_begin, mask_end, 1.0);
+    }
+    mask_y += Width();
+  }
+  return mask;
+}
+
+void FacetImage::AddWithMask(float* image, float* weight,
+                             const aocommon::Image& mask, size_t term) const {
+  assert(!data_.front().empty());
+
+  const float* data_y = data_[term].data();
+  const float* mask_y = mask.Data();
+  float* image_y = image + OffsetY() * image_width_ + OffsetX();
+  float* weight_y = weight + OffsetY() * image_width_ + OffsetX();
+
+  // Because of alignment, the facet's bounding box may slightly extend past
+  // the full image size, so make sure not to cross the boundary:
+  const size_t max_x = std::min(Width(), image_width_ - OffsetX());
+  const size_t max_y = std::min(Height(), image_height_ - OffsetY());
+  for (size_t y = 0; y != max_y; ++y) {
+    for (size_t x = 0; x != max_x; ++x) {
+      // Note that OffsetX() was already added above to image_y
+      image_y[x] += mask_y[x] * data_y[x];
+      weight_y[x] += mask_y[x];
+    }
+    data_y += Width();
+    mask_y += Width();
+    image_y += image_width_;
+    weight_y += image_width_;
   }
 }
 

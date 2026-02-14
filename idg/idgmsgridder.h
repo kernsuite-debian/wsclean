@@ -3,7 +3,7 @@
 
 #ifdef HAVE_IDG
 
-#include "../gridding/msgridderbase.h"
+#include "../gridding/msgridder.h"
 #include "../structures/resources.h"
 
 #include <idg-api.h>
@@ -19,21 +19,34 @@
 
 #include "../main/stopwatch.h"
 
+namespace wsclean {
+
 struct ImagingTableEntry;
 class ImageFilename;
 class Settings;
 
-class IdgMsGridder final : public MSGridderBase {
+class IdgMsGridder final : public MsGridder {
  public:
-  IdgMsGridder(const Settings& settings, const Resources& resources);
+  IdgMsGridder(const Settings& settings, const Resources& resources,
+               MsProviderCollection& measurement_sets);
 
-  virtual ~IdgMsGridder() final override;
+  ~IdgMsGridder() final;
 
-  virtual void Invert() final override;
+  // If we are computing a PSF or have a cached average beam then we only do one
+  // pass. Otherwise we do an additional first pass to compute the average beam.
+  size_t GetNInversionPasses() const final;
+  void StartInversion() final;
+  void StartInversionPass(size_t pass_index) final;
+  size_t GridMeasurementSet(const MsProviderCollection::MsData& ms_data) final;
+  void FinishInversionPass(size_t pass_index) final;
+  void FinishInversion() final;
 
-  virtual void Predict(std::vector<aocommon::Image>&& images) final override;
+  void StartPredict(std::vector<aocommon::Image>&& images) final;
+  size_t PredictMeasurementSet(
+      const MsProviderCollection::MsData& ms_data) final;
+  void FinishPredict() final;
 
-  virtual std::vector<aocommon::Image> ResultImages() final override;
+  std::vector<aocommon::Image> ResultImages() final;
 
   static void SavePBCorrectedImages(aocommon::FitsWriter& writer,
                                     const ImageFilename& filename,
@@ -52,34 +65,30 @@ class IdgMsGridder final : public MSGridderBase {
  private:
   std::unique_ptr<AverageBeam> _averageBeam;
 
-  virtual size_t getSuggestedWGridSize() const override final {
+  size_t GetSuggestedWGridSize() const final {
     return 1;  // TODO
   }
 
-  void gridMeasurementSet(const MSGridderBase::MSData& msData);
-  void gridThreadFunction();
-
-  void predictMeasurementSet(const MSGridderBase::MSData& msData);
   void readConfiguration();
 
   void setIdgType();
 
 #ifdef HAVE_EVERYBEAM
   std::unique_ptr<class everybeam::aterms::ATermBase> getATermMaker(
-      const MSGridderBase::MSData& msData);
+      const MsProviderCollection::MsData& msData);
   bool prepareForMeasurementSet(
-      const MSGridderBase::MSData& msData,
+      const MsProviderCollection::MsData& ms_data,
       std::unique_ptr<everybeam::aterms::ATermBase>& aTermMaker,
       aocommon::UVector<std::complex<float>>& aTermBuffer,
       idg::api::BufferSetType);
 #else
   bool prepareForMeasurementSet(
-      const MSGridderBase::MSData& msData,
+      const MsProviderCollection::MsData& ms_data,
       aocommon::UVector<std::complex<float>>& aTermBuffer,
       idg::api::BufferSetType);
 #endif  // HAVE_EVERYBEAM
 
-  struct IDGInversionRow : public MSGridderBase::InversionRow {
+  struct IDGInversionRow : public MsGridderData::InversionRow {
     size_t antenna1, antenna2, timeIndex;
   };
   struct IDGPredictionRow {
@@ -111,6 +120,8 @@ void init_optimal_taper_1D(int subgridsize, int gridsize, float kernelsize,
 void init_optimal_gridding_taper_1D(int subgridsize, int gridsize,
                                     float kernelsize, float* taper_subgrid,
                                     float* taper_grid);
+
+}  // namespace wsclean
 
 #else
 

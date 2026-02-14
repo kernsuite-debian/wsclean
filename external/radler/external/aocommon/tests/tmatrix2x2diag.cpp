@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include <aocommon/matrix2x2.h>
 #include <aocommon/matrix2x2diag.h>
 
 #include <iostream>
@@ -9,12 +10,12 @@ using aocommon::MC2x2Diag;
 
 BOOST_AUTO_TEST_SUITE(matrix2x2diag)
 
-BOOST_AUTO_TEST_CASE(construct_default) {
-  const MC2x2Diag m;
-  BOOST_CHECK_CLOSE(m[0].real(), 0.0, 1e-6);
-  BOOST_CHECK_CLOSE(m[0].imag(), 0.0, 1e-6);
-  BOOST_CHECK_CLOSE(m[1].real(), 0.0, 1e-6);
-  BOOST_CHECK_CLOSE(m[1].imag(), 0.0, 1e-6);
+BOOST_AUTO_TEST_CASE(construct_zero_initialized) {
+  const MC2x2Diag m = MC2x2Diag::Zero();
+  BOOST_CHECK_EQUAL(m[0].real(), 0.0);
+  BOOST_CHECK_EQUAL(m[0].imag(), 0.0);
+  BOOST_CHECK_EQUAL(m[1].real(), 0.0);
+  BOOST_CHECK_EQUAL(m[1].imag(), 0.0);
 }
 
 BOOST_AUTO_TEST_CASE(construct_from_array) {

@@ -6,6 +6,8 @@
 
 #include <optional>
 
+namespace wsclean {
+
 /** A MSRowProvider providing the selected rows in a BDA measurement set. */
 class BdaMsRowProvider final : public MsRowProviderBase {
  public:
@@ -17,9 +19,11 @@ class BdaMsRowProvider final : public MsRowProviderBase {
    * @pre !selection.HasInterval()
    */
   explicit BdaMsRowProvider(
-      const casacore::MeasurementSet& ms, const MSSelection& selection,
+      const casacore::MeasurementSet& ms,
+      const schaapcommon::reordering::MSSelection& selection,
       const std::map<size_t, size_t>& selected_data_description_ids,
-      const std::string& data_column_name, bool require_model);
+      const std::string& data_column_name, const std::string& model_column_name,
+      bool require_model);
 
   bool AtEnd() const override { return current_row_ == EndRow(); }
 
@@ -62,5 +66,7 @@ class BdaMsRowProvider final : public MsRowProviderBase {
   bool LoadCurrentRow();
   bool IsCurrentRowSelected() const;
 };
+
+}  // namespace wsclean
 
 #endif  // MSPROVIDERS_BDAMSROWPROVIDER_H

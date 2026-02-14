@@ -1,6 +1,7 @@
 #ifndef IMAGE_WEIGHTS_H
 #define IMAGE_WEIGHTS_H
 
+#include <cassert>
 #include <cstddef>
 #include <complex>
 
@@ -10,11 +11,13 @@
 #include "msselection.h"
 #include "weightmode.h"
 
-class MSProvider;
-
 namespace aocommon {
 class BandData;
 }
+
+namespace wsclean {
+
+class MSProvider;
 
 class ImageWeights {
  public:
@@ -38,8 +41,7 @@ class ImageWeights {
     uvToXY(u, v, x, y);
 
     if (isWithinLimits(x, y)) {
-      size_t index = (size_t)x + (size_t)y * _imageWidth;
-      _grid[index] += weight;
+      _grid[size_t(x) + size_t(y) * _imageWidth] += weight;
       _totalSum += weight;
     }
   }
@@ -54,7 +56,6 @@ class ImageWeights {
   void SetEdgeTaper(double sizeInLambda);
   void SetEdgeTukeyTaper(double transitionSizeInLambda,
                          double edgeSizeInLambda);
-  void SetThreadCount(size_t threadCount) { _threadCount = threadCount; }
 
   void SetAllValues(double newValue) { _grid.assign(_grid.size(), newValue); }
   void GetGrid(double* image) const;
@@ -80,7 +81,7 @@ class ImageWeights {
   }
 
   void xyToUV(int x, int y, double& u, double& v) const {
-    if (y < 0.0) {
+    if (y < 0) {
       x = -x;
       y = -y;
     }
@@ -90,6 +91,7 @@ class ImageWeights {
   }
 
   bool isWithinLimits(int x, int y) const {
+    assert(y >= 0);  // uvToXY never returns negative y values.
     return x >= 0 && x < int(_imageWidth) && y < int(_imageHeight / 2);
   }
 
@@ -97,7 +99,7 @@ class ImageWeights {
     int x, y;
     uvToXY(u, v, x, y);
     if (isWithinLimits(x, y))
-      return _grid[(size_t)x + (size_t)y * _imageWidth];
+      return _grid[size_t(x) + size_t(y) * _imageWidth];
     else {
       return 0.0;
     }
@@ -125,7 +127,8 @@ class ImageWeights {
   std::vector<double> _grid;
   double _totalSum;
   bool _isGriddingFinished, _weightsAsTaper;
-  size_t _threadCount;
 };
+
+}  // namespace wsclean
 
 #endif

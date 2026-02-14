@@ -8,13 +8,17 @@
 
 #include <cassert>
 
+using schaapcommon::reordering::MSSelection;
+
+namespace wsclean {
+
 const char* BdaMsRowProvider::kBDAFactorsTable = "BDA_FACTORS";
 
 static std::optional<casacore::ArrayColumn<casacore::Complex>> GetModel(
-    const casacore::MeasurementSet& ms, bool require_model) {
+    const casacore::MeasurementSet& ms, const std::string& model_column_name,
+    bool require_model) {
   if (require_model)
-    return casacore::ArrayColumn<casacore::Complex>(
-        ms, casacore::MS::columnName(casacore::MSMainEnums::MODEL_DATA));
+    return casacore::ArrayColumn<casacore::Complex>(ms, model_column_name);
 
   return {};
 }
@@ -22,11 +26,12 @@ static std::optional<casacore::ArrayColumn<casacore::Complex>> GetModel(
 BdaMsRowProvider::BdaMsRowProvider(
     const casacore::MeasurementSet& ms, const MSSelection& selection,
     const std::map<size_t, size_t>& selected_data_description_ids,
-    const std::string& data_column_name, bool require_model)
-    : MsRowProviderBase(ms, selection, data_column_name),
+    const std::string& data_column_name, const std::string& model_column_name,
+    bool require_model)
+    : MsRowProviderBase(ms, selection, data_column_name, model_column_name),
       selected_data_description_ids_(selected_data_description_ids),
       weight_(Ms()),
-      model_(GetModel(Ms(), require_model)),
+      model_(GetModel(Ms(), model_column_name, require_model)),
       current_row_(BeginRow()),
       data_(Columns().time(BeginRow())) {
   if (!MsHasBdaData(Ms()))
@@ -34,7 +39,7 @@ BdaMsRowProvider::BdaMsRowProvider(
                                 kBDAFactorsTable, " table.");
 
   if (Selection().HasInterval() ||
-      Selection().EvenOrOddTimesteps() != MSSelection::AllTimesteps)
+      Selection().EvenOrOddTimesteps() != MSSelection::kAllTimesteps)
     aocommon::ThrowRuntimeError(
         "An interval selection isn't supported for a BDA measurement set.");
 
@@ -103,5 +108,8 @@ bool BdaMsRowProvider::IsCurrentRowSelected() const {
   }
 
   return Selection().IsSelected(data_.field_id, /*timestep=*/-1,
-                                data_.antenna_1, data_.antenna_2, data_.uvw);
+                                data_.antenna_1, data_.antenna_2,
+                                data_.uvw.data());
 }
+
+}  // namespace wsclean

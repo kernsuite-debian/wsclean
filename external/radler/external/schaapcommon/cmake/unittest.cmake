@@ -33,10 +33,14 @@ function(add_unittest MODULE_NAME)
   )
 
   # Add test for automatically (re)building the test if needed.
+  # RESOURCE_LOCK ensures "build_*" tests do not run in parallel.
+  # These tests all run 'cmake' on the same tree. When those run in parallel,
+  # race conditions can occur, especially when fetching XTensor.
   add_test(build_${TEST_NAME} ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
            --target ${TEST_NAME})
-  set_tests_properties(build_${TEST_NAME} PROPERTIES FIXTURES_SETUP
-                                                     ${TEST_NAME})
+  set_tests_properties(
+    build_${TEST_NAME} PROPERTIES FIXTURES_SETUP ${TEST_NAME} RESOURCE_LOCK
+                                  BUILD_UNITTEST)
 
   add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME} -f JUNIT -k ${TEST_NAME}.xml
                                      --catch_system_error=yes)

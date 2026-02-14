@@ -106,6 +106,11 @@ class DS9FacetFile {
           direction_label = ParseDirectionLabel(Type(), Token());
         } else if (t == "point" && !coordinates.empty()) {
           direction = ReadPoint();
+          const std::string direction_label_point =
+              ParseDirectionLabel(Type(), Token());
+          if (direction_label_point != "") {
+            direction_label = direction_label_point;
+          }
         }
       }
     }

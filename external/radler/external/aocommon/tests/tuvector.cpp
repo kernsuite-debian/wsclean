@@ -506,10 +506,6 @@ class IdAllocater {
   IdAllocater(size_t id) : _id(id) {}
   bool operator==(const Myself& rhs) const { return rhs._id == _id; }
   bool operator!=(const Myself& rhs) const { return rhs._id != _id; }
-  Myself& operator=(const IdAllocater<Tp>& rhs) {
-    _id = rhs._id;
-    return *this;
-  }
   Myself select_on_container_copy_construction() const {
     return IdAllocater(_id + 10);
   }

@@ -5,13 +5,15 @@
 
 #include <aocommon/uvector.h>
 
+namespace wsclean {
+
 class AveragingMSRowProvider : public MSRowProvider {
  public:
   AveragingMSRowProvider(double nWavelengthsAveraging, const string& msPath,
                          const MSSelection& selection,
                          const std::map<size_t, size_t>& selectedDataDescIds,
                          size_t fieldId, const std::string& dataColumnName,
-                         bool requireModel);
+                         const std::string& modelColumnName, bool requireModel);
 
   virtual bool AtEnd() const final override {
     return _flushPosition >= _nElements;
@@ -104,5 +106,7 @@ class AveragingMSRowProvider : public MSRowProvider {
   size_t _rowCount;
   size_t _fieldId;
 };
+
+}  // namespace wsclean
 
 #endif

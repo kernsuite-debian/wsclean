@@ -2,7 +2,7 @@
 
 import radler as rd
 import pytest
-from pytest_lazyfixture import lazy_fixture
+from pytest_lazy_fixtures import lf
 import numpy as np
 import os.path
 
@@ -15,11 +15,8 @@ MINOR_ITERATION_COUNT = 1000
 
 
 def radler_perform(radler_object: rd.Radler, minor_iteration_count: int):
-    reached_threshold = False
     iteration_number = 0
-    reached_threshold = radler_object.perform(
-        reached_threshold, iteration_number
-    )
+    reached_threshold = radler_object.perform(iteration_number)
     assert reached_threshold == False
     assert radler_object.iteration_number <= minor_iteration_count
 
@@ -88,7 +85,7 @@ def get_residual(scale: float, shift_x: int, shift_y: int):
     return residual
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 def test_num_threads(settings):
     """
     Check that only positive, non-zero number of threads are accepted.
@@ -105,7 +102,7 @@ def test_num_threads(settings):
     rd.Radler(settings, psf, residual, model, BEAM_SIZE)
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 def test_input_dtype(settings):
     """
     Check that Radler constructor only accepts numpy arrays of dtype=np.float32
@@ -133,7 +130,7 @@ def test_input_dtype(settings):
     rd.Radler(settings, psf, residual, model, BEAM_SIZE)
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 def test_matching_arrays(settings):
     """
     Check that the Radler constructor only accepts valid numpy arrays that match.
@@ -222,7 +219,7 @@ def test_matching_arrays(settings):
         )
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 def test_require_frequencies(settings):
     """
     Check that Radler requires frequencies when spectral fitting is enabled.
@@ -233,7 +230,7 @@ def test_require_frequencies(settings):
         rd.Radler(settings, image, image, image, BEAM_SIZE)
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 def test_default_args(settings):
     """
     Test calling the Radler constructor without providing optional arguments.
@@ -245,7 +242,7 @@ def test_default_args(settings):
     rd.Radler(settings, psf, residual, model, BEAM_SIZE)
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 @pytest.mark.parametrize(
     "algorithm", [rd.AlgorithmType.generic_clean, rd.AlgorithmType.multiscale]
 )
@@ -292,7 +289,7 @@ def test_point_source(
 
 
 @pytest.mark.parametrize("lm_shift_given", [True, False])
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 def test_write_component_list(settings, lm_shift_given):
     """
     Check writing of component list
@@ -355,7 +352,7 @@ def test_write_component_list(settings, lm_shift_given):
     os.remove(SOURCES_FILENAME)
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 @pytest.mark.parametrize(
     "algorithm", [rd.AlgorithmType.generic_clean, rd.AlgorithmType.multiscale]
 )
@@ -393,7 +390,7 @@ def test_one_entry_worktable(settings, algorithm, scale, source_shift):
     )
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 @pytest.mark.parametrize(
     "algorithm", [rd.AlgorithmType.generic_clean, rd.AlgorithmType.multiscale]
 )
@@ -443,7 +440,7 @@ def test_ndeconvolution_is_noriginal(settings, algorithm):
         )
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 @pytest.mark.parametrize(
     "algorithm", [rd.AlgorithmType.generic_clean, rd.AlgorithmType.multiscale]
 )
@@ -484,7 +481,7 @@ def test_image_cube_non_joined(settings, algorithm):
         )
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 @pytest.mark.parametrize(
     "algorithm", [rd.AlgorithmType.generic_clean, rd.AlgorithmType.multiscale]
 )
@@ -555,7 +552,7 @@ def test_ndeconvolution_lt_noriginal(settings, algorithm):
     np.testing.assert_allclose(models[0], model_image_ref, atol=2e-6)
 
 
-@pytest.mark.parametrize("settings", [lazy_fixture("get_settings")])
+@pytest.mark.parametrize("settings", [lf("get_settings")])
 @pytest.mark.parametrize(
     "algorithm", [rd.AlgorithmType.generic_clean, rd.AlgorithmType.multiscale]
 )

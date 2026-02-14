@@ -3,14 +3,23 @@
 
 #include <aocommon/logger.h>
 
+#include <schaapcommon/reordering/reordering.h>
+
 #include <casacore/measures/Measures/MEpoch.h>
 #include <casacore/measures/TableMeasures/ScalarMeasColumn.h>
 #include <casacore/tables/Tables/TableLocker.h>
 
 #include <memory>
 
+using schaapcommon::reordering::MSSelection;
+using schaapcommon::reordering::StorageManagerType;
+
+namespace wsclean {
+
 ContiguousMS::ContiguousMS(const string& msPath,
                            const std::string& dataColumnName,
+                           const std::string& modelColumnName,
+                           StorageManagerType modelStorageManager,
                            const MSSelection& selection,
                            aocommon::PolarizationEnum outputPolarization,
                            size_t dataDescId, bool useMPI)
@@ -24,7 +33,9 @@ ContiguousMS::ContiguousMS(const string& msPath,
       _selection(selection),
       _outputPolarization(outputPolarization),
       _msPath(msPath),
-      _dataColumnName(dataColumnName) {
+      _dataColumnName(dataColumnName),
+      _modelColumnName(modelColumnName),
+      _modelStorageManager(modelStorageManager) {
   open();
 }
 
@@ -114,9 +125,9 @@ void ContiguousMS::NextOutputRow() {
       ++_currentOutputTimestep;
       _currentOutputTime = _timeColumn(_currentOutputRow);
     }
-  } while (
-      !_selection.IsSelected(fieldId, _currentOutputTimestep, a1, a2, uvw) ||
-      (dataDescId != _dataDescId));
+  } while (!_selection.IsSelected(fieldId, _currentOutputTimestep, a1, a2,
+                                  uvw.data()) ||
+           (dataDescId != _dataDescId));
 }
 
 double ContiguousMS::StartTime() {
@@ -145,9 +156,9 @@ size_t ContiguousMS::NPolarizations() {
 }
 
 void ContiguousMS::prepareModelColumn() {
-  InitializeModelColumn(*_ms);
-  _modelColumn = casacore::ArrayColumn<casacore::Complex>(
-      *_ms, casacore::MS::columnName(casacore::MSMainEnums::MODEL_DATA));
+  InitializeModelColumn(*_ms, _modelColumnName, _modelStorageManager);
+  _modelColumn =
+      casacore::ArrayColumn<casacore::Complex>(*_ms, _modelColumnName);
   const casacore::IPosition shape(_modelColumn.shape(0));
   _modelArray = casacore::Array<std::complex<float>>(shape);
   _isModelColumnPrepared = true;
@@ -178,11 +189,13 @@ void ContiguousMS::WriteModel(const std::complex<float>* buffer, bool addToMS) {
 
   _modelColumn.get(_currentOutputRow, _modelArray);
   if (addToMS) {
-    ReverseCopyData<true>(_modelArray, startChannel, endChannel,
-                          _inputPolarizations, buffer, _outputPolarization);
+    schaapcommon::reordering::StoreData<true>(_modelArray.data(), startChannel,
+                                              endChannel, _inputPolarizations,
+                                              buffer, _outputPolarization);
   } else {
-    ReverseCopyData<false>(_modelArray, startChannel, endChannel,
-                           _inputPolarizations, buffer, _outputPolarization);
+    schaapcommon::reordering::StoreData<false>(_modelArray.data(), startChannel,
+                                               endChannel, _inputPolarizations,
+                                               buffer, _outputPolarization);
   }
   _modelColumn.put(_currentOutputRow, _modelArray);
 }
@@ -190,3 +203,5 @@ void ContiguousMS::WriteModel(const std::complex<float>* buffer, bool addToMS) {
 void ContiguousMS::MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow) {
   idToMSRow = _idToMSRow;
 }
+
+}  // namespace wsclean

@@ -2,16 +2,16 @@
 #define STRUCTURES_PRIMARY_BEAM_H_
 
 #include <string>
+#include <vector>
 
 #include "primarybeamimageset.h"
 
 #include "../io/imagefilename.h"
 
 #include "../structures/imagingtable.h"
+#include "../structures/outputchannelinfo.h"
 
 #include "../msproviders/msprovider.h"
-
-#include "../scheduling/metadatacache.h"
 
 #include <aocommon/coordinatesystem.h>
 #include <aocommon/fits/fitswriter.h>
@@ -25,9 +25,20 @@
 #include <EveryBeam/load.h>
 #endif
 
+namespace wsclean {
+
 class ImageWeights;
 class MSDataDescription;
 class Settings;
+
+struct BeamInterval {
+  size_t start_row;
+  size_t end_row;
+  double central_time;
+};
+
+std::vector<BeamInterval> GetBeamIntervals(MSProvider& ms_provider,
+                                           double seconds_before_beam_update);
 
 class PrimaryBeam {
  public:
@@ -42,38 +53,26 @@ class PrimaryBeam {
   }
 
   /**
-   * Read the beam images in and multiply facets with their gain corrections.
+   * Read the beam images in and multiply facets with their solution
+   * gain corrections.
    */
-  void CorrectBeamForFacetGain(
-      const ImageFilename& image_name, const ImagingTable& table,
-      const std::map<size_t, std::unique_ptr<MetaDataCache>>& meta_cache);
-
-  void CorrectImages(const ImageFilename& image_name,
-                     std::vector<float*>& images) {
-    if (settings_.polarizations.size() == 1 &&
-        *settings_.polarizations.begin() == aocommon::Polarization::StokesI) {
-      const PrimaryBeamImageSet beam_images = LoadStokesI(image_name);
-      beam_images.ApplyStokesI(images[0], settings_.primaryBeamLimit);
-    } else if (settings_.polarizations.size() == 4 &&
-               aocommon::Polarization::HasFullStokesPolarization(
-                   settings_.polarizations)) {
-      const PrimaryBeamImageSet beam_images = LoadFull(image_name);
-      beam_images.ApplyFullStokes(images.data(), settings_.primaryBeamLimit);
-    } else
-      throw std::runtime_error("Unsupported primary beam correction");
-  }
+  void CorrectBeamForFacetGain(const ImageFilename& image_name,
+                               const ImagingTable::Group& group,
+                               const OutputChannelInfo& channel_info);
 
   PrimaryBeamImageSet LoadFull(const ImageFilename& image_name) {
     const std::set<size_t> kFullIndices = {0, 1, 2,  3,  4,  5,  6,  7,
                                            8, 9, 10, 11, 12, 13, 14, 15};
     return Load(image_name, kFullIndices);
   }
+
   PrimaryBeamImageSet LoadDiagonal(const ImageFilename& image_name) {
-    const std::set<size_t> kDiagonalIndices = {0, 3, 8, 15};
+    const std::set<size_t> kDiagonalIndices = {0, 9, 10, 15};
     return Load(image_name, kDiagonalIndices);
   }
+
   PrimaryBeamImageSet LoadStokesI(const ImageFilename& image_name) {
-    const std::set<size_t> kStokesIIndices = {0, 15};
+    const std::set<size_t> kStokesIIndices = {0, 9, 15};
     return Load(image_name, kStokesIIndices);
   }
 
@@ -84,27 +83,21 @@ class PrimaryBeam {
                    std::shared_ptr<ImageWeights> image_weights,
                    size_t field_id);
 
+  void MakeUnitary(const ImagingTableEntry& entry,
+                   const ImageFilename& image_name, const Settings& settings);
+
   /**
-   * @brief Correct images for the primary beam by multiplying the input image
-   * by the (simplified) inverse of the beam. Before the beam is applied, the
-   * beam is corrected by solutions obtained from an H5 solution file if @param
-   * requiresH5Correction is true. In that case, the beam images are overwritten
-   * by their corrected counterparts.
+   * Correct images for the primary beam by multiplying the input image
+   * by the (simplified) inverse of the beam.
    *
-   * @param writer FitsWriter
+   * @param writer used for writing the beam fits images.
    * @param image_name Image name object from which prefixes or polarization can
    * be derived.
-   * @param filename_kind string specifying which image will be corrected
-   * @param table Imaging table of a single FacetGroup
-   * @param meta_cache MSGridder meta data cache, containing image weights an
-   * (summed) H5 facet solutions.
-   * @param requires_gain_correction Correct beam images for piecewise constant
-   * h5 solution?
+   * @param filename_kind string specifying which image will be corrected.
    */
-  void CorrectImages(
-      aocommon::FitsWriter& writer, const ImageFilename& image_name,
-      const std::string& filename_kind, const ImagingTable& table,
-      const std::map<size_t, std::unique_ptr<MetaDataCache>>& meta_cache);
+  void CorrectImages(aocommon::FitsWriter& writer,
+                     const ImageFilename& image_name,
+                     const std::string& filename_kind);
 
   size_t GetUndersamplingFactor() const { return undersample_; };
   size_t GetBeamUpdateTime() const { return seconds_before_beam_update_; };
@@ -125,11 +118,12 @@ class PrimaryBeam {
 #endif
   std::vector<std::unique_ptr<MSDataDescription>> ms_list_;
   struct MSProviderInfo {
-    MSProviderInfo(MSProvider* _provider, const MSSelection* _selection,
+    MSProviderInfo(MSProvider* _provider,
+                   const schaapcommon::reordering::MSSelection* _selection,
                    size_t _ms_index)
         : provider(_provider), selection(_selection), ms_index(_ms_index) {}
     MSProvider* provider;
-    const MSSelection* selection;
+    const schaapcommon::reordering::MSSelection* selection;
     size_t ms_index;
   };
   std::vector<MSProviderInfo> ms_providers_;
@@ -191,18 +185,20 @@ class PrimaryBeam {
    * @param result The average beam values are assigned to this vector.
    */
   double MakeBeamForMS(std::vector<aocommon::HMC4x4>& result,
-                       MSProvider& ms_provider, const MSSelection& selection,
+                       MSProvider& ms_provider,
+                       const schaapcommon::reordering::MSSelection& selection,
                        const ImageWeights& image_weights,
                        const aocommon::CoordinateSystem& coordinate_system,
                        double central_frequency, size_t field_id);
 
-  std::tuple<double, double, size_t> GetTimeInfo(MSProvider& ms_provider);
-
-  void CalculateStationWeights(const ImageWeights& image_weights,
-                               WeightMatrix& baseline_weights,
-                               SynchronizedMS& ms, MSProvider& ms_provider,
-                               const MSSelection& selection, double end_time);
+  static void CalculateStationWeights(
+      const ImageWeights& image_weights, WeightMatrix& baseline_weights,
+      SynchronizedMS& ms, MSReader& ms_reader,
+      const schaapcommon::reordering::MSSelection& selection,
+      size_t& current_row, size_t end_row);
 #endif  // HAVE_EVERYBEAM
 };
+
+}  // namespace wsclean
 
 #endif  // STRUCTURES_PRIMARY_BEAM_H_

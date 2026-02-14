@@ -7,12 +7,16 @@
 
 #include <aocommon/multibanddata.h>
 
+#include <schaapcommon/reordering/storagemanagertype.h>
+
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
 #include <casacore/tables/Tables/ArrayColumn.h>
 #include <casacore/tables/Tables/ScalarColumn.h>
 
 #include <memory>
+
+namespace wsclean {
 
 class ContiguousMSReader;
 
@@ -21,8 +25,11 @@ class ContiguousMS final : public MSProvider {
 
  public:
   ContiguousMS(const string& msPath, const std::string& dataColumnName,
-               const MSSelection& selection, aocommon::PolarizationEnum polOut,
-               size_t dataDescIndex, bool useMPI);
+               const std::string& modelColumnName,
+               schaapcommon::reordering::StorageManagerType modelStorageManager,
+               const schaapcommon::reordering::MSSelection& selection,
+               aocommon::PolarizationEnum polOut, size_t dataDescIndex,
+               bool useMPI);
 
   ContiguousMS(const ContiguousMS&) = delete;
 
@@ -73,8 +80,8 @@ class ContiguousMS final : public MSProvider {
   bool _isModelColumnPrepared;
   size_t _startRow, _endRow;
   std::vector<size_t> _idToMSRow;
-  std::vector<aocommon::PolarizationEnum> _inputPolarizations;
-  MSSelection _selection;
+  std::set<aocommon::PolarizationEnum> _inputPolarizations;
+  schaapcommon::reordering::MSSelection _selection;
   aocommon::PolarizationEnum _outputPolarization;
   std::string _msPath;
   SynchronizedMS _ms;
@@ -88,9 +95,11 @@ class ContiguousMS final : public MSProvider {
   std::unique_ptr<casacore::ArrayColumn<float>> _weightSpectrumColumn;
   std::unique_ptr<casacore::ArrayColumn<float>> _weightScalarColumn;
   std::string _dataColumnName;
+  std::string _modelColumnName;
   casacore::ArrayColumn<casacore::Complex> _dataColumn;
   casacore::ArrayColumn<bool> _flagColumn;
   casacore::ArrayColumn<casacore::Complex> _modelColumn;
+  schaapcommon::reordering::StorageManagerType _modelStorageManager;
 
   casacore::Array<std::complex<float>> _dataArray, _modelArray;
   casacore::Array<float> _weightSpectrumArray, _weightScalarArray,
@@ -99,5 +108,7 @@ class ContiguousMS final : public MSProvider {
 
   void prepareModelColumn();
 };
+
+}  // namespace wsclean
 
 #endif

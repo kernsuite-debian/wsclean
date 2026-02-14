@@ -4,11 +4,12 @@
 
 #include <algorithm>
 #include <memory>
+#include <sstream>
 
-#include <aocommon/parallelfor.h>
+#include <aocommon/dynamicfor.h>
 #include <aocommon/units/fluxdensity.h>
 
-#include <schaapcommon/fft/convolution.h>
+#include <schaapcommon/math/convolution.h>
 
 #include "algorithms/multiscale_algorithm.h"
 #include "math/dijkstra_splitter.h"
@@ -18,6 +19,156 @@ using aocommon::Logger;
 
 namespace radler::algorithms {
 
+namespace {
+
+/**
+ * Returns the nearest PSF to a selected position.
+ *
+ * When the distance is equal for multiple positions the index to the first
+ * PSF in the input is returned.
+ *
+ * @note When @a psf_offsets is empty the first index is returned. This happens
+ * when no direction-dependent PSFs are used, in that case there's always one
+ * PSF.
+ */
+size_t NearestPsfIndex(const std::vector<PsfOffset>& psf_offsets, size_t x,
+                       size_t y) noexcept {
+  if (psf_offsets.empty()) {
+    return 0;
+  }
+
+  // Calculates the squared distance between a psf_offset and the position x, y.
+  // Note comparing squared distances is the same as comparing the real
+  // distance.
+  auto distance = [x, y](const PsfOffset& psf_offset) {
+    ssize_t delta_x = psf_offset.x - x;
+    ssize_t delta_y = psf_offset.y - y;
+    return size_t(delta_x * delta_x) + size_t(delta_y * delta_y);
+  };
+
+  return std::min_element(
+             psf_offsets.begin(), psf_offsets.end(),
+             [&distance](const PsfOffset& lhs, const PsfOffset& rhs) {
+               return distance(lhs) < distance(rhs);
+             }) -
+         psf_offsets.begin();
+}
+
+/**
+ * Calculate how to split the full image into sub-images and make these
+ * sub-images. Also makes the masks belonging to the sub-images. Even when there
+ * is no full-size mask, the sub-images will have a mask that delineates the
+ * boundary to make sure that every pixel is only active in one sub-image.
+ * @param image Integrated image that is used to calculate the "minimum
+ * power"-path for splitting.
+ * @param mask Full size mask or nullptr if there is no mask. The sub-image
+ * masks are the combination of this mask and the boundary mask.
+ * @param [out] psf_image_indices used to store the indices to the nearest psf
+ * images for all subimages. Should be empty on input.
+ */
+std::vector<SubImage> MakeSubImages(const Image& image, const bool* mask,
+                                    const std::vector<PsfOffset>& psf_offsets,
+                                    const Settings& settings,
+                                    std::vector<size_t>& psf_image_indices) {
+  assert(psf_image_indices.empty());
+
+  const size_t width = image.Width();
+  const size_t height = image.Height();
+  const size_t avgHSubImageSize = width / settings.parallel.grid_width;
+  const size_t avgVSubImageSize = height / settings.parallel.grid_height;
+  Image dividingLine(width, height, 0.0);
+  aocommon::UVector<bool> largeScratchMask(width * height);
+
+  math::DijkstraSplitter divisor(width, height);
+
+  struct VerticalArea {
+    aocommon::UVector<bool> mask;
+    size_t x, width;
+  };
+  std::vector<VerticalArea> verticalAreas(settings.parallel.grid_width);
+
+  Logger::Info << "Calculating edge paths...\n";
+  aocommon::DynamicFor<size_t> splitLoop;
+
+  // Divide into columns (i.e. construct the vertical lines)
+  splitLoop.Run(1, settings.parallel.grid_width, [&](size_t divNr) {
+    const size_t splitMiddle = width * divNr / settings.parallel.grid_width;
+    const size_t splitStart = splitMiddle - avgHSubImageSize / 4;
+    const size_t splitEnd = splitMiddle + avgHSubImageSize / 4;
+    divisor.DivideVertically(image.Data(), dividingLine.Data(), splitStart,
+                             splitEnd);
+  });
+  for (size_t divNr = 0; divNr != settings.parallel.grid_width; ++divNr) {
+    const size_t midX =
+        divNr * width / settings.parallel.grid_width + avgHSubImageSize / 2;
+    VerticalArea& area = verticalAreas[divNr];
+    divisor.FloodVerticalArea(dividingLine.Data(), midX,
+                              largeScratchMask.data(), area.x, area.width);
+    area.mask.resize(area.width * height);
+    Image::TrimBox(area.mask.data(), area.x, 0, area.width, height,
+                   largeScratchMask.data(), width, height);
+  }
+
+  // Make the rows (horizontal lines)
+  dividingLine = 0.0f;
+  splitLoop.Run(1, settings.parallel.grid_height, [&](size_t divNr) {
+    const size_t splitMiddle = height * divNr / settings.parallel.grid_height;
+    const size_t splitStart = splitMiddle - avgVSubImageSize / 4;
+    const size_t splitEnd = splitMiddle + avgVSubImageSize / 4;
+    divisor.DivideHorizontally(image.Data(), dividingLine.Data(), splitStart,
+                               splitEnd);
+  });
+
+  Logger::Info << "Calculating bounding boxes and submasks...\n";
+
+  // Find the bounding boxes and clean masks for each subimage
+  aocommon::UVector<bool> bounding_mask(width * height);
+  std::vector<SubImage> subImages;
+
+  for (size_t y = 0; y != settings.parallel.grid_height; ++y) {
+    const size_t midY =
+        y * height / settings.parallel.grid_height + avgVSubImageSize / 2;
+    size_t hAreaY, hAreaWidth;
+    divisor.FloodHorizontalArea(dividingLine.Data(), midY,
+                                largeScratchMask.data(), hAreaY, hAreaWidth);
+
+    for (size_t x = 0; x != settings.parallel.grid_width; ++x) {
+      subImages.emplace_back();
+      SubImage& subImage = subImages.back();
+      subImage.index = subImages.size() - 1;
+      const VerticalArea& vArea = verticalAreas[x];
+      divisor.GetBoundingMask(vArea.mask.data(), vArea.x, vArea.width,
+                              largeScratchMask.data(), bounding_mask.data(),
+                              subImage.x, subImage.y, subImage.width,
+                              subImage.height);
+      Logger::Debug << "Subimage " << subImages.size() << " at (" << subImage.x
+                    << "," << subImage.y << ") - ("
+                    << subImage.x + subImage.width << ","
+                    << subImage.y + subImage.height << ")\n";
+      subImage.mask.resize(subImage.width * subImage.height);
+      Image::TrimBox(subImage.mask.data(), subImage.x, subImage.y,
+                     subImage.width, subImage.height, bounding_mask.data(),
+                     width, height);
+      subImage.boundary_mask = subImage.mask;
+      // If a user mask is active, take the union of that mask with the boundary
+      // mask (note that 'mask' is reused as a scratch space)
+      if (mask != nullptr) {
+        Image::TrimBox(bounding_mask.data(), subImage.x, subImage.y,
+                       subImage.width, subImage.height, mask, width, height);
+        for (size_t i = 0; i != subImage.mask.size(); ++i) {
+          subImage.mask[i] = subImage.mask[i] && bounding_mask[i];
+        }
+      }
+      psf_image_indices.emplace_back(
+          NearestPsfIndex(psf_offsets, subImage.x + subImage.width / 2,
+                          subImage.y + subImage.height / 2));
+    }
+  }
+  return subImages;
+}
+
+}  // namespace
+
 ParallelDeconvolution::ParallelDeconvolution(const Settings& settings)
     : settings_(settings),
       mask_(nullptr),
@@ -25,7 +176,7 @@ ParallelDeconvolution::ParallelDeconvolution(const Settings& settings)
       use_per_scale_masks_(false) {
   // Make all FFTWF plan calls inside ParallelDeconvolution
   // thread safe.
-  schaapcommon::fft::MakeFftwfPlannerThreadSafe();
+  schaapcommon::math::MakeFftwfPlannerThreadSafe();
 }
 
 ParallelDeconvolution::~ParallelDeconvolution() = default;
@@ -82,7 +233,6 @@ void ParallelDeconvolution::SetAlgorithm(
       std::min(settings_.parallel.max_threads, algorithms_.size());
   const size_t threads_per_alg =
       (settings_.thread_count + parallel_subimages - 1) / parallel_subimages;
-  algorithms_.front()->SetThreadCount(threads_per_alg);
   Logger::Debug << "Parallel deconvolution will use " << algorithms_.size()
                 << " subimages, each using " << threads_per_alg
                 << " threads.\n";
@@ -131,39 +281,6 @@ void ParallelDeconvolution::SetSpectrallyForcedImages(
   }
 }
 
-/**
- * Returns the nearest PSF to a selected position.
- *
- * When the distance is equal for multiple positions the index to the first
- * PSF in the input is returned.
- *
- * @note When @a psf_offsets is empty the first index is returned. This happens
- * when no direction-dependent PSFs are used, in that case there's always one
- * PSF.
- */
-[[nodiscard]] static size_t NearestPsfIndex(
-    const std::vector<PsfOffset>& psf_offsets, size_t x, size_t y) noexcept {
-  if (psf_offsets.empty()) {
-    return 0;
-  }
-
-  // Calculates the squared distance between a psf_offset and the position x, y.
-  // Note comparing squared distances is the same as comparing the real
-  // distance.
-  auto distance = [x, y](const PsfOffset& psf_offset) {
-    ssize_t delta_x = psf_offset.x - x;
-    ssize_t delta_y = psf_offset.y - y;
-    return size_t(delta_x * delta_x) + size_t(delta_y * delta_y);
-  };
-
-  return std::min_element(
-             psf_offsets.begin(), psf_offsets.end(),
-             [&distance](const PsfOffset& lhs, const PsfOffset& rhs) {
-               return distance(lhs) < distance(rhs);
-             }) -
-         psf_offsets.begin();
-}
-
 void ParallelDeconvolution::RunSubImage(
     SubImage& sub_image, ImageSet& data_image, const ImageSet& model_image,
     ImageSet& result_model, const std::vector<aocommon::Image>& psf_images,
@@ -187,6 +304,10 @@ void ParallelDeconvolution::RunSubImage(
         sub_image.x, sub_image.y, sub_image.x + sub_image.width,
         sub_image.y + sub_image.height, width, sub_image.boundary_mask.data());
   }
+
+  // Make a copy of the images at the start to be able to undo the results of
+  // deconvolution if it diverges.
+  std::vector<aocommon::Image> initial_model_images = sub_model->Images();
 
   // Construct the smaller psfs
   std::vector<Image> sub_psfs;
@@ -258,14 +379,40 @@ void ParallelDeconvolution::RunSubImage(
     }
   }
 
-  sub_image.peak = algorithms_[sub_image.index]->ExecuteMajorIteration(
-      *sub_data, *sub_model, sub_psfs, sub_image.reached_major_threshold);
+  const double peak_at_start = std::fabs(sub_image.peak);
+
+  const DeconvolutionResult result =
+      algorithms_[sub_image.index]->ExecuteMajorIteration(*sub_data, *sub_model,
+                                                          sub_psfs);
+
+  sub_image.peak = result.final_peak_value;
+  sub_image.reached_major_threshold = result.another_iteration_required;
+
+  // When diverging, a warning is displayed and the results of this sub-image
+  // are not written back to the full image.
+  const bool converging = (settings_.divergence_limit == 0.0 ||
+                           std::fabs(sub_image.peak) <=
+                               peak_at_start * settings_.divergence_limit) &&
+                          std::isfinite(sub_image.peak) && !result.is_diverging;
+  if (!converging && !find_peak_only) {
+    std::ostringstream warning_str;
+    warning_str << "Peak of sub-image " << sub_image.index << " increased from "
+                << aocommon::units::FluxDensity::ToNiceString(peak_at_start)
+                << " to "
+                << aocommon::units::FluxDensity::ToNiceString(sub_image.peak)
+                << " and deconvolution probably diverged: resetting.\n";
+    aocommon::Logger::Warn << warning_str.str();
+
+    // As we are diverging, this sub-image should not cause a new major
+    // iteration
+    sub_image.reached_major_threshold = false;
+  }
 
   // Since this was an RMS image specifically for this subimage size, we free it
   // immediately
   algorithms_[sub_image.index]->SetRmsFactorImage(Image());
 
-  if (track_per_scale_masks_) {
+  if (track_per_scale_masks_ && converging && !find_peak_only) {
     const std::lock_guard<std::mutex> lock(mutex);
     MultiScaleAlgorithm& multi_scale_algorithm =
         static_cast<class MultiScaleAlgorithm&>(*algorithms_[sub_image.index]);
@@ -275,7 +422,7 @@ void ParallelDeconvolution::RunSubImage(
         scale_masks_.emplace_back(width, height);
       }
     }
-    Logger::Debug << "Compressing scale dependent masks...\n";
+    Logger::Debug << "Compressing scale-dependent masks...\n";
     for (size_t scale_index = 0;
          scale_index != multi_scale_algorithm.ScaleCount(); ++scale_index) {
       const aocommon::UVector<bool>& ms_mask =
@@ -307,24 +454,32 @@ void ParallelDeconvolution::RunSubImage(
 
   if (settings_.save_source_list &&
       settings_.algorithm_type == AlgorithmType::kMultiscale) {
-    const std::lock_guard<std::mutex> lock(mutex);
     MultiScaleAlgorithm& algorithm =
         static_cast<MultiScaleAlgorithm&>(*algorithms_[sub_image.index]);
-    if (!component_list_) {
-      component_list_ = std::make_unique<ComponentList>(
-          width, height, algorithm.ScaleCount(), data_image.Size());
+    if (converging) {
+      const std::lock_guard<std::mutex> lock(mutex);
+      if (!component_list_) {
+        component_list_ = std::make_unique<ComponentList>(
+            width, height, algorithm.ScaleCount(), data_image.Size());
+      }
+      component_list_->Add(algorithm.GetComponentList(), sub_image.x,
+                           sub_image.y);
     }
-    component_list_->Add(algorithm.GetComponentList(), sub_image.x,
-                         sub_image.y);
     algorithm.ClearComponentList();
   }
 
   if (find_peak_only) {
     algorithms_[sub_image.index]->SetMaxIterations(max_n_iter);
   } else {
-    const std::lock_guard<std::mutex> lock(mutex);
-    data_image.CopyMasked(*sub_data, sub_image.x, sub_image.y,
-                          sub_image.boundary_mask.data());
+    if (converging) {
+      const std::lock_guard<std::mutex> lock(mutex);
+      data_image.CopyMasked(*sub_data, sub_image.x, sub_image.y,
+                            sub_image.boundary_mask.data());
+    } else {
+      // The result model starts empty. Even when diverging, the model
+      // as it was before this iteration should be added to it.
+      sub_model->SetImages(std::move(initial_model_images));
+    }
     result_model.AddSubImage(*sub_model, sub_image.x, sub_image.y);
   }
 }
@@ -363,9 +518,9 @@ void ParallelDeconvolution::ExecuteSingleThreadedRun(
                            first_psf_image.Height() != data_image.Height();
 
   if (!resize_psfs) {
-    algorithm.ExecuteMajorIteration(data_image, model_image,
-                                    psf_images[psf_image_index],
-                                    reached_major_threshold);
+    const DeconvolutionResult result = algorithm.ExecuteMajorIteration(
+        data_image, model_image, psf_images[psf_image_index]);
+    reached_major_threshold = result.another_iteration_required;
   } else {
     // When using direction-dependent PSFs, the PSFs can only be smaller.
     assert(first_psf_image.Width() <= data_image.Width());
@@ -376,8 +531,9 @@ void ParallelDeconvolution::ExecuteSingleThreadedRun(
       resized_psf_images.push_back(
           psf_image.Untrim(data_image.Width(), data_image.Height()));
     }
-    algorithm.ExecuteMajorIteration(data_image, model_image, resized_psf_images,
-                                    reached_major_threshold);
+    const DeconvolutionResult result = algorithm.ExecuteMajorIteration(
+        data_image, model_image, resized_psf_images);
+    reached_major_threshold = result.another_iteration_required;
   }
 }
 
@@ -387,101 +543,15 @@ void ParallelDeconvolution::ExecuteParallelRun(
     const std::vector<PsfOffset>& psf_offsets, bool& reached_major_threshold) {
   const size_t width = data_image.Width();
   const size_t height = data_image.Height();
-  const size_t avgHSubImageSize = width / settings_.parallel.grid_width;
-  const size_t avgVSubImageSize = height / settings_.parallel.grid_height;
 
   Image image(width, height);
-  Image dividingLine(width, height, 0.0);
-  aocommon::UVector<bool> largeScratchMask(width * height);
   data_image.GetLinearIntegrated(image);
 
-  math::DijkstraSplitter divisor(width, height);
-
-  struct VerticalArea {
-    aocommon::UVector<bool> mask;
-    size_t x, width;
-  };
-  std::vector<VerticalArea> verticalAreas(settings_.parallel.grid_width);
-
-  Logger::Info << "Calculating edge paths...\n";
-  aocommon::ParallelFor<size_t> splitLoop(settings_.thread_count);
-
-  // Divide into columns (i.e. construct the vertical lines)
-  splitLoop.Run(1, settings_.parallel.grid_width, [&](size_t divNr, size_t) {
-    const size_t splitMiddle = width * divNr / settings_.parallel.grid_width;
-    const size_t splitStart = splitMiddle - avgHSubImageSize / 4;
-    const size_t splitEnd = splitMiddle + avgHSubImageSize / 4;
-    divisor.DivideVertically(image.Data(), dividingLine.Data(), splitStart,
-                             splitEnd);
-  });
-  for (size_t divNr = 0; divNr != settings_.parallel.grid_width; ++divNr) {
-    const size_t midX =
-        divNr * width / settings_.parallel.grid_width + avgHSubImageSize / 2;
-    VerticalArea& area = verticalAreas[divNr];
-    divisor.FloodVerticalArea(dividingLine.Data(), midX,
-                              largeScratchMask.data(), area.x, area.width);
-    area.mask.resize(area.width * height);
-    Image::TrimBox(area.mask.data(), area.x, 0, area.width, height,
-                   largeScratchMask.data(), width, height);
-  }
-
-  // Make the rows (horizontal lines)
-  dividingLine = 0.0f;
-  splitLoop.Run(1, settings_.parallel.grid_height, [&](size_t divNr, size_t) {
-    const size_t splitMiddle = height * divNr / settings_.parallel.grid_height;
-    const size_t splitStart = splitMiddle - avgVSubImageSize / 4;
-    const size_t splitEnd = splitMiddle + avgVSubImageSize / 4;
-    divisor.DivideHorizontally(image.Data(), dividingLine.Data(), splitStart,
-                               splitEnd);
-  });
-
-  Logger::Info << "Calculating bounding boxes and submasks...\n";
-
-  // Find the bounding boxes and clean masks for each subimage
-  aocommon::UVector<bool> mask(width * height);
-  std::vector<SubImage> subImages;
   // The index with the nearest psf_images for all subimages.
   std::vector<size_t> psf_image_indices;
 
-  for (size_t y = 0; y != settings_.parallel.grid_height; ++y) {
-    const size_t midY =
-        y * height / settings_.parallel.grid_height + avgVSubImageSize / 2;
-    size_t hAreaY, hAreaWidth;
-    divisor.FloodHorizontalArea(dividingLine.Data(), midY,
-                                largeScratchMask.data(), hAreaY, hAreaWidth);
-
-    for (size_t x = 0; x != settings_.parallel.grid_width; ++x) {
-      subImages.emplace_back();
-      SubImage& subImage = subImages.back();
-      subImage.index = subImages.size() - 1;
-      const VerticalArea& vArea = verticalAreas[x];
-      divisor.GetBoundingMask(vArea.mask.data(), vArea.x, vArea.width,
-                              largeScratchMask.data(), mask.data(), subImage.x,
-                              subImage.y, subImage.width, subImage.height);
-      Logger::Debug << "Subimage " << subImages.size() << " at (" << subImage.x
-                    << "," << subImage.y << ") - ("
-                    << subImage.x + subImage.width << ","
-                    << subImage.y + subImage.height << ")\n";
-      subImage.mask.resize(subImage.width * subImage.height);
-      Image::TrimBox(subImage.mask.data(), subImage.x, subImage.y,
-                     subImage.width, subImage.height, mask.data(), width,
-                     height);
-      subImage.boundary_mask = subImage.mask;
-      // If a user mask is active, take the union of that mask with the boundary
-      // mask (note that 'mask' is reused as a scratch space)
-      if (mask_ != nullptr) {
-        Image::TrimBox(mask.data(), subImage.x, subImage.y, subImage.width,
-                       subImage.height, mask_, width, height);
-        for (size_t i = 0; i != subImage.mask.size(); ++i) {
-          subImage.mask[i] = subImage.mask[i] && mask[i];
-        }
-      }
-      psf_image_indices.emplace_back(
-          NearestPsfIndex(psf_offsets, subImage.x + subImage.width / 2,
-                          subImage.y + subImage.height / 2));
-    }
-  }
-  verticalAreas.clear();
+  std::vector<SubImage> subImages =
+      MakeSubImages(image, mask_, psf_offsets, settings_, psf_image_indices);
 
   // Initialize loggers
   std::mutex mutex;
@@ -492,10 +562,9 @@ void ParallelDeconvolution::ExecuteParallelRun(
   }
 
   // Find the starting peak over all subimages
-  aocommon::ParallelFor<size_t> loop(settings_.parallel.max_threads);
   ImageSet resultModel(model_image, model_image.Width(), model_image.Height());
   resultModel = 0.0;
-  loop.Run(0, algorithms_.size(), [&](size_t index) {
+  aocommon::RecursiveFor::NestedRun(0, algorithms_.size(), [&](size_t index) {
     logs_.Activate(index);
     RunSubImage(subImages[index], data_image, model_image, resultModel,
                 psf_images[psf_image_indices[index]], 0.0, true, mutex);
@@ -507,7 +576,7 @@ void ParallelDeconvolution::ExecuteParallelRun(
   });
   double maxValue = 0.0;
   size_t indexOfMax = 0;
-  for (SubImage& img : subImages) {
+  for (const SubImage& img : subImages) {
     if (img.peak > maxValue) {
       maxValue = img.peak;
       indexOfMax = img.index;
@@ -518,7 +587,7 @@ void ParallelDeconvolution::ExecuteParallelRun(
   double mIterThreshold = maxValue * (1.0 - settings_.major_loop_gain);
 
   // Run the deconvolution
-  loop.Run(0, algorithms_.size(), [&](size_t index) {
+  aocommon::RecursiveFor::NestedRun(0, algorithms_.size(), [&](size_t index) {
     logs_.Activate(index);
     RunSubImage(subImages[index], data_image, model_image, resultModel,
                 psf_images[psf_image_indices[index]], mIterThreshold, false,

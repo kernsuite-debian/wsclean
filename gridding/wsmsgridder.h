@@ -1,7 +1,7 @@
 #ifndef WS_MS_GRIDDER_H
 #define WS_MS_GRIDDER_H
 
-#include "msgridderbase.h"
+#include "msgridder.h"
 #include "wstackinggridder.h"
 
 #include "../structures/resources.h"
@@ -17,32 +17,46 @@
 #include <memory>
 #include <thread>
 
-class WSMSGridder final : public MSGridderBase {
+namespace wsclean {
+
+class WSMSGridder final : public MsGridder {
  public:
   typedef WStackingGridder<float> GridderType;
 
-  WSMSGridder(const Settings& settings, const Resources& resources);
-  ~WSMSGridder() noexcept;
+  WSMSGridder(const Settings& settings, const Resources& resources,
+              MsProviderCollection& ms_provider_collection);
+  ~WSMSGridder() noexcept final;
 
-  virtual void Invert() override;
+  size_t GetNInversionPasses() const final { return _gridder->NPasses(); }
+  void StartInversion() final;
+  void StartInversionPass(size_t pass_index) final;
+  size_t GridMeasurementSet(const MsProviderCollection::MsData& ms_data) final;
+  void FinishInversionPass(size_t pass_index) final;
+  void FinishInversion() final;
 
-  virtual void Predict(std::vector<aocommon::Image>&& images) override;
+  size_t GetNPredictPasses() const final { return _gridder->NPasses(); }
+  void StartPredict(std::vector<aocommon::Image>&& images) final;
+  void StartPredictPass(size_t pass_index) final;
+  size_t PredictMeasurementSet(
+      const MsProviderCollection::MsData& ms_data) final;
+  void FinishPredictPass() final;
+  void FinishPredict() final;
 
-  virtual std::vector<aocommon::Image> ResultImages() override {
+  std::vector<aocommon::Image> ResultImages() final {
     if (IsComplex())
       return {std::move(_realImage), std::move(_imaginaryImage)};
     else
       return {std::move(_realImage)};
   }
-  virtual void FreeImagingData() override { _gridder.reset(); }
+  void FreeImagingData() final { _gridder.reset(); }
 
   size_t AntialiasingKernelSize() const { return _antialiasingKernelSize; }
   size_t OverSamplingFactor() const { return _overSamplingFactor; }
 
-  bool HasNWSize() const { return _nwWidth != 0 || _nwHeight != 0; }
-  size_t NWWidth() const { return _nwWidth; }
-  size_t NWHeight() const { return _nwHeight; }
-  double NWFactor() const { return _nwFactor; }
+  bool HasNWSize() const { return NWWidth() != 0 || NWHeight() != 0; }
+  size_t NWWidth() const { return GetSettings().widthForNWCalculation; }
+  size_t NWHeight() const { return GetSettings().heightForNWCalculation; }
+  double NWFactor() const { return GetSettings().nWLayersFactor; }
 
  private:
   struct InversionWorkSample {
@@ -55,12 +69,8 @@ class WSMSGridder final : public MSGridderBase {
     size_t rowId;
   };
 
-  void gridMeasurementSet(MSData& msData);
-
-  void countSamplesPerLayer(MSData& msData);
-  virtual size_t getSuggestedWGridSize() const override;
-
-  void predictMeasurementSet(MSData& msData, GainMode gain_mode);
+  void countSamplesPerLayer(MsProviderCollection::MsData& msData);
+  size_t GetSuggestedWGridSize() const final;
 
   void startInversionWorkThreads(size_t maxChannelCount);
   void finishInversionWorkThreads();
@@ -71,20 +81,20 @@ class WSMSGridder final : public MSGridderBase {
                          const aocommon::BandData* bandData);
 
   void predictWriteThread(aocommon::Lane<PredictionWorkItem>* samplingWorkLane,
-                          const MSData* msData,
+                          const MsProviderCollection::MsData* msData,
                           const aocommon::BandData* bandData,
                           GainMode gain_mode);
 
   std::unique_ptr<GridderType> _gridder;
   std::vector<aocommon::Lane<InversionWorkSample>> _inversionCPULanes;
   std::vector<std::thread> _threadGroup;
-  size_t _nwWidth, _nwHeight;
-  double _nwFactor;
   size_t _antialiasingKernelSize, _overSamplingFactor;
   const Resources _resources;
   size_t _laneBufferSize;
   aocommon::Image _realImage;
   aocommon::Image _imaginaryImage;
 };
+
+}  // namespace wsclean
 
 #endif

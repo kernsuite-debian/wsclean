@@ -106,10 +106,11 @@ PixelPosition Facet::Centroid() const {
       boost::geometry::model::point<float, 2, boost::geometry::cs::cartesian>;
   boost::geometry::model::polygon<point_f> poly;
 
-  point_f x;
   for (const PixelPosition& pixel : pixels_) {
     boost::geometry::append(poly, point_f(pixel.x, pixel.y));
   }
+
+  point_f x{};
   boost::geometry::centroid(poly, x);
   return PixelPosition(x.get<0>(), x.get<1>());
 }

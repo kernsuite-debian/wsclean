@@ -1,60 +1,78 @@
 #include "directmsgridder.h"
 
-#include "../main/progressbar.h"
+#include "msgriddermanager.h"
 
+#include "../main/progressbar.h"
 #include "../msproviders/msprovider.h"
 #include "../msproviders/msreaders/msreader.h"
 
 #include <thread>
 #include <vector>
 
-template <typename num_t>
-DirectMSGridder<num_t>::DirectMSGridder(const Settings& settings,
-                                        const Resources& resources)
-    : MSGridderBase(settings), _resources(resources) {}
+#include <aocommon/threadpool.h>
+
+namespace wsclean {
 
 template <typename num_t>
-void DirectMSGridder<num_t>::Invert() {
-  initializeSqrtLMLookupTable();
-  const size_t width = TrimWidth(), height = TrimHeight();
+DirectMSGridder<num_t>::DirectMSGridder(
+    const Settings& settings, const Resources& resources,
+    MsProviderCollection& ms_provider_collection)
+    : MsGridder(settings, ms_provider_collection), _resources(resources) {}
 
-  std::vector<MSData> msDataVector;
-  initializeMSDataVector(msDataVector);
-  resetVisibilityCounters();
+template <typename num_t>
+void DirectMSGridder<num_t>::StartInversion() {
+  _sqrtLMTable = GetSqrtLMLookupTable();
+  ResetVisibilityCounters();
 
-  ProgressBar progress("Performing direct Fourier transform");
+  progress_bar_ =
+      std::make_unique<ProgressBar>("Performing direct Fourier transform");
 
   _inversionLane.resize(_resources.NCpus() * 1024);
 
-  std::vector<std::thread> threads;
-  threads.reserve(_resources.NCpus());
   for (size_t t = 0; t != _resources.NCpus(); ++t) {
-    _layers.emplace_back(allocate());
-    std::fill(_layers[t], _layers[t] + width * height, num_t(0.0));
-    threads.emplace_back(
-        [&](size_t threadIndex) { inversionWorker(threadIndex); }, t);
+    _layers.emplace_back(aocommon::ImageBase<num_t>(TrimWidth(), TrimHeight(),
+                                                    static_cast<num_t>(0.0)));
   }
 
-  for (size_t i = 0; i != MeasurementSetCount(); ++i) {
-    MSData& msData = msDataVector[i];
-    invertMeasurementSet(msData, progress, i);
-  }
+  aocommon::ThreadPool& thread_pool = aocommon::ThreadPool::GetInstance();
+  thread_pool.SetNThreads(_resources.NCpus() + 1);
+  thread_pool.StartParallelExecution([&](size_t thread_index) {
+    const size_t layer = thread_index - 1;
+    InversionSample sample;
+    while (_inversionLane.read(sample)) {
+      gridSample(sample, layer);
+    }
+  });
+}
 
+template <typename num_t>
+size_t DirectMSGridder<num_t>::GridMeasurementSet(
+    const MsProviderCollection::MsData& ms_data) {
+  InvertMeasurementSet(ms_data, ms_data.internal_ms_index);
+  return 0;
+}
+
+template <typename num_t>
+void DirectMSGridder<num_t>::FinishInversion() {
   _inversionLane.write_end();
-  for (std::thread& t : threads) t.join();
-  threads.clear();
+  aocommon::ThreadPool::GetInstance().FinishParallelExecution();
 
-  num_t* scratch;
-  scratch = std::move(_layers.back());
+  aocommon::ImageBase<num_t> scratch = std::move(_layers.back());
   _layers.pop_back();
 
-  for (const num_t* layer : _layers) {
-    for (size_t i = 0; i != width * height; ++i) scratch[i] += layer[i];
+  for (const aocommon::ImageBase<num_t>& layer : _layers) {
+    scratch += layer;
   }
+
+  _layers.clear();
+  _sqrtLMTable.Reset();
+
+  const size_t width = TrimWidth();
+  const size_t height = TrimHeight();
 
   // Wrap the image correctly and normalize it
   _image = aocommon::Image(TrimWidth(), TrimHeight());
-  double wFactor = 1.0 / totalWeight();
+  const double weight_factor = 1.0 / ImageWeight();
   for (size_t y = 0; y != height; ++y) {
     size_t ySrc = (height - y) + height / 2;
     if (ySrc >= height) ySrc -= height;
@@ -63,14 +81,11 @@ void DirectMSGridder<num_t>::Invert() {
       size_t xSrc = x + width / 2;
       if (xSrc >= width) xSrc -= width;
 
-      _image[x + y * width] = scratch[xSrc + ySrc * width] * wFactor;
+      _image[x + y * width] = scratch[xSrc + ySrc * width] * weight_factor;
     }
   }
 
-  freeImg(scratch);
-  for (num_t* layer : _layers) freeImg(layer);
-  _layers.clear();
-  freeImg(_sqrtLMTable);
+  progress_bar_.reset();
 }
 
 template <typename num_t>
@@ -85,14 +100,17 @@ inline void DirectMSGridder<num_t>::gridSample(const InversionSample& sample,
   //   Adding those together gives one real value:
   //     I+Ic = real(V) 2 cos (2 pi (ul + vm + w (sqrt(1 - l^2 - m^2) - 1))) -
   //            imag(V) 2 sin (2 pi (ul + vm + w (sqrt(1 - l^2 - m^2) - 1)))
-  num_t* layer = _layers[layerIndex];
+  aocommon::ImageBase<num_t>& layer = _layers[layerIndex];
   const std::complex<num_t> val = sample.sample;
-  const size_t width = TrimWidth(), height = TrimHeight();
-  const num_t minTwoPi = num_t(-2.0 * M_PI), u = sample.uInLambda,
-              v = sample.vInLambda, w = sample.wInLambda;
+  const size_t width = TrimWidth();
+  const size_t height = TrimHeight();
+  constexpr num_t minTwoPi = num_t(-2.0 * M_PI);
+  const num_t u = sample.uInLambda;
+  const num_t v = sample.vInLambda;
+  const num_t w = sample.wInLambda;
 
   for (size_t y = 0; y != height; ++y) {
-    size_t yIndex = y * height;
+    const size_t yIndex = y * width;
 
     size_t ySrc = (height - y) + height / 2;
     if (ySrc >= height) ySrc -= height;
@@ -105,8 +123,8 @@ inline void DirectMSGridder<num_t>::gridSample(const InversionSample& sample,
       const num_t l =
           num_t(((width / 2) - (num_t)xSrc) * PixelSizeX() + LShift());
 
-      size_t index = yIndex + x;
-      num_t angle = minTwoPi * (u * l + v * m + w * _sqrtLMTable[index]);
+      const size_t index = yIndex + x;
+      const num_t angle = minTwoPi * (u * l + v * m + w * _sqrtLMTable[index]);
       layer[index] +=
           val.real() * std::cos(angle) - val.imag() * std::sin(angle);
     }
@@ -114,74 +132,82 @@ inline void DirectMSGridder<num_t>::gridSample(const InversionSample& sample,
 }
 
 template <typename num_t>
-void DirectMSGridder<num_t>::inversionWorker(size_t layer) {
-  InversionSample sample;
-  while (_inversionLane.read(sample)) {
-    gridSample(sample, layer);
-  }
-}
+void DirectMSGridder<num_t>::InvertMeasurementSet(
+    const MsProviderCollection::MsData& ms_data, size_t ms_index) {
+  const size_t n_vis_polarizations = ms_data.ms_provider->NPolarizations();
+  const aocommon::BandData selected_band(ms_data.SelectedBand());
 
-template <typename num_t>
-void DirectMSGridder<num_t>::invertMeasurementSet(
-    const MSGridderBase::MSData& msData, ProgressBar& progress,
-    size_t msIndex) {
-  StartMeasurementSet(msData, false);
-  const size_t n_vis_polarizations = msData.msProvider->NPolarizations();
-  const aocommon::BandData selectedBand(msData.SelectedBand());
-  aocommon::UVector<std::complex<float>> modelBuffer(
-      selectedBand.ChannelCount() * n_vis_polarizations);
-  aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount() *
-                                        n_vis_polarizations);
-  aocommon::UVector<bool> isSelected(selectedBand.ChannelCount(), true);
+  const size_t data_size = selected_band.ChannelCount() * n_vis_polarizations;
+  aocommon::UVector<std::complex<float>> model_buffer(data_size);
+  aocommon::UVector<float> weight_buffer(data_size);
+  aocommon::UVector<bool> selection_buffer(selected_band.ChannelCount(), true);
 
-  InversionRow newItem;
-  aocommon::UVector<std::complex<float>> newItemData(
-      selectedBand.ChannelCount() * n_vis_polarizations);
-  newItem.data = newItemData.data();
+  InversionRow row_data;
+  aocommon::UVector<std::complex<float>> row_visibilities(data_size);
+  row_data.data = row_visibilities.data();
 
-  std::vector<size_t> idToMSRow;
-  msData.msProvider->MakeIdToMSRowMapping(idToMSRow);
+  std::vector<size_t> id_to_ms_row;
+  ms_data.ms_provider->MakeIdToMSRowMapping(id_to_ms_row);
   size_t rowIndex = 0;
-  std::unique_ptr<MSReader> msReader = msData.msProvider->MakeReader();
-  while (msReader->CurrentRowAvailable()) {
-    progress.SetProgress(msIndex * idToMSRow.size() + rowIndex,
-                         MeasurementSetCount() * idToMSRow.size());
+  std::unique_ptr<MSReader> ms_reader = ms_data.ms_provider->MakeReader();
+  while (ms_reader->CurrentRowAvailable()) {
+    progress_bar_->SetProgress(ms_index * id_to_ms_row.size() + rowIndex,
+                               GetMsCount() * id_to_ms_row.size());
 
-    MSProvider::MetaData metaData;
-    msReader->ReadMeta(metaData);
-    newItem.uvw[0] = metaData.uInM;
-    newItem.uvw[1] = metaData.vInM;
-    newItem.uvw[2] = metaData.wInM;
+    MSProvider::MetaData metadata;
+    ms_reader->ReadMeta(metadata);
+    row_data.uvw[0] = metadata.uInM;
+    row_data.uvw[1] = metadata.vInM;
+    row_data.uvw[2] = metadata.wInM;
 
-    GetCollapsedVisibilities(*msReader, msData.antennaNames, newItem,
-                             selectedBand, weightBuffer.data(),
-                             modelBuffer.data(), isSelected.data(), metaData);
+    GetCollapsedVisibilities(*ms_reader, ms_data.antenna_names.size(), row_data,
+                             selected_band, weight_buffer.data(),
+                             model_buffer.data(), selection_buffer.data(),
+                             metadata);
     InversionSample sample;
-    for (size_t ch = 0; ch != selectedBand.ChannelCount(); ++ch) {
-      const double wl = selectedBand.ChannelWavelength(ch);
-      sample.uInLambda = newItem.uvw[0] / wl;
-      sample.vInLambda = newItem.uvw[1] / wl;
-      sample.wInLambda = newItem.uvw[2] / wl;
-      sample.sample = newItem.data[ch];
+    for (size_t channel = 0; channel != selected_band.ChannelCount();
+         ++channel) {
+      const double wavelength = selected_band.ChannelWavelength(channel);
+      sample.uInLambda = row_data.uvw[0] / wavelength;
+      sample.vInLambda = row_data.uvw[1] / wavelength;
+      sample.wInLambda = row_data.uvw[2] / wavelength;
+      sample.sample = row_data.data[channel];
       _inversionLane.write(sample);
     }
 
-    msReader->NextInputRow();
+    ms_reader->NextInputRow();
     ++rowIndex;
   }
 }
 
 template <typename num_t>
-void DirectMSGridder<num_t>::Predict(std::vector<aocommon::Image>&& /*image*/) {
+void DirectMSGridder<num_t>::StartPredict(
+    std::vector<aocommon::Image>&& /*image*/) {
   throw std::runtime_error(
       "Prediction not yet implemented for direct FT gridding");
 }
 
 template <typename num_t>
-void DirectMSGridder<num_t>::initializeSqrtLMLookupTable() {
-  const size_t width = TrimWidth(), height = TrimHeight();
-  _sqrtLMTable = allocate();
-  num_t* iter = _sqrtLMTable;
+size_t DirectMSGridder<num_t>::PredictMeasurementSet(
+    const MsProviderCollection::MsData& /*ms_data*/) {
+  throw std::runtime_error(
+      "Prediction not yet implemented for direct FT gridding");
+  return 0;
+}
+
+template <typename num_t>
+void DirectMSGridder<num_t>::FinishPredict() {
+  throw std::runtime_error(
+      "Prediction not yet implemented for direct FT gridding");
+}
+
+template <typename num_t>
+aocommon::ImageBase<num_t> DirectMSGridder<num_t>::GetSqrtLMLookupTable()
+    const {
+  const size_t width = TrimWidth();
+  const size_t height = TrimHeight();
+  aocommon::ImageBase<num_t> sqrtLMTable(ImageWidth(), ImageHeight());
+  num_t* iter = sqrtLMTable.Data();
   for (size_t y = 0; y != height; ++y) {
     size_t ySrc = (height - y) + height / 2;
     if (ySrc >= height) ySrc -= height;
@@ -199,8 +225,11 @@ void DirectMSGridder<num_t>::initializeSqrtLMLookupTable() {
       ++iter;
     }
   }
+  return sqrtLMTable;
 }
 
 template class DirectMSGridder<float>;
 template class DirectMSGridder<double>;
 template class DirectMSGridder<long double>;
+
+}  // namespace wsclean

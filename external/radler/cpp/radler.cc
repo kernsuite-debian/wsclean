@@ -10,9 +10,11 @@
 #include <aocommon/imagecoordinates.h>
 #include <aocommon/logger.h>
 #include <aocommon/units/fluxdensity.h>
+#include <aocommon/threadpool.h>
 
-#include <schaapcommon/fft/convolution.h>
+#include <schaapcommon/math/convolution.h>
 
+#include "algorithms/asp_algorithm.h"
 #include "algorithms/generic_clean.h"
 #include "algorithms/iuwt_deconvolution.h"
 #include "algorithms/more_sane.h"
@@ -114,7 +116,7 @@ Radler::Radler(const Settings& settings, double beam_size)
 
   // Ensure that all FFTWF plan calls inside Radler are
   // thread safe.
-  schaapcommon::fft::MakeFftwfPlannerThreadSafe();
+  schaapcommon::math::MakeFftwfPlannerThreadSafe();
 }
 
 Radler::~Radler() { FreeDeconvolutionAlgorithms(); }
@@ -130,6 +132,18 @@ const algorithms::DeconvolutionAlgorithm& Radler::MaxScaleCountAlgorithm()
 
 void Radler::Perform(bool& reached_major_threshold,
                      size_t major_iteration_number) {
+  /**
+   * Because functions like convolution in schaapcommon use parallelized fors,
+   * and because these itself occur in the deconvolution of different sub-images
+   * that may also be parallelized over, it is necessary to have a recursive for
+   * alive so that all fors are scheduled through this recursive for.
+   */
+  std::optional<aocommon::RecursiveFor> recursive_for;
+  if (aocommon::RecursiveFor::GetInstance() == nullptr) {
+    aocommon::ThreadPool::GetInstance().SetNThreads(settings_.thread_count);
+    recursive_for.emplace();
+  }
+
   assert(table_);
   table_->ValidatePsfs();
 
@@ -161,52 +175,34 @@ void Radler::Perform(bool& reached_major_threshold,
     // the RMS background anymore
     parallel_deconvolution_->SetRmsFactorImage(Image());
   } else {
+    Image rms_image;
     if (!settings_.local_rms.image.empty()) {
-      Image rms_image(image_width_, image_height_);
+      rms_image = Image(image_width_, image_height_);
       FitsReader reader(settings_.local_rms.image);
       reader.Read(rms_image.Data());
-      // Normalize the RMS image
-      stddev = rms_image.Min();
-      Logger::Info << "Lowest RMS in image: "
-                   << FluxDensity::ToNiceString(stddev) << '\n';
-      if (stddev <= 0.0) {
-        throw std::runtime_error(
-            "RMS image can only contain values > 0, but contains values <= "
-            "0.0");
-      }
-      for (float& value : rms_image) {
-        if (value != 0.0) value = stddev / value;
-      }
+      stddev = math::rms_image::MakeRmsFactorImage(
+          rms_image, settings_.local_rms.strength);
       parallel_deconvolution_->SetRmsFactorImage(std::move(rms_image));
     } else if (settings_.local_rms.method != LocalRmsMethod::kNone) {
       Logger::Debug << "Constructing local RMS image...\n";
-      Image rms_image;
       // TODO this should use full beam parameters
       switch (settings_.local_rms.method) {
         case LocalRmsMethod::kNone:
           assert(false);
           break;
         case LocalRmsMethod::kRmsWindow:
-          math::rms_image::Make(rms_image, integrated,
-                                settings_.local_rms.window, beam_size_,
-                                beam_size_, 0.0, pixel_scale_x_, pixel_scale_y_,
-                                settings_.thread_count);
+          math::rms_image::Make(
+              rms_image, integrated, settings_.local_rms.window, beam_size_,
+              beam_size_, 0.0, pixel_scale_x_, pixel_scale_y_);
           break;
         case LocalRmsMethod::kRmsAndMinimumWindow:
           math::rms_image::MakeWithNegativityLimit(
               rms_image, integrated, settings_.local_rms.window, beam_size_,
-              beam_size_, 0.0, pixel_scale_x_, pixel_scale_y_,
-              settings_.thread_count);
+              beam_size_, 0.0, pixel_scale_x_, pixel_scale_y_);
           break;
       }
-      // Normalize the RMS image relative to the threshold so that Jy remains
-      // Jy.
-      stddev = rms_image.Min();
-      Logger::Info << "Lowest RMS in image: "
-                   << FluxDensity::ToNiceString(stddev) << '\n';
-      for (float& value : rms_image) {
-        if (value != 0.0) value = stddev / value;
-      }
+      stddev = math::rms_image::MakeRmsFactorImage(
+          rms_image, settings_.local_rms.strength);
       parallel_deconvolution_->SetRmsFactorImage(std::move(rms_image));
     }
   }
@@ -283,8 +279,7 @@ void Radler::Perform(bool& reached_major_threshold,
 
   residual_set.AssignAndStoreResidual();
   model_set.InterpolateAndStoreModel(
-      parallel_deconvolution_->FirstAlgorithm().Fitter(),
-      settings_.thread_count);
+      parallel_deconvolution_->FirstAlgorithm().Fitter());
 }
 
 std::unique_ptr<schaapcommon::fitters::SpectralFitter>
@@ -320,27 +315,29 @@ void Radler::InitializeDeconvolutionAlgorithm(
   std::unique_ptr<algorithms::DeconvolutionAlgorithm> algorithm;
 
   switch (settings_.algorithm_type) {
-    case AlgorithmType::kPython:
-      algorithm = std::make_unique<algorithms::PythonDeconvolution>(
-          settings_.python.filename);
+    case AlgorithmType::kGenericClean:
+      algorithm = std::make_unique<algorithms::GenericClean>(
+          settings_.generic.use_sub_minor_optimization);
+      break;
+    case AlgorithmType::kAdaptiveScalePixel:
+      algorithm = std::make_unique<algorithms::AspAlgorithm>(
+          settings_.multiscale, beam_size_, pixel_scale_x_, pixel_scale_y_);
+      break;
+    case AlgorithmType::kIuwt:
+      algorithm = std::make_unique<algorithms::IuwtDeconvolution>();
       break;
     case AlgorithmType::kMoreSane:
       algorithm = std::make_unique<algorithms::MoreSane>(settings_.more_sane,
                                                          settings_.prefix_name);
       break;
-    case AlgorithmType::kIuwt: {
-      algorithm = std::make_unique<algorithms::IuwtDeconvolution>();
-      break;
-    }
-    case AlgorithmType::kMultiscale: {
+    case AlgorithmType::kMultiscale:
       algorithm = std::make_unique<algorithms::MultiScaleAlgorithm>(
           settings_.multiscale, beam_size_, pixel_scale_x_, pixel_scale_y_,
           settings_.save_source_list);
       break;
-    }
-    case AlgorithmType::kGenericClean:
-      algorithm = std::make_unique<algorithms::GenericClean>(
-          settings_.generic.use_sub_minor_optimization);
+    case AlgorithmType::kPython:
+      algorithm = std::make_unique<algorithms::PythonDeconvolution>(
+          settings_.python.filename);
       break;
   }
 
@@ -349,9 +346,9 @@ void Radler::InitializeDeconvolutionAlgorithm(
   algorithm->SetMinorLoopGain(settings_.minor_loop_gain);
   algorithm->SetMajorLoopGain(settings_.major_loop_gain);
   algorithm->SetCleanBorderRatio(settings_.border_ratio);
+  algorithm->SetDivergenceLimit(settings_.divergence_limit);
   algorithm->SetAllowNegativeComponents(settings_.allow_negative_components);
   algorithm->SetStopOnNegativeComponents(settings_.stop_on_negative_components);
-  algorithm->SetThreadCount(settings_.thread_count);
   const size_t n_polarizations = table_->OriginalGroups().front().size();
   algorithm->SetSpectralFitter(CreateSpectralFitter(), n_polarizations);
 

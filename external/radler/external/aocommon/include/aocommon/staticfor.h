@@ -1,9 +1,11 @@
 #ifndef AOCOMMON_STATIC_FOR_H_
 #define AOCOMMON_STATIC_FOR_H_
 
-#include "barrier.h"
+#include "threadpool.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
@@ -20,25 +22,30 @@ namespace aocommon {
  * is statically distributed over all threads. It is suitable
  * for large loops that approximately take an equal amount of
  * time per iteration. If one thread finishes its chunk
- * earlier, it won't be rescheduled to more.
+ * earlier, it won't be rescheduled to do more.
  *
  * The advantage of this is that it doesn't require communication
  * between iterations, and thus the loop is faster, as long as
  * iterations take similar time.
  *
- * An example to count to 1000 with 4 threads:
- * StaticFor<size_t> loop(4);
- * loop.Run(0, 1000, [&](size_t a, size_t b) {
- *   for(size_t i=a; i!=b; ++i) {
+ * StaticFor makes use of the static ThreadPool instance OR if
+ * a RecursiveFor instance is alive, it will nest itself inside
+ * the RecursiveFor. To use multiple threads, call
+ * ThreadPool::GetInstance().SetNThreads() beforehand.
+ *
+ * An example (unnested) for-loop to count to 1000 in parallel:
+ * StaticFor<size_t> loop;
+ * loop.Run(0, 1000, [&](size_t start, size_t end) {
+ *   for(size_t i=start; i!=end; ++i) {
  *     std::cout << i << '\n';
  *   }
  * }
  *
  * It is also possible to acquire the thread index, by providing
  * a function with 3 parameters:
- * StaticFor<size_t> loop(4);
- * loop.Run(0, 1000, [&](size_t a, size_t b, size_t thread) {
- *   for(size_t i=a; i!=b; ++i) {
+ * StaticFor<size_t> loop;
+ * loop.Run(0, 1000, [&](size_t start, size_t end, size_t thread) {
+ *   for(size_t i=start; i!=end; ++i) {
  *     std::cout << i << " from thread " << thread << '\n';
  *   }
  * }
@@ -50,151 +57,127 @@ namespace aocommon {
 template <typename Iter>
 class StaticFor {
  public:
-  /**
-   * Construct class with given nr of threads.
-   */
-  StaticFor(size_t nThreads)
-      : _nThreads(nThreads),
-        _barrier(nThreads, [&]() { _hasTasks = false; }),
-        _stop(false),
-        _hasTasks(false) {}
+  StaticFor() = default;
 
   /**
-   * Destructor will wait for all threads to be finished.
-   */
-  ~StaticFor() {
-    std::unique_lock<std::mutex> lock(_mutex);
-    if (!_threads.empty()) {
-      _stop = true;
-      _hasTasks = true;
-      _conditionChanged.notify_all();
-      lock.unlock();
-      for (std::thread& thr : _threads) thr.join();
-    }
-  }
-
-  /**
-   * Iteratively call a function in parallel.
+   * Iteratively call a function in parallel. Requires start <= end.
    *
-   * The provided function is expected to accept two size_t parameters, the
-   * start and end indices of this thread, e.g.: void loopFunction(size_t
-   * chunkStart, size_t chunkEnd);
+   * The provided function is expected to accept two parameters, the
+   * start and end indices of this thread, e.g.:
+   *   void loopFunction(size_t chunk_start, size_t chunk_end);
    */
   void Run(Iter start, Iter end, std::function<void(Iter, Iter)> function) {
-    _loopFunction = std::move(function);
+    loop_function_without_id_ = std::move(function);
     run(start, end);
-    _loopFunction = nullptr;
+    loop_function_without_id_ = nullptr;
   }
 
   /**
-   * Iteratively call a function in parallel with thread id.
+   * Iteratively call a function in parallel with thread id. Requires start <=
+   * end.
    *
    * The provided function is expected to accept three parameters, the start
-   * and end indices of this thread, e.g.:
-   *   void loopFunction(size_t chunkStart, size_t chunkEnd, size_t threadId);
+   * and end indices of this thread and the thread index, e.g.:
+   *   void loopFunction(size_t chunk_start, size_t chunk_end, size_t
+   * thread_index);
    */
   void Run(Iter start, Iter end,
            std::function<void(Iter, Iter, size_t)> function) {
-    _loopFunctionEx = std::move(function);
+    loop_function_with_id_ = std::move(function);
     run(start, end);
-    _loopFunctionEx = nullptr;
+    loop_function_with_id_ = nullptr;
   }
 
   /**
-   * Number of threads
+   * Like @ref Run(), but with limited number of threads. This
+   * may be useful when each thread takes memory and the total
+   * memory needs to be constrained. In combination with
+   * a nested for (using the @ref RecursiveFor class), it may
+   * be possible to reduce the memory without affecting performance.
    */
-  size_t NThreads() const { return _nThreads; }
+  void ConstrainedRun(Iter start, Iter end, size_t max_threads,
+                      std::function<void(Iter, Iter)> function) {
+    loop_function_without_id_ = std::move(function);
+    run(start, end, max_threads);
+    loop_function_without_id_ = nullptr;
+  }
 
   /**
-   * This method is only allowed to be called before Run() is
-   * called.
+   * Same as the other ConstrainedRun() overload, but for
+   * an iterating function that includes a thread index. Unlike
+   * the corresponding Run() call, this function makes sure that the
+   * @c thread_index passed to the iteration function is always
+   * lower than @p max_threads. This comes at a slight overhead of
+   * one extra std::function indirection.
    */
-  void SetNThreads(size_t nThreads) {
-    if (_threads.empty()) {
-      _nThreads = nThreads;
-      _barrier = Barrier(nThreads, [&]() { _hasTasks = false; });
-    } else {
-      throw std::runtime_error("Can not set NThreads after calling Run()");
-    }
+  void ConstrainedRun(Iter start, Iter end, size_t max_threads,
+                      std::function<void(Iter, Iter, size_t)> function) {
+    std::atomic<size_t> thread_counter = 0;
+    loop_function_without_id_ = [&](Iter start, Iter end) {
+      const size_t thread_index = thread_counter.fetch_add(1);
+      function(start, end, thread_index);
+    };
+    run(start, end, max_threads);
+    loop_function_without_id_ = nullptr;
   }
 
  private:
   StaticFor(const StaticFor&) = delete;
 
-  void run(Iter start, Iter end) {
-    if (end == start + 1 || _nThreads <= 1) {
-      callFunction(start, end, 0);
-    } else {
-      if (_threads.empty()) startThreads();
-      std::unique_lock<std::mutex> lock(_mutex);
-      _iterStart = start;
-      _iterEnd = end;
-      _currentChunk = 0;
-      _nChunks = std::min(_nThreads, end - start);
-      _hasTasks = true;
-      _conditionChanged.notify_all();
-      lock.unlock();
-
-      // To avoid one extra thread-spawn, this thread also performs
-      // the iterations for one chunk: (with thread id 0)
-      loop(0);
-
-      _barrier.wait();
-    }
-  }
+  void run(Iter start, Iter end,
+           size_t max_chunks = std::numeric_limits<size_t>::max());
 
   void callFunction(Iter start, Iter end, size_t threadId) const {
-    if (_loopFunction)
-      _loopFunction(start, end);
+    if (loop_function_without_id_)
+      loop_function_without_id_(start, end);
     else
-      _loopFunctionEx(start, end, threadId);
+      loop_function_with_id_(start, end, threadId);
   }
 
-  void loop(size_t threadId) {
-    if (threadId < _nChunks) {
-      Iter chunkStart =
-          _iterStart + (_iterEnd - _iterStart) * threadId / _nChunks;
-      Iter chunkEnd =
-          _iterStart + (_iterEnd - _iterStart) * (threadId + 1) / _nChunks;
+  void loop(size_t thread_index) {
+    if (thread_index < n_chunks_) {
+      Iter chunk_start =
+          iter_start_ + (iter_end_ - iter_start_) * thread_index / n_chunks_;
+      Iter chunk_end = iter_start_ + (iter_end_ - iter_start_) *
+                                         (thread_index + 1) / n_chunks_;
 
-      callFunction(chunkStart, chunkEnd, threadId);
+      callFunction(chunk_start, chunk_end, thread_index);
     }
   }
 
-  void threadLoop(size_t threadId) {
-    waitForTasks();
-    while (!_stop) {
-      loop(threadId);
-      _barrier.wait();
-      waitForTasks();
-    }
-  }
-
-  void waitForTasks() {
-    std::unique_lock<std::mutex> lock(_mutex);
-    while (!_hasTasks) _conditionChanged.wait(lock);
-  }
-
-  void startThreads() {
-    if (_nThreads > 1) {
-      _threads.reserve(_nThreads - 1);
-      for (unsigned t = 1; t != _nThreads; ++t)
-        _threads.emplace_back(&StaticFor::threadLoop, this, t);
-    }
-  }
-
-  size_t _currentChunk, _nChunks;
-  Iter _iterStart, _iterEnd;
-  std::mutex _mutex;
-  size_t _nThreads;
-  Barrier _barrier;
-  std::atomic<bool> _stop;
-  bool _hasTasks;
-  std::condition_variable _conditionChanged;
-  std::vector<std::thread> _threads;
-  std::function<void(Iter, Iter)> _loopFunction;
-  std::function<void(Iter, Iter, size_t)> _loopFunctionEx;
+  size_t n_chunks_;
+  Iter iter_start_;
+  Iter iter_end_;
+  std::function<void(Iter, Iter)> loop_function_without_id_;
+  std::function<void(Iter, Iter, size_t)> loop_function_with_id_;
 };
+
+}  // namespace aocommon
+
+#include "recursivefor.h"
+
+namespace aocommon {
+
+template <typename Iter>
+inline void StaticFor<Iter>::run(Iter start, Iter end, size_t max_chunks) {
+  assert(start <= end);
+  const size_t n_threads = ThreadPool::GetInstance().NThreads();
+  if (end == start + 1 || n_threads <= 1) {
+    callFunction(start, end, 0);
+  } else {
+    iter_start_ = start;
+    iter_end_ = end;
+    n_chunks_ = std::min({n_threads, end - start, max_chunks});
+    if (RecursiveFor* recursive_for = RecursiveFor::GetInstance();
+        recursive_for) {
+      recursive_for->Run(0, n_threads,
+                         [&](size_t thread_index) { loop(thread_index); });
+    } else {
+      ThreadPool::GetInstance().ExecuteInParallel(
+          [&](size_t thread_index) { loop(thread_index); });
+    }
+  }
+}
 
 }  // namespace aocommon
 

@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # format.sh: Formats source code in a repository in accordance with
-# .clang-format and .cmake-format.py files.
+# .clang-format and .cmake-format.py files. The script only formats source code 
+# that has been added to git. E.g. new untracked files are ignored and will only 
+# be formatted once they are staged.
 #
 # This script uses the following variables:
 # - SOURCE_DIR: The directory that contains the source files.
@@ -37,10 +39,10 @@ elif [ -n "$GIT_AUTHOR_DATE" ]; then
   DRYRUN=" (dry run in git hook)"
 fi
 
-# print in bold-face
+# Print in bold-face
 echo -e "\e[1mRunning formatters$DRYRUN...\e[0m"
 
-# Convert SOURCES into "-name ext1 -o -name ext2 -o name ext3 ..."
+# Convert SOURCES into "-name ext1 -o -name ext2 -o -name ext3 ..."
 CXX_FIND_NAMES="-name ${CXX_SOURCES[0]}"
 for i in `seq 1 $((${#CXX_SOURCES[*]} - 1))`; do
   CXX_FIND_NAMES+=" -o -name ${CXX_SOURCES[$i]}"
@@ -62,13 +64,22 @@ for e in ${EXCLUDE_DIRS[*]}; do
   FIND_EXCLUDES+="-path ./$e -prune -o "
 done
 
+# Use `find` to incorporate the EXCLUDE_DIRS
 cd $SOURCE_DIR
-CXX_FILES=$(find . $FIND_EXCLUDES -type f \( $CXX_FIND_NAMES \) -print)
-CMAKE_FILES=$(find . $FIND_EXCLUDES -type f \( $CMAKE_FIND_NAMES \) -print)
-PYTHON_FILES=$(find . $FIND_EXCLUDES -type f \( $PYTHON_FIND_NAMES \) -print)
+CXX_FILES_EXCLUDEDIRS=$(find . $FIND_EXCLUDES -type f \( $CXX_FIND_NAMES \) -print)
+CMAKE_FILES_EXCLUDEDIRS=$(find . $FIND_EXCLUDES -type f \( $CMAKE_FIND_NAMES \) -print)
+PYTHON_FILES_EXCLUDEDIRS=$(find . $FIND_EXCLUDES -type f \( $PYTHON_FIND_NAMES \) -print)
+
+# Only format files that are in the git repo
+CXX_FILES=$(git ls-files $CXX_FILES_EXCLUDEDIRS)
+CMAKE_FILES=$(git ls-files $CMAKE_FILES_EXCLUDEDIRS)
+PYTHON_FILES=$(git ls-files $PYTHON_FILES_EXCLUDEDIRS)
 
 # Use line length 79, which complies with PEP-8.
 BLACK="black -l 79"
+
+# Sort imports according to PEP-8
+ISORT="isort --profile black"
 
 if [[ "${CLANG_FORMAT_BINARY}" == "" ]] ; then
     CLANG_FORMAT_BINARY="clang-format"
@@ -79,8 +90,9 @@ if [ -n "$DRYRUN" ]; then
   if !(${CLANG_FORMAT_BINARY} -style=file --output-replacements-xml $CXX_FILES |
        grep -q "<replacement ") &&
        cmake-format --check $CMAKE_FILES &&
-       $BLACK --check $PYTHON_FILES; then
-    # print in bold-face green
+       $BLACK --check $PYTHON_FILES &&
+       $ISORT --check $PYTHON_FILES; then
+    # Print in bold-face green
     echo -e "\e[1m\e[32mGreat job, all files are properly formatted!\e[0m"
   else
     # Print in bold-face red
@@ -92,6 +104,7 @@ else
   ${CLANG_FORMAT_BINARY} -i -style=file $CXX_FILES
   cmake-format -i $CMAKE_FILES
   $BLACK -q $PYTHON_FILES
-  # print in bold-face
+  $ISORT -q $PYTHON_FILES
+  # Print in bold-face
   echo -e "\e[1mSuccessfully formatted all files.\e[0m"
 fi

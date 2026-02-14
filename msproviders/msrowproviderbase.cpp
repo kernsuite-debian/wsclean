@@ -10,17 +10,24 @@
 
 #include <memory>
 
+namespace wsclean {
+
 MsRowProviderBase::MsRowProviderBase(const casacore::MeasurementSet& ms,
                                      const MSSelection& selection,
-                                     const std::string& data_column_name)
-    : ms_(ms), selection_(selection), columns_(ms_, data_column_name) {
+                                     const std::string& data_column_name,
+                                     const std::string& model_column_name)
+    : ms_(ms),
+      selection_(selection),
+      columns_(ms_, data_column_name),
+      model_column_name_(model_column_name) {
   MSProvider::GetRowRange(ms_, selection_, begin_row_, end_row_);
 }
 
 std::unique_ptr<MsRowProviderBase> MakeMsRowProvider(
     const std::string& ms_name, const MSSelection& selection,
     const std::map<size_t, size_t>& selected_data_description_ids,
-    const std::string& data_column_name, bool require_model) {
+    const std::string& data_column_name, const std::string& model_column_name,
+    bool require_model) {
   if (!casacore::Table::isReadable(ms_name)) {
     aocommon::ThrowRuntimeError("The measurement set ", ms_name,
                                 " can't be opened for reading.");
@@ -28,13 +35,13 @@ std::unique_ptr<MsRowProviderBase> MakeMsRowProvider(
 
   casacore::MeasurementSet ms(ms_name);
   if (MsHasBdaData(ms))
-    return std::make_unique<BdaMsRowProvider>(ms, selection,
-                                              selected_data_description_ids,
-                                              data_column_name, require_model);
+    return std::make_unique<BdaMsRowProvider>(
+        ms, selection, selected_data_description_ids, data_column_name,
+        model_column_name, require_model);
 
-  return std::make_unique<DirectMSRowProvider>(ms, selection,
-                                               selected_data_description_ids,
-                                               data_column_name, require_model);
+  return std::make_unique<DirectMSRowProvider>(
+      ms, selection, selected_data_description_ids, data_column_name,
+      model_column_name, require_model);
 }
 
 bool MsHasBdaData(const casacore::MeasurementSet& ms) {
@@ -42,3 +49,5 @@ bool MsHasBdaData(const casacore::MeasurementSet& ms) {
          ms.keywordSet().asTable(BdaMsRowProvider::kBDAFactorsTable).nrow() !=
              0;
 }
+
+}  // namespace wsclean

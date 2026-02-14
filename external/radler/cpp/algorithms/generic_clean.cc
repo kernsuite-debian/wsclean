@@ -10,6 +10,7 @@
 #include "algorithms/threaded_deconvolution_tools.h"
 #include "math/peak_finder.h"
 
+using aocommon::OptionalNumber;
 using aocommon::units::FluxDensity;
 
 namespace radler::algorithms {
@@ -27,9 +28,9 @@ GenericClean::GenericClean(bool use_sub_minor_optimization)
     : convolution_padding_(1.1),
       use_sub_minor_optimization_(use_sub_minor_optimization) {}
 
-float GenericClean::ExecuteMajorIteration(
+DeconvolutionResult GenericClean::ExecuteMajorIteration(
     ImageSet& dirty_set, ImageSet& model_set,
-    const std::vector<aocommon::Image>& psfs, bool& reached_major_threshold) {
+    const std::vector<aocommon::Image>& psfs) {
   const size_t width = dirty_set.Width();
   const size_t height = dirty_set.Height();
   const size_t iterationCounterAtStart = IterationNumber();
@@ -45,20 +46,30 @@ float GenericClean::ExecuteMajorIteration(
   dirty_set.GetLinearIntegrated(integrated);
   size_t componentX = 0;
   size_t componentY = 0;
-  std::optional<float> maxValue =
+  OptionalNumber<float> maxValue =
       FindPeak(integrated, scratchA.Data(), componentX, componentY);
+  DeconvolutionResult result;
   if (!maxValue) {
     LogReceiver().Info << "No peak found.\n";
-    reached_major_threshold = false;
-    return 0.0;
+    result.another_iteration_required = false;
+    return result;
+  }
+  if (IterationNumber() >= MaxIterations()) {
+    // If there are no iterations left, we can immediately return. This is
+    // particularly useful in combination with parallel deconvolution,
+    // because it will do a call with 0 max iterations to get the peak.
+    result.another_iteration_required = false;
+    result.final_peak_value = *maxValue;
+    result.is_diverging = false;
+    return result;
   }
   LogReceiver().Info << "Initial peak: "
                      << peakDescription(integrated, componentX, componentY)
                      << '\n';
+  const float initial_max_value = std::fabs(*maxValue);
   float firstThreshold = Threshold();
-  float majorIterThreshold =
-      std::max<float>(MajorIterationThreshold(),
-                      std::fabs(*maxValue) * (1.0 - MajorLoopGain()));
+  const float majorIterThreshold = std::max(
+      MajorIterationThreshold(), initial_max_value * (1.0f - MajorLoopGain()));
   if (majorIterThreshold > firstThreshold) {
     firstThreshold = majorIterThreshold;
     LogReceiver().Info << "Next major iteration at: "
@@ -70,6 +81,7 @@ float GenericClean::ExecuteMajorIteration(
         << ": final major iteration.\n";
   }
 
+  bool diverging = false;
   if (use_sub_minor_optimization_) {
     size_t startIteration = IterationNumber();
     SubMinorLoop subMinorLoop(width, height, convolution_width_,
@@ -80,6 +92,7 @@ float GenericClean::ExecuteMajorIteration(
     subMinorLoop.SetAllowNegativeComponents(AllowNegativeComponents());
     subMinorLoop.SetStopOnNegativeComponent(StopOnNegativeComponents());
     subMinorLoop.SetParentAlgorithm(this);
+    subMinorLoop.SetDivergenceLimit(DivergenceLimit());
     if (!RmsFactorImage().Empty()) {
       subMinorLoop.SetRmsFactorImage(RmsFactorImage());
     }
@@ -87,9 +100,8 @@ float GenericClean::ExecuteMajorIteration(
     const size_t horBorderSize = std::round(width * CleanBorderRatio());
     const size_t vertBorderSize = std::round(height * CleanBorderRatio());
     subMinorLoop.SetCleanBorders(horBorderSize, vertBorderSize);
-    subMinorLoop.SetThreadCount(ThreadCount());
 
-    maxValue = subMinorLoop.Run(dirty_set, psfs);
+    std::tie(diverging, maxValue) = subMinorLoop.Run(dirty_set, psfs);
 
     SetIterationNumber(subMinorLoop.CurrentIteration());
 
@@ -111,15 +123,22 @@ float GenericClean::ExecuteMajorIteration(
         model[i] += scratchA.Data()[i];
       }
     }
+    if (!maxValue) {
+      // The subminor loop might have finished without a peak, because it works
+      // on a subselection of pixels, which might not show a peak. In this
+      // case, calculate the peak over the entire image so that we can stil
+      // return a sensible peak (which is used for divergence detection).
+      maxValue = FindPeak(integrated, scratchA.Data(), componentX, componentY);
+    }
   } else {
-    ThreadedDeconvolutionTools tools(ThreadCount());
+    ThreadedDeconvolutionTools tools;
     size_t peakIndex = componentX + componentY * width;
 
     aocommon::UVector<float> peakValues(dirty_set.Size());
 
     while (maxValue && std::fabs(*maxValue) > firstThreshold &&
            IterationNumber() < MaxIterations() &&
-           !(maxValue < 0.0f && StopOnNegativeComponents())) {
+           !(maxValue < 0.0f && StopOnNegativeComponents()) && !diverging) {
       if (IterationNumber() <= 10 ||
           (IterationNumber() <= 100 && IterationNumber() % 10 == 0) ||
           (IterationNumber() <= 1000 && IterationNumber() % 100 == 0) ||
@@ -150,11 +169,28 @@ float GenericClean::ExecuteMajorIteration(
       maxValue = FindPeak(integrated, scratchA.Data(), componentX, componentY);
 
       peakIndex = componentX + componentY * width;
+      if (maxValue && DivergenceLimit() != 0.0)
+        diverging = std::abs(*maxValue) > initial_max_value * DivergenceLimit();
 
       SetIterationNumber(IterationNumber() + 1);
     }
   }
-  if (maxValue) {
+  if (diverging) {
+    LogReceiver().Warn << "WARNING: Stopping clean because of divergence!\n";
+    if (maxValue) {
+      LogReceiver().Warn << " ==> Initial flux density of "
+                         << FluxDensity::ToNiceString(initial_max_value)
+                         << " increased to "
+                         << FluxDensity::ToNiceString(*maxValue) << '\n';
+      result.final_peak_value = *maxValue;
+    } else {
+      LogReceiver().Warn << " ==> Initial flux density was "
+                         << FluxDensity::ToNiceString(initial_max_value)
+                         << ".\n";
+    }
+    result.another_iteration_required = false;
+    result.is_diverging = true;
+  } else if (maxValue) {
     LogReceiver().Info << "Stopped on peak "
                        << FluxDensity::ToNiceString(*maxValue) << ", because ";
     const bool maxIterReached = IterationNumber() >= MaxIterations();
@@ -176,19 +212,19 @@ float GenericClean::ExecuteMajorIteration(
       LogReceiver().Info << "the minor-loop threshold was reached. Continuing "
                             "cleaning after inversion/prediction round.\n";
     }
-    reached_major_threshold =
+    result.another_iteration_required =
         mgainReached && didWork && !negativeReached && !finalThresholdReached;
-    return *maxValue;
+    result.final_peak_value = *maxValue;
   } else {
     LogReceiver().Info << "Deconvolution aborted.\n";
-    reached_major_threshold = false;
-    return 0.0;
+    result.another_iteration_required = false;
   }
+  return result;
 }
 
-std::optional<float> GenericClean::FindPeak(const aocommon::Image& image,
-                                            float* scratch_buffer, size_t& x,
-                                            size_t& y) {
+OptionalNumber<float> GenericClean::FindPeak(const aocommon::Image& image,
+                                             float* scratch_buffer, size_t& x,
+                                             size_t& y) {
   const float* actual_image = image.Data();
   if (!RmsFactorImage().Empty()) {
     std::copy_n(image.Data(), image.Size(), scratch_buffer);

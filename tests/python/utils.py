@@ -1,9 +1,11 @@
-import numpy as np
 import os
 import shutil
-from subprocess import check_call, check_output
 import sys
 import warnings
+from subprocess import check_call, check_output
+
+import numpy as np
+from astropy.io import fits
 
 # Append current directory to system path in order to import testconfig variables
 sys.path.append(".")
@@ -23,16 +25,6 @@ def basic_image_check(fits_file):
     Checks that the fits file has no NaN or Inf values and that the number
     of zeroes is below a limit.
     """
-    try:
-        from astropy.io import fits
-    except:
-        warnings.warn(
-            UserWarning(
-                "Could not import astropy, so fits image checks are skipped."
-            )
-        )
-        return
-
     image = fits.open(fits_file)
     assert len(image) == 1
     data = image[0].data
@@ -70,17 +62,6 @@ def compute_rms(fits_file):
     """
     Compute and return the root-mean-square of an input fits image.
     """
-
-    try:
-        from astropy.io import fits
-    except:
-        warnings.warn(
-            UserWarning(
-                "Could not import astropy, so fits image checks are skipped."
-            )
-        )
-        return
-
     data = fits.open(fits_file)[0].data[0, 0, ...]
     return np.sqrt(np.mean(data**2))
 
@@ -90,22 +71,16 @@ def compare_rms_fits(fits1, fits2, threshold):
     Checks the root-mean square of the difference between
     two input fits files against a user-defined threshold.
     """
-
-    try:
-        from astropy.io import fits
-    except:
-        warnings.warn(
-            UserWarning(
-                "Could not import astropy, so fits image checks are skipped."
-            )
-        )
-        return
-    image1 = fits.open(fits1)[0].data
-    image2 = fits.open(fits2)[0].data
-    dimage = image1.flatten() - image2.flatten()
-    rms = np.sqrt(dimage.dot(dimage) / dimage.size)
-    print(rms)
-    assert rms <= threshold
+    image1 = fits.open(fits1)[0].data.flatten()
+    image2 = fits.open(fits2)[0].data.flatten()
+    dimage = image1 - image2
+    rms1 = np.sqrt(image1.dot(image1) / image1.size)
+    rms2 = np.sqrt(image2.dot(image2) / image2.size)
+    drms = np.sqrt(dimage.dot(dimage) / dimage.size)
+    print(
+        f"compare_rms_fits():\n- RMS of {fits1}: {rms1}\n- RMS of {fits2}: {rms2}\n- Difference between {fits1} and {fits2} = {drms}; threshold: {threshold}"
+    )
+    assert drms <= threshold
 
 
 def validate_call(cmdline):

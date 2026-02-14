@@ -1,187 +1,106 @@
 #include "griddingtaskmanager.h"
 
+#include <numeric>
+#include <mutex>
+#include <vector>
+
+#include "griddingtask.h"
+#include "griddingresult.h"
 #include "mpischeduler.h"
 #include "threadedscheduler.h"
 
+#include "../gridding/h5solutiondata.h"
+#include "../gridding/msgriddermanager.h"
 #include "../main/settings.h"
+#include "../structures/resources.h"
 
-#include "../gridding/msgridderbase.h"
-#include "../gridding/wsmsgridder.h"
-#include "../gridding/directmsgridder.h"
+namespace wsclean {
 
-#include "../idg/averagebeam.h"
-#include "../idg/idgmsgridder.h"
-
-#include <schaapcommon/facets/facet.h>
-
-#include "../wgridder/wgriddingmsgridder.h"
-
-GriddingTaskManager::GriddingTaskManager(const class Settings& settings)
-    : _settings(settings) {}
+GriddingTaskManager::GriddingTaskManager(const Settings& settings)
+    : settings_(settings),
+      solution_data_(settings),
+      writer_lock_manager_(this) {}
 
 GriddingTaskManager::~GriddingTaskManager() {}
 
 std::unique_ptr<GriddingTaskManager> GriddingTaskManager::Make(
-    const class Settings& settings) {
-  if (settings.useMPI) {
+    const Settings& settings) {
+  if (settings.UseMpi()) {
 #ifdef HAVE_MPI
-    return std::unique_ptr<GriddingTaskManager>(new MPIScheduler(settings));
+    return std::make_unique<MPIScheduler>(settings);
 #else
     throw std::runtime_error("MPI not available");
 #endif
-  } else if (settings.parallelGridding == 1) {
-    return std::unique_ptr<GriddingTaskManager>(
-        new GriddingTaskManager(settings));
+  } else if (settings.parallelGridding > 1) {
+    return std::make_unique<ThreadedScheduler>(settings);
   } else {
-    return std::unique_ptr<GriddingTaskManager>(
-        new ThreadedScheduler(settings));
+    return std::make_unique<GriddingTaskManager>(settings);
   }
 }
 
 Resources GriddingTaskManager::GetResources() const {
   return Resources(
-      _settings.threadCount,
-      GetAvailableMemory(_settings.memFraction, _settings.absMemLimit));
+      settings_.threadCount,
+      GetAvailableMemory(settings_.memFraction, settings_.absMemLimit));
 }
 
 void GriddingTaskManager::Run(
     GriddingTask&& task, std::function<void(GriddingResult&)> finishCallback) {
-  GriddingResult result = RunDirect(std::move(task));
+  std::vector<size_t> facet_indices(task.facets.size());
+  std::iota(facet_indices.begin(), facet_indices.end(), 0);
+
+  GriddingResult result;
+  result.facets.resize(task.facets.size());
+  std::mutex result_mutex;
+
+  RunDirect(task, facet_indices, GetResources(), result, result_mutex);
+
   finishCallback(result);
 }
 
-GriddingResult GriddingTaskManager::RunDirect(GriddingTask&& task) {
-  std::unique_ptr<MSGridderBase> gridder(makeGridder(GetResources()));
-  return runDirect(std::move(task), *gridder);
-}
+void GriddingTaskManager::RunDirect(GriddingTask& task,
+                                    const std::vector<size_t>& facet_indices,
+                                    const Resources& resources,
+                                    GriddingResult& result,
+                                    std::mutex& result_mutex) {
+  assert(!facet_indices.empty());
+  assert(result.facets.size() == task.facets.size());
 
-GriddingResult GriddingTaskManager::runDirect(GriddingTask&& task,
-                                              MSGridderBase& gridder) {
-  gridder.ClearMeasurementSetList();
-  std::vector<std::unique_ptr<MSProvider>> msProviders;
-  for (auto& p : task.msList) {
-    msProviders.emplace_back(p->GetProvider());
-    gridder.AddMeasurementSet(msProviders.back().get(), p->Selection());
-  }
-  const bool has_input_average_beam(task.averageBeam);
-  if (has_input_average_beam) {
-    assert(dynamic_cast<IdgMsGridder*>(&gridder));
-    IdgMsGridder& idgGridder = static_cast<IdgMsGridder&>(gridder);
-    idgGridder.SetAverageBeam(std::move(task.averageBeam));
+  // Wait tasks occupy a thread from the pool by waiting on
+  // lock_excess_scheduler_tasks_ which will freeze the tasks thread until
+  // lock_excess_scheduler_tasks_.SignalCompletion() is called.
+  if (task.operation == GriddingTask::Wait) {
+    task.lock_excess_scheduler_tasks_->WaitForCompletion();
+    return;
   }
 
-  gridder.SetFacetGroupIndex(task.facetGroupIndex);
-  gridder.SetIsFacet(task.facet != nullptr);
-  if (task.facet != nullptr) {
-    gridder.SetFacetIndex(task.facetIndex);
-    gridder.SetImageWidth(task.facet->GetUntrimmedBoundingBox().Width());
-    gridder.SetImageHeight(task.facet->GetUntrimmedBoundingBox().Height());
-    gridder.SetTrimSize(task.facet->GetTrimmedBoundingBox().Width(),
-                        task.facet->GetTrimmedBoundingBox().Height());
-    gridder.SetFacetDirection(task.facet->RA(), task.facet->Dec());
-  } else {
-    gridder.SetImageWidth(_settings.paddedImageWidth);
-    gridder.SetImageHeight(_settings.paddedImageHeight);
-    gridder.SetTrimSize(_settings.trimmedImageWidth,
-                        _settings.trimmedImageHeight);
-  }
-  gridder.SetImagePadding(_settings.imagePadding);
-  gridder.SetPhaseCentreDec(task.observationInfo.phaseCentreDec);
-  gridder.SetPhaseCentreRA(task.observationInfo.phaseCentreRA);
-  gridder.SetLShift(task.l_shift);
-  gridder.SetMShift(task.m_shift);
-
-  if (_settings.hasShift) {
-    double main_image_dl = 0.0;
-    double main_image_dm = 0.0;
-    aocommon::ImageCoordinates::RaDecToLM(_settings.shiftRA, _settings.shiftDec,
-                                          task.observationInfo.phaseCentreRA,
-                                          task.observationInfo.phaseCentreDec,
-                                          main_image_dl, main_image_dm);
-    gridder.SetMainImageDL(main_image_dl);
-    gridder.SetMainImageDM(main_image_dm);
-  }
-
-  gridder.SetPolarization(task.polarization);
-  gridder.SetIsComplex(task.polarization == aocommon::Polarization::XY ||
-                       task.polarization == aocommon::Polarization::YX);
-  gridder.SetIsFirstIteration(task.verbose);
-  if (task.cache)
-    gridder.SetMetaDataCache(std::move(task.cache));
-  else
-    gridder.SetMetaDataCache(
-        std::unique_ptr<MetaDataCache>(new MetaDataCache()));
-  gridder.SetImageWeights(task.imageWeights.get());
+  MSGridderManager manager(settings_, solution_data_);
+  manager.InitializeMS(task);
+  manager.InitializeGridders(task, facet_indices, resources, result.facets,
+                             writer_lock_manager_);
   if (task.operation == GriddingTask::Invert) {
-    if (task.imagePSF) {
-      if (_settings.ddPsfGridWidth > 1 || _settings.ddPsfGridHeight > 1) {
-        gridder.SetPsfMode(PsfMode::kDirectionDependent);
-      } else {
-        gridder.SetPsfMode(PsfMode::kSingle);
-      }
+    if (settings_.shared_facet_reads) {
+      manager.SortFacetTasks();
+      manager.BatchInvert(task.num_parallel_gridders_);
     } else {
-      gridder.SetPsfMode(PsfMode::kNone);
+      manager.Invert();
     }
-    gridder.SetDoSubtractModel(task.subtractModel);
-    gridder.SetStoreImagingWeights(task.storeImagingWeights);
-    gridder.Invert();
   } else {
-    gridder.SetWriterLockManager(this);
-    gridder.Predict(std::move(task.modelImages));
+    manager.Predict();
   }
-
-  GriddingResult result;
-  result.images = gridder.ResultImages();
-  result.startTime = gridder.StartTime();
-  result.beamSize = gridder.BeamSize();
-  result.imageWeight = gridder.ImageWeight();
-  result.normalizationFactor = gridder.NormalizationFactor();
-  result.actualWGridSize = gridder.ActualWGridSize();
-  result.griddedVisibilityCount = gridder.GriddedVisibilityCount();
-  result.effectiveGriddedVisibilityCount =
-      gridder.EffectiveGriddedVisibilityCount();
-  result.visibilityWeightSum = gridder.VisibilityWeightSum();
-  result.cache = gridder.AcquireMetaDataCache();
-
-  // If the average beam already exists on input, IDG will not recompute it, so
-  // in that case there is no need to return the unchanged average beam.
-  IdgMsGridder* idgGridder = dynamic_cast<IdgMsGridder*>(&gridder);
-  if (idgGridder && !has_input_average_beam) {
-    result.averageBeam = idgGridder->ReleaseAverageBeam();
+  const bool store_common_info = (facet_indices.front() == 0);
+  if (store_common_info) {
+    result.unique_id = task.unique_id;
   }
-  return result;
+  manager.ProcessResults(result_mutex, result, store_common_info);
+
+  if (GetSettings().shared_facet_reads) {
+    // Allow wait tasks to resume
+    if (task.lock_excess_scheduler_tasks_) {
+      task.lock_excess_scheduler_tasks_->SignalCompletion();
+      task.lock_excess_scheduler_tasks_.reset();
+    }
+  }
 }
 
-std::unique_ptr<MSGridderBase> GriddingTaskManager::constructGridder(
-    const Resources& resources) const {
-  switch (_settings.gridderType) {
-    case GridderType::IDG:
-      return std::make_unique<IdgMsGridder>(_settings, resources);
-    case GridderType::WGridder:
-      return std::make_unique<WGriddingMSGridder>(_settings, resources, false);
-    case GridderType::TunedWGridder:
-      return std::make_unique<WGriddingMSGridder>(_settings, resources, true);
-    case GridderType::DirectFT:
-      switch (_settings.directFTPrecision) {
-        case DirectFTPrecision::Float:
-          return std::make_unique<DirectMSGridder<float>>(_settings, resources);
-        case DirectFTPrecision::Double:
-          return std::make_unique<DirectMSGridder<double>>(_settings,
-                                                           resources);
-        case DirectFTPrecision::LongDouble:
-          return std::make_unique<DirectMSGridder<long double>>(_settings,
-                                                                resources);
-      }
-      break;
-    case GridderType::WStacking:
-      return std::make_unique<WSMSGridder>(_settings, resources);
-  }
-  return {};
-}
-
-std::unique_ptr<MSGridderBase> GriddingTaskManager::makeGridder(
-    const Resources& resources) const {
-  std::unique_ptr<MSGridderBase> gridder(constructGridder(resources));
-  gridder->SetGridMode(_settings.gridMode);
-  return gridder;
-}
+}  // namespace wsclean

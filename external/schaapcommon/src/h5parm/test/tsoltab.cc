@@ -10,6 +10,7 @@
 #include <H5Cpp.h>
 
 using schaapcommon::h5parm::AxisInfo;
+using schaapcommon::h5parm::SelectAxisValues;
 using schaapcommon::h5parm::SolTab;
 
 namespace {
@@ -53,6 +54,11 @@ struct H5Fixture {
 BOOST_AUTO_TEST_SUITE(soltab)
 
 BOOST_AUTO_TEST_CASE(constructor) {
+  // SolTab is constructed without passing an H5::Group as an argument.
+  // And nothing was added afterwards. Therefore, it has no data inside.
+  // All the methods getting something from this object should tell that
+  // it is empty or throw an exception.
+
   const SolTab soltab;
 
   BOOST_TEST(soltab.GetAxes().size() == 0);
@@ -79,9 +85,8 @@ BOOST_AUTO_TEST_CASE(constructor) {
 
   const std::vector<double> times{0.0};
   const std::vector<double> frequencies{42.0};
-  BOOST_CHECK_THROW(
-      soltab.GetValuesOrWeights("foo", "ant", times, frequencies, 0, 0, false),
-      H5::Exception);
+  BOOST_CHECK_THROW(soltab.GetValues("ant", times, frequencies, 0, 0, 0),
+                    H5::Exception);
 }
 
 BOOST_FIXTURE_TEST_CASE(construct_from_group, H5Fixture) {
@@ -182,6 +187,143 @@ BOOST_FIXTURE_TEST_CASE(set_antennas, H5Fixture) {
   BOOST_CHECK_EQUAL_COLLECTIONS(kNewNames.begin(), kNewNames.end(),
                                 new_names.begin(), new_names.end());
   BOOST_TEST(soltab.GetAntIndex(kNewNames[0]) == 0);
+}
+
+BOOST_AUTO_TEST_CASE(select_axis_with_nearest_single_value) {
+  auto CheckSingle = [](double search_value, double expected_value,
+                        size_t expected_index) {
+    size_t start_index;
+    constexpr bool kNearest = true;
+    const std::vector<double> result =
+        SelectAxisValues({4.0, 8.0, 12.0, 16.0, 20.0}, search_value,
+                         search_value, kNearest, start_index);
+    BOOST_TEST(result == std::vector<double>{expected_value},
+               boost::test_tools::per_element());
+    BOOST_CHECK_EQUAL(start_index, expected_index);
+  };
+
+  // Exact matches
+  CheckSingle(4.0, 4.0, 0);
+  CheckSingle(16.0, 16.0, 3);
+  CheckSingle(20.0, 20.0, 4);
+
+  // Rounding
+  CheckSingle(5.0, 4.0, 0);
+  CheckSingle(14.1, 16.0, 3);
+  CheckSingle(17.9, 16.0, 3);
+  CheckSingle(19.0, 20.0, 4);
+
+  // Boundaries
+  CheckSingle(3.0, 4.0, 0);
+  CheckSingle(21.0, 20.0, 4);
+}
+
+BOOST_AUTO_TEST_CASE(select_axis_with_surrounding_single_value) {
+  auto CheckSingle = [](double search_value,
+                        const std::vector<double>& expected_values,
+                        size_t expected_index) {
+    size_t start_index;
+    constexpr bool kNearest = false;
+    const std::vector<double> result =
+        SelectAxisValues({4.0, 8.0, 12.0, 16.0, 20.0}, search_value,
+                         search_value, kNearest, start_index);
+    BOOST_TEST(result == expected_values, boost::test_tools::per_element());
+    BOOST_CHECK_EQUAL(start_index, expected_index);
+  };
+
+  // Exact matches
+  CheckSingle(4.0, {4.0}, 0);
+  CheckSingle(16.0, {16.0}, 3);
+  CheckSingle(20.0, {20.0}, 4);
+
+  // Not exact matches
+  CheckSingle(5.0, {4.0, 8.0}, 0);
+  CheckSingle(14.1, {12.0, 16.0}, 2);
+  CheckSingle(17.9, {16.0, 20.0}, 3);
+  CheckSingle(19.0, {16.0, 20.0}, 3);
+
+  // Boundaries
+  CheckSingle(3.0, {4.0}, 0);
+  CheckSingle(21.0, {20.0}, 4);
+}
+
+BOOST_AUTO_TEST_CASE(select_axis_with_nearest_multiple_values) {
+  auto Check = [](double requested_start, double requested_end,
+                  const std::vector<double>& expected_values,
+                  size_t expected_index) {
+    size_t start_index;
+    constexpr bool kNearest = true;
+    const std::vector<double> result =
+        SelectAxisValues({4.0, 8.0, 12.0, 16.0, 20.0}, requested_start,
+                         requested_end, kNearest, start_index);
+    BOOST_TEST(result == expected_values, boost::test_tools::per_element());
+    BOOST_CHECK_EQUAL(start_index, expected_index);
+  };
+
+  // Exact matches
+  Check(4.0, 8.0, {4.0, 8.0}, 0);
+  Check(8.0, 16.0, {8.0, 12.0, 16.0}, 1);
+  Check(16.0, 20.0, {16.0, 20.0}, 3);
+  Check(4.0, 20.0, {4.0, 8.0, 12.0, 16.0, 20.0}, 0);
+
+  // Rounding
+  // Both from lower
+  Check(7.0, 7.5, {8.0}, 1);
+  Check(7.0, 11.0, {8.0, 12.0}, 1);
+  // First from lower, last from higher
+  Check(7.0, 17.0, {8.0, 12.0, 16.0}, 1);
+  Check(7.0, 9.0, {8.0}, 1);
+  Check(7.0, 17.0, {8.0, 12.0, 16.0}, 1);
+  // First from higher, last from lower
+  Check(9.0, 15.0, {8.0, 12.0, 16.0}, 1);
+  Check(5.0, 17.0, {4.0, 8.0, 12.0, 16.0}, 0);
+  // First from higher, last from higher
+  Check(13.0, 17.0, {12.0, 16.0}, 2);
+  Check(5.0, 17.0, {4.0, 8.0, 12.0, 16.0}, 0);
+
+  // Boundaries
+  Check(3.0, 21.0, {4.0, 8.0, 12.0, 16.0, 20.0}, 0);
+  Check(3.0, 7.0, {4.0, 8.0}, 0);
+  Check(3.0, 4.0, {4.0}, 0);
+  Check(16.0, 21.0, {16.0, 20.0}, 3);
+  Check(17.0, 21.0, {16.0, 20.0}, 3);
+  Check(20.0, 21.0, {20.0}, 4);
+}
+
+BOOST_AUTO_TEST_CASE(select_axis_with_surrounding_multiple_values) {
+  auto Check = [](double requested_start, double requested_end,
+                  const std::vector<double>& expected_values,
+                  size_t expected_index) {
+    size_t start_index;
+    constexpr bool kNearest = false;
+    const std::vector<double> result =
+        SelectAxisValues({4.0, 8.0, 12.0, 16.0, 20.0}, requested_start,
+                         requested_end, kNearest, start_index);
+    BOOST_TEST(result == expected_values, boost::test_tools::per_element());
+    BOOST_CHECK_EQUAL(start_index, expected_index);
+  };
+
+  // Exact matches
+  Check(4.0, 8.0, {4.0, 8.0}, 0);
+  Check(8.0, 16.0, {8.0, 12.0, 16.0}, 1);
+  Check(16.0, 20.0, {16.0, 20.0}, 3);
+  Check(4.0, 20.0, {4.0, 8.0, 12.0, 16.0, 20.0}, 0);
+
+  // Not exact matches
+  Check(7.0, 7.5, {4.0, 8.0}, 0);
+  Check(7.0, 11.0, {4.0, 8.0, 12.0}, 0);
+  Check(7.0, 17.0, {4.0, 8.0, 12.0, 16.0, 20.0}, 0);
+  Check(9.0, 15.0, {8.0, 12.0, 16.0}, 1);
+  Check(13.0, 17.0, {12.0, 16.0, 20.0}, 2);
+  Check(17.0, 19.0, {16.0, 20.0}, 3);
+
+  // Boundaries
+  Check(3.0, 21.0, {4.0, 8.0, 12.0, 16.0, 20.0}, 0);
+  Check(3.0, 7.0, {4.0, 8.0}, 0);
+  Check(3.0, 4.0, {4.0}, 0);
+  Check(16.0, 21.0, {16.0, 20.0}, 3);
+  Check(17.0, 21.0, {16.0, 20.0}, 3);
+  Check(20.0, 21.0, {20.0}, 4);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

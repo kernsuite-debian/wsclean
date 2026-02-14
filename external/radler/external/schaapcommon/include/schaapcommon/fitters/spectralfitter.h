@@ -95,7 +95,7 @@ class SpectralFitter {
    * @param terms New terms. Force using move semantics for this argument, since
    *        images are typically large.
    * @throw std::runtime_error If the mode is not kForcedTerms.
-   * @throw std::invalid_argument If terms does not have enoug elements.
+   * @throw std::invalid_argument If terms does not have enough elements.
    */
   void SetForcedTerms(std::vector<aocommon::Image>&& terms);
 

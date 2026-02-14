@@ -3,6 +3,8 @@
 
 #include "../msprovider.h"
 
+namespace wsclean {
+
 /**
  * The abstract MSReader class is the base class for classes that read
  * visibilities. Derived classes are usually instantiated via
@@ -11,7 +13,7 @@
  *
  * This class maintains a reading position, that goes sequentially through the
  * data. The interface of this class is implemented in @ref ContiguousMSReader
- * and @ref PartitionedMSReader.
+ * and @ref ReorderedMsReader.
  */
 class MSReader {
  public:
@@ -68,8 +70,15 @@ class MSReader {
    */
   virtual void WriteImagingWeights(const float* buffer) = 0;
 
+  /// @returns MSProvider::NPolarizations().
+  size_t NPolarizations() const { return _msProvider->NPolarizations(); }
+  /// @returns MSProvider::DataDescId().
+  size_t DataDescId() const { return _msProvider->DataDescId(); }
+
  protected:
   MSProvider* _msProvider;
 };
+
+}  // namespace wsclean
 
 #endif

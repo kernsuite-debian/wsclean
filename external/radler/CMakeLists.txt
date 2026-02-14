@@ -6,7 +6,8 @@ include(ExternalProject)
 # When Radler is compiled as an ExternalProject inside another project, set this
 # option to On. See, e.g., the wsclean CMake file for an example.
 option(COMPILE_AS_EXTERNAL_PROJECT OFF)
-option(PORTABLE "Generate portable code" OFF)
+option(PORTABLE "Build portable binaries (with slightly decreased performance)"
+       OFF)
 option(BUILD_PYTHON_BINDINGS "Build python bindings" OFF)
 option(BUILD_DOCUMENTATION "Build documentation" OFF)
 option(BUILD_DOCSTRINGS "Build docstrings (implies BUILD_DOCUMENTATION)" OFF)
@@ -47,15 +48,6 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_compile_options(-DNDEBUG)
 endif()
 
-include(CheckCXXCompilerFlag)
-if(PORTABLE)
-  if(DEFINED TARGET_CPU)
-    message(WARNING "You have selected to build PORTABLE binaries. "
-                    "TARGET_CPU settings will be ignored.")
-    unset(TARGET_CPU CACHE)
-  endif()
-endif()
-
 if(NOT COMPILE_AS_EXTERNAL_PROJECT)
   # Include submodules
   set(ExternalSubmoduleDirectories aocommon pybind11 schaapcommon)
@@ -92,6 +84,9 @@ if(NOT COMPILE_AS_EXTERNAL_PROJECT)
     endif()
   endif()
 endif()
+
+# User may optionally set `TARGET_CPU` if `PORTABLE=OFF`
+include(external/aocommon/CMake/SetTargetCPU.cmake)
 
 if(COMPILE_AS_EXTERNAL_PROJECT)
   message(
@@ -160,6 +155,7 @@ find_package(PythonInterp REQUIRED) # Call before finding PythonLibs!
 find_package(PythonLibs 3 REQUIRED)
 message(STATUS "Using python version ${PYTHON_VERSION_STRING}")
 
+set(SCHAAPCOMMON_MODULES fitters math)
 if(COMPILE_AS_EXTERNAL_PROJECT)
   add_subdirectory(${SCHAAPCOMMON_SOURCE_DIR}
                    ${PROJECT_BINARY_DIR}/schaapcommon)
@@ -168,7 +164,7 @@ else()
   add_subdirectory(${SCHAAPCOMMON_SOURCE_DIR})
   add_subdirectory(${PYBIND11_SOURCE_DIR})
 endif()
-target_include_directories(schaapcommon SYSTEM PUBLIC ${AOCOMMON_INCLUDE_DIR})
+target_include_directories(schaapcommon PUBLIC ${AOCOMMON_INCLUDE_DIR})
 
 # When building the python bindings, set the rpath to the install directory, so
 # that importing the python module doesn't require to set the LD_LIBRARY_PATH

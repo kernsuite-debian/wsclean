@@ -4,6 +4,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "tfacet.h"
+#include "facet.h"
 
 #include <aocommon/io/serialistream.h>
 #include <aocommon/io/serialostream.h>
@@ -12,11 +13,42 @@
 using schaapcommon::facets::BoundingBox;
 using schaapcommon::facets::Coord;
 using schaapcommon::facets::Facet;
-using schaapcommon::facets::Pixel;
+using schaapcommon::facets::PixelPosition;
 
 namespace {
 const double kScale = 0.001;
 const size_t kImageSize = 100;
+
+struct SquareFixture {
+  SquareFixture() : data(kScale, kImageSize) {
+    data.padding = 1.4;
+    data.align = 4;
+    data.make_square = true;
+  }
+
+  Facet::InitializationData data;
+};
+
+void CheckEncapsulates(const BoundingBox& untrimmed_box,
+                       const BoundingBox& trimmed_box) {
+  BOOST_CHECK_LE(untrimmed_box.Min().x, trimmed_box.Min().x);
+  BOOST_CHECK_GE(untrimmed_box.Max().x, trimmed_box.Max().x);
+  BOOST_CHECK_LE(untrimmed_box.Min().y, trimmed_box.Min().y);
+  BOOST_CHECK_GE(untrimmed_box.Max().y, trimmed_box.Max().y);
+}
+
+void CheckEncapsulates(const BoundingBox& trimmed_box,
+                       const PixelPosition& min_coord,
+                       const PixelPosition& max_coord) {
+  // Checks are slightly counter-intuitive, but due to the
+  // coordinate system conventions. See documentation for CalculatePixels
+  const int image_size =
+      static_cast<int>(kImageSize);  // Use signed arithmatic.
+  BOOST_CHECK_LE(trimmed_box.Min().x, -min_coord.x + image_size / 2);
+  BOOST_CHECK_LE(trimmed_box.Min().y, min_coord.y + image_size / 2);
+  BOOST_CHECK_GE(trimmed_box.Max().x, -max_coord.x + image_size / 2);
+  BOOST_CHECK_GE(trimmed_box.Max().y, max_coord.y + image_size / 2);
+}
 
 /**
  * Creates a facet with a diamond shape.
@@ -41,21 +73,23 @@ Facet CreateDiamondFacet(int offset_x = 0, int offset_y = 0,
 /**
  * Creates a facet with a rectangular shape.
  */
-Facet CreateRectangularFacet(double padding, size_t align, bool make_square) {
+Facet CreateRectangularFacet(double padding, size_t align, bool make_square,
+                             size_t feather_size) {
   Facet::InitializationData data(kScale, kImageSize);
   data.padding = padding;
   data.align = align;
   data.make_square = make_square;
+  data.feather_size = feather_size;
 
   std::vector<Coord> coords{
       {0.01, -0.02}, {0.01, 0.02}, {-0.01, 0.02}, {-0.01, -0.02}};
   const Facet facet(data, std::move(coords));
-  const std::vector<Pixel>& pixels = facet.GetPixels();
+  const std::vector<PixelPosition>& pixels = facet.GetPixels();
   BOOST_REQUIRE_EQUAL(pixels.size(), 4u);
-  BOOST_CHECK_EQUAL(pixels[0], Pixel(40, 30));
-  BOOST_CHECK_EQUAL(pixels[1], Pixel(40, 70));
-  BOOST_CHECK_EQUAL(pixels[2], Pixel(60, 70));
-  BOOST_CHECK_EQUAL(pixels[3], Pixel(60, 30));
+  BOOST_CHECK_EQUAL(pixels[0], PixelPosition(40, 30));
+  BOOST_CHECK_EQUAL(pixels[1], PixelPosition(40, 70));
+  BOOST_CHECK_EQUAL(pixels[2], PixelPosition(60, 70));
+  BOOST_CHECK_EQUAL(pixels[3], PixelPosition(60, 30));
 
   return facet;
 }
@@ -100,9 +134,12 @@ std::pair<Facet, Facet> CreateConnectedFacets() {
   return std::make_pair(Facet(data, coords1), Facet(data, coords2));
 }
 
-void CheckBoundingBoxes(const Facet& facet, const Pixel& trimmed_min,
-                        const Pixel& trimmed_max, const Pixel& untrimmed_min,
-                        const Pixel& untrimmed_max) {
+void CheckBoundingBoxes(const Facet& facet, const PixelPosition& trimmed_min,
+                        const PixelPosition& trimmed_max,
+                        const PixelPosition& untrimmed_min,
+                        const PixelPosition& untrimmed_max,
+                        const PixelPosition& convolution_min,
+                        const PixelPosition& convolution_max) {
   const BoundingBox& trimmed_box = facet.GetTrimmedBoundingBox();
   BOOST_CHECK_EQUAL(trimmed_box.Min(), trimmed_min);
   BOOST_CHECK_EQUAL(trimmed_box.Max(), trimmed_max);
@@ -110,6 +147,18 @@ void CheckBoundingBoxes(const Facet& facet, const Pixel& trimmed_min,
   const BoundingBox& untrimmed_box = facet.GetUntrimmedBoundingBox();
   BOOST_CHECK_EQUAL(untrimmed_box.Min(), untrimmed_min);
   BOOST_CHECK_EQUAL(untrimmed_box.Max(), untrimmed_max);
+
+  const BoundingBox& convolution_box = facet.GetConvolutionBox();
+  BOOST_CHECK_EQUAL(convolution_box.Min(), convolution_min);
+  BOOST_CHECK_EQUAL(convolution_box.Max(), convolution_max);
+}
+
+void CheckBoundingBoxes(const Facet& facet, const PixelPosition& trimmed_min,
+                        const PixelPosition& trimmed_max,
+                        const PixelPosition& untrimmed_min,
+                        const PixelPosition& untrimmed_max) {
+  CheckBoundingBoxes(facet, trimmed_min, trimmed_max, untrimmed_min,
+                     untrimmed_max, trimmed_min, trimmed_max);
 }
 
 void CheckIntersections(const Facet& facet, int y,
@@ -126,77 +175,29 @@ void CheckIntersections(const Facet& facet, int y,
 
 BOOST_AUTO_TEST_SUITE(facet)
 
-BOOST_AUTO_TEST_CASE(pixel_operators) {
-  const Pixel p1(4, 2);
-  const Pixel p2(2, 1);
-
-  BOOST_CHECK(p1 != p2);
-  const Pixel p3 = p2 + p2;
-  BOOST_CHECK(p1 == p3);
-  const Pixel p4 = p3 - p2;
-  BOOST_CHECK(p4 == p2);
-}
-
-BOOST_AUTO_TEST_CASE(bounding_box_empty) {
-  const BoundingBox box;
-  BOOST_CHECK_EQUAL(box.Min(), Pixel(0, 0));
-  BOOST_CHECK_EQUAL(box.Max(), Pixel(0, 0));
-  BOOST_CHECK_EQUAL(box.Width(), 0);
-  BOOST_CHECK_EQUAL(box.Height(), 0);
-  BOOST_CHECK_EQUAL(box.Centre(), Pixel(0, 0));
-}
-
-BOOST_AUTO_TEST_CASE(bounding_box_no_alignment) {
-  const std::vector<Pixel> pixels{{-1, -20}, {4, 2}, {0, 5}};
-  const BoundingBox box(pixels);
-  BOOST_CHECK_EQUAL(box.Min(), Pixel(-1, -20));
-  BOOST_CHECK_EQUAL(box.Max(), Pixel(4, 5));
-  BOOST_CHECK_EQUAL(box.Width(), 5);
-  BOOST_CHECK_EQUAL(box.Height(), 25);
-  BOOST_CHECK_EQUAL(box.Centre(),
-                    Pixel(1, -7));  // Centre is rounded towards 0.
-}
-
-BOOST_AUTO_TEST_CASE(bounding_box_aligned) {
-  const std::vector<Pixel> pixels{{-1, -20}, {4, 2}, {0, 5}};
-  const size_t align = 4;
-  const BoundingBox box(pixels, align);
-  BOOST_CHECK_EQUAL(box.Min(), Pixel(-2, -21));
-  BOOST_CHECK_EQUAL(box.Max(), Pixel(6, 7));
-  BOOST_CHECK_EQUAL(box.Width() % align, 0);
-  BOOST_CHECK_EQUAL(box.Height() % align, 0);
-  BOOST_CHECK_EQUAL(box.Centre(), Pixel(2, -7));
-}
-
-BOOST_AUTO_TEST_CASE(point_in_bounding_box) {
-  const std::vector<Pixel> pixels{{0, 0}, {0, 10}, {10, 10}, {10, 0}};
-  const BoundingBox box(pixels);
-
-  BOOST_CHECK(box.Contains(Pixel(5, 5)));
-  BOOST_CHECK(!box.Contains(Pixel(10, 10)));
-}
-
 BOOST_AUTO_TEST_CASE(polygon_empty_intersection) {
-  const std::vector<Pixel> poly1{{0, 0}, {0, 10}, {10, 10}, {10, 0}};
-  const std::vector<Pixel> poly2{{11, 11}, {11, 20}, {20, 20}, {20, 11}};
+  const std::vector<PixelPosition> poly1{{0, 0}, {0, 10}, {10, 10}, {10, 0}};
+  const std::vector<PixelPosition> poly2{
+      {11, 11}, {11, 20}, {20, 20}, {20, 11}};
   BOOST_CHECK_EQUAL(Facet::PolygonIntersection(poly1, poly2).size(), 0);
 }
 
 BOOST_AUTO_TEST_CASE(polygon_one_intersection) {
   // Ordering for poly1 and poly2 is on purpose clockwise and anti-clockwise,
   // respectively
-  const std::vector<Pixel> poly1{{0, 0}, {0, 10}, {10, 10}, {10, 0}};
-  const std::vector<Pixel> poly2{{5, 5}, {15, 5}, {15, 15}, {5, 15}};
-  std::vector<Pixel> poly3 = Facet::PolygonIntersection(poly1, poly2);
-  BOOST_CHECK_EQUAL(poly3[0], Pixel(5, 10));
-  BOOST_CHECK_EQUAL(poly3[1], Pixel(10, 10));
-  BOOST_CHECK_EQUAL(poly3[2], Pixel(10, 5));
-  BOOST_CHECK_EQUAL(poly3[3], Pixel(5, 5));
+  const std::vector<PixelPosition> poly1{{0, 0}, {0, 10}, {10, 10}, {10, 0}};
+  const std::vector<PixelPosition> poly2{{5, 5}, {15, 5}, {15, 15}, {5, 15}};
+  std::vector<PixelPosition> poly3 = Facet::PolygonIntersection(poly1, poly2);
+  BOOST_CHECK_EQUAL(poly3[0], PixelPosition(5, 10));
+  BOOST_CHECK_EQUAL(poly3[1], PixelPosition(10, 10));
+  BOOST_CHECK_EQUAL(poly3[2], PixelPosition(10, 5));
+  BOOST_CHECK_EQUAL(poly3[3], PixelPosition(5, 5));
 }
 
 BOOST_AUTO_TEST_CASE(polygon_two_intersections) {
-  const std::vector<Pixel> poly1{{0, 0}, {0, 10}, {10, 10}, {2, 5}, {10, 0}};
-  const std::vector<Pixel> poly2{{5, 0}, {5, 10}, {15, 10}, {15, 0}};
+  const std::vector<PixelPosition> poly1{
+      {0, 0}, {0, 10}, {10, 10}, {2, 5}, {10, 0}};
+  const std::vector<PixelPosition> poly2{{5, 0}, {5, 10}, {15, 10}, {15, 0}};
   // Intersection would result in two polygons, which is not allowed
   BOOST_CHECK_THROW(Facet::PolygonIntersection(poly1, poly2),
                     std::runtime_error);
@@ -263,12 +264,12 @@ BOOST_AUTO_TEST_CASE(constructor_boundingbox_full_image_square) {
   const Facet facet(data, box);
   CheckBoundingBoxes(facet, {-10, 0}, {50, 60}, {-10, 0}, {50, 60});
 
-  const std::vector<Pixel> kExpectedPixels{
+  const std::vector<PixelPosition> kExpectedPixels{
       {0, 0}, {0, kImageHeight}, {kImageWidth, kImageHeight}, {kImageWidth, 0}};
 
   // Calculate exact ra+dec coordinates for the pixels.
   std::vector<Coord> expected_coordinates;
-  for (const Pixel& pixel : kExpectedPixels) {
+  for (const PixelPosition& pixel : kExpectedPixels) {
     double l;
     double m;
     double ra;
@@ -300,7 +301,7 @@ BOOST_AUTO_TEST_CASE(constructor_boundingbox_partial_image) {
   const BoundingBox box{{{20, 70}, {50, 50}}};
   const Facet facet(data, box);
 
-  const std::vector<Pixel> kExpectedPixels{
+  const std::vector<PixelPosition> kExpectedPixels{
       {20, 50}, {20, 70}, {50, 70}, {50, 50}};
   BOOST_REQUIRE_EQUAL(facet.GetPixels().size(), kExpectedPixels.size());
   for (size_t i = 0; i < kExpectedPixels.size(); ++i) {
@@ -351,12 +352,12 @@ BOOST_AUTO_TEST_CASE(constructor_boundingbox_shift_align_pad) {
   const Facet facet(data, box);
   CheckBoundingBoxes(facet, {9, 10}, {33, 42}, {7, 6}, {35, 46});
 
-  const std::vector<Pixel> kExpectedPixels{
+  const std::vector<PixelPosition> kExpectedPixels{
       {10, 10}, {10, 42}, {32, 42}, {32, 10}};
 
   // Calculate exact ra+dec coordinates for the pixels.
   std::vector<Coord> expected_coordinates;
-  for (const Pixel& pixel : kExpectedPixels) {
+  for (const PixelPosition& pixel : kExpectedPixels) {
     double l;
     double m;
     double ra;
@@ -415,36 +416,36 @@ BOOST_AUTO_TEST_CASE(pixel_positions) {
 
   {
     const Facet facet(data, coords);
-    const std::vector<Pixel>& pixels = facet.GetPixels();
+    const std::vector<PixelPosition>& pixels = facet.GetPixels();
     BOOST_REQUIRE_EQUAL(pixels.size(), 4u);
-    BOOST_CHECK_EQUAL(pixels[0], Pixel(50, 50));
-    BOOST_CHECK_EQUAL(pixels[1], Pixel(50, 70));
-    BOOST_CHECK_EQUAL(pixels[2], Pixel(30, 70));
-    BOOST_CHECK_EQUAL(pixels[3], Pixel(30, 50));
+    BOOST_CHECK_EQUAL(pixels[0], PixelPosition(50, 50));
+    BOOST_CHECK_EQUAL(pixels[1], PixelPosition(50, 70));
+    BOOST_CHECK_EQUAL(pixels[2], PixelPosition(30, 70));
+    BOOST_CHECK_EQUAL(pixels[3], PixelPosition(30, 50));
   }
 
   {
     data.l_shift = 0.01;
     data.m_shift = 0.02;
     const Facet facet(data, coords);
-    const std::vector<Pixel>& pixels = facet.GetPixels();
+    const std::vector<PixelPosition>& pixels = facet.GetPixels();
     BOOST_REQUIRE_EQUAL(pixels.size(), 4u);
-    BOOST_CHECK_EQUAL(pixels[0], Pixel(60, 30));
-    BOOST_CHECK_EQUAL(pixels[1], Pixel(60, 50));
-    BOOST_CHECK_EQUAL(pixels[2], Pixel(40, 50));
-    BOOST_CHECK_EQUAL(pixels[3], Pixel(40, 30));
+    BOOST_CHECK_EQUAL(pixels[0], PixelPosition(60, 30));
+    BOOST_CHECK_EQUAL(pixels[1], PixelPosition(60, 50));
+    BOOST_CHECK_EQUAL(pixels[2], PixelPosition(40, 50));
+    BOOST_CHECK_EQUAL(pixels[3], PixelPosition(40, 30));
   }
 
   {
     data.phase_centre = Coord(0.02, 0.01);
     data.l_shift = data.m_shift = 0.0;
     const Facet facet(data, coords);
-    const std::vector<Pixel>& pixels = facet.GetPixels();
+    const std::vector<PixelPosition>& pixels = facet.GetPixels();
     BOOST_REQUIRE_EQUAL(pixels.size(), 4u);
-    BOOST_CHECK_EQUAL(pixels[0], Pixel(70, 40));
-    BOOST_CHECK_EQUAL(pixels[1], Pixel(70, 60));
-    BOOST_CHECK_EQUAL(pixels[2], Pixel(50, 60));
-    BOOST_CHECK_EQUAL(pixels[3], Pixel(50, 40));
+    BOOST_CHECK_EQUAL(pixels[0], PixelPosition(70, 40));
+    BOOST_CHECK_EQUAL(pixels[1], PixelPosition(70, 60));
+    BOOST_CHECK_EQUAL(pixels[2], PixelPosition(50, 60));
+    BOOST_CHECK_EQUAL(pixels[3], PixelPosition(50, 40));
   }
 }
 
@@ -452,16 +453,16 @@ BOOST_AUTO_TEST_CASE(pixel_positions) {
 BOOST_AUTO_TEST_CASE(no_clipping) {
   Facet facet = CreateDiamondFacet();
 
-  const std::vector<Pixel>& pixels = facet.GetPixels();
+  const std::vector<PixelPosition>& pixels = facet.GetPixels();
   BOOST_REQUIRE_EQUAL(pixels.size(), 4u);
-  BOOST_CHECK_EQUAL(pixels[0], Pixel(30, 50));
-  BOOST_CHECK_EQUAL(pixels[1], Pixel(50, 60));
-  BOOST_CHECK_EQUAL(pixels[2], Pixel(70, 50));
-  BOOST_CHECK_EQUAL(pixels[3], Pixel(50, 40));
+  BOOST_CHECK_EQUAL(pixels[0], PixelPosition(30, 50));
+  BOOST_CHECK_EQUAL(pixels[1], PixelPosition(50, 60));
+  BOOST_CHECK_EQUAL(pixels[2], PixelPosition(70, 50));
+  BOOST_CHECK_EQUAL(pixels[3], PixelPosition(50, 40));
 
   // Check facet centroid
-  const Pixel centroid = facet.Centroid();
-  BOOST_CHECK_EQUAL(centroid, Pixel(50, 50));
+  const PixelPosition centroid = facet.Centroid();
+  BOOST_CHECK_EQUAL(centroid, PixelPosition(50, 50));
   BOOST_CHECK_EQUAL(facet.RA(), 0.0);
   BOOST_CHECK_EQUAL(facet.Dec(), 0.0);
 }
@@ -472,14 +473,14 @@ BOOST_AUTO_TEST_CASE(clip_top_right) {
   const int offset_y = offset_x;
   Facet facet = CreateDiamondFacet(offset_x, offset_y);
 
-  const std::vector<Pixel>& pixels = facet.GetPixels();
+  const std::vector<PixelPosition>& pixels = facet.GetPixels();
   // Facet clipped to triangle
   BOOST_REQUIRE_EQUAL(pixels.size(), 3u);
-  BOOST_CHECK_EQUAL(pixels[0], Pixel(100, 90));
-  BOOST_CHECK_EQUAL(pixels[1], Pixel(80, 100));
-  BOOST_CHECK_EQUAL(pixels[2], Pixel(100, 100));
-  Pixel centroid_ref((pixels[0].x + pixels[1].x + pixels[2].x) / 3,
-                     (pixels[0].y + pixels[1].y + pixels[2].y) / 3);
+  BOOST_CHECK_EQUAL(pixels[0], PixelPosition(100, 90));
+  BOOST_CHECK_EQUAL(pixels[1], PixelPosition(80, 100));
+  BOOST_CHECK_EQUAL(pixels[2], PixelPosition(100, 100));
+  PixelPosition centroid_ref((pixels[0].x + pixels[1].x + pixels[2].x) / 3,
+                             (pixels[0].y + pixels[1].y + pixels[2].y) / 3);
   BOOST_CHECK_EQUAL(facet.Centroid(), centroid_ref);
 
   // Manually convert centroid to ra,dec coords, and check
@@ -504,14 +505,14 @@ BOOST_AUTO_TEST_CASE(clip_bottom_left) {
   const bool set_custom_direction = true;
   Facet facet = CreateDiamondFacet(-50, -50, set_custom_direction);
 
-  const std::vector<Pixel>& pixels = facet.GetPixels();
+  const std::vector<PixelPosition>& pixels = facet.GetPixels();
   // Facet clipped to triangle
   BOOST_REQUIRE_EQUAL(pixels.size(), 3u);
-  BOOST_CHECK_EQUAL(pixels[0], Pixel(0, 10));
-  BOOST_CHECK_EQUAL(pixels[1], Pixel(20, 0));
-  BOOST_CHECK_EQUAL(pixels[2], Pixel(0, 0));
-  Pixel centroid_ref((pixels[0].x + pixels[1].x + pixels[2].x) / 3,
-                     (pixels[0].y + pixels[1].y + pixels[2].y) / 3);
+  BOOST_CHECK_EQUAL(pixels[0], PixelPosition(0, 10));
+  BOOST_CHECK_EQUAL(pixels[1], PixelPosition(20, 0));
+  BOOST_CHECK_EQUAL(pixels[2], PixelPosition(0, 0));
+  PixelPosition centroid_ref((pixels[0].x + pixels[1].x + pixels[2].x) / 3,
+                             (pixels[0].y + pixels[1].y + pixels[2].y) / 3);
   BOOST_CHECK_EQUAL(facet.Centroid(), centroid_ref);
   // Custom (ra, dec) direction reproduced?
   BOOST_CHECK_EQUAL(facet.RA(), -0.02);
@@ -521,49 +522,69 @@ BOOST_AUTO_TEST_CASE(clip_bottom_left) {
 BOOST_AUTO_TEST_CASE(point_in_polygon) {
   const Facet facet = CreateDiamondFacet();
 
-  BOOST_CHECK(facet.Contains(Pixel(50, 50)));
+  BOOST_CHECK(facet.Contains(PixelPosition(50, 50)));
   // Pixel on edge that is owned by the facet
-  BOOST_CHECK(facet.Contains(Pixel(30, 50)));
+  BOOST_CHECK(facet.Contains(PixelPosition(30, 50)));
   // Pixel on edge that is not owned by the facet
-  BOOST_CHECK(!facet.Contains(Pixel(50, 60)));
-  BOOST_CHECK(!facet.Contains(Pixel(70, 50)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(50, 60)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(70, 50)));
   // Pixel outside facet
-  BOOST_CHECK(!facet.Contains(Pixel(29, 50)));
-  BOOST_CHECK(!facet.Contains(Pixel(50, 61)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(29, 50)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(50, 61)));
 }
 
 BOOST_AUTO_TEST_CASE(facet_bounding_boxes) {
   // Invalid padding
-  BOOST_CHECK_THROW(CreateRectangularFacet(0.99, 1, false),
+  BOOST_CHECK_THROW(CreateRectangularFacet(0.99, 1, false, 0),
                     std::invalid_argument);
 
   // Invalid alignment
-  BOOST_CHECK_THROW(CreateRectangularFacet(1.0, 42, false),
+  BOOST_CHECK_THROW(CreateRectangularFacet(1.0, 42, false, 0),
                     std::invalid_argument);
 
   // No padding, no alignment, no squaring.
-  CheckBoundingBoxes(CreateRectangularFacet(1.0, 1, false), Pixel(40, 30),
-                     Pixel(60, 70), Pixel(40, 30), Pixel(60, 70));
+  CheckBoundingBoxes(CreateRectangularFacet(1.0, 1, false, 0), {40, 30},
+                     {60, 70}, {40, 30}, {60, 70});
 
   // Only enable padding.
-  CheckBoundingBoxes(CreateRectangularFacet(1.5, 1, false), Pixel(40, 30),
-                     Pixel(60, 70), Pixel(35, 20), Pixel(65, 80));
+  CheckBoundingBoxes(CreateRectangularFacet(1.5, 1, false, 0), {40, 30},
+                     {60, 70}, {35, 20}, {65, 80});
 
   // Enable alignment, facet should not change
-  CheckBoundingBoxes(CreateRectangularFacet(1.0, 4, false), Pixel(40, 30),
-                     Pixel(60, 70), Pixel(40, 30), Pixel(60, 70));
+  CheckBoundingBoxes(CreateRectangularFacet(1.0, 4, false, 0), {40, 30},
+                     {60, 70}, {40, 30}, {60, 70});
 
   // Only enable squaring.
-  CheckBoundingBoxes(CreateRectangularFacet(1.0, 1, true), Pixel(30, 30),
-                     Pixel(70, 70), Pixel(30, 30), Pixel(70, 70));
+  CheckBoundingBoxes(CreateRectangularFacet(1.0, 1, true, 0), {30, 30},
+                     {70, 70}, {30, 30}, {70, 70});
 
   // Enable everything and use a non-power-of-two alignment.
-  CheckBoundingBoxes(CreateRectangularFacet(1.5, 25, true), Pixel(25, 25),
-                     Pixel(75, 75), Pixel(13, 13), Pixel(88, 88));
+  CheckBoundingBoxes(CreateRectangularFacet(1.5, 25, true, 0), {25, 25},
+                     {75, 75}, {13, 13}, {88, 88});
+}
+
+BOOST_AUTO_TEST_CASE(feather_space) {
+  // Add 5 extra pixels (everything fits inside the main image)
+  CheckBoundingBoxes(CreateRectangularFacet(1.0, 1, false, 5), {35, 25},
+                     {65, 75}, {35, 25}, {65, 75});
+
+  // Add 35 extra pixels (for the trimmed bounding box: make sure space
+  // is not added beyond the full image)
+  CheckBoundingBoxes(CreateRectangularFacet(1.0, 1, false, 35), {5, 0},
+                     {95, 100}, {5, 0}, {95, 100}, {5, -5}, {95, 105});
+
+  // Add 5 extra pixels with factor 1.5 padding. Padding should only change
+  // the untrimmed bounding box.
+  CheckBoundingBoxes(CreateRectangularFacet(1.5, 1, false, 5), {35, 25},
+                     {65, 75}, {28, 13}, {72, 87}, {35, 25}, {65, 75});
+
+  // Add 5 extra pixels and request square bounding box.
+  CheckBoundingBoxes(CreateRectangularFacet(1.5, 1, true, 5), {25, 25},
+                     {75, 75}, {13, 13}, {87, 87}, {25, 25}, {75, 75});
 }
 
 BOOST_AUTO_TEST_CASE(horizontal_intersections_rectangle) {
-  const Facet facet = CreateRectangularFacet(1.0, 1, false);
+  const Facet facet = CreateRectangularFacet(1.0, 1, false, 0);
 
   // Specified y is below the facet.
   CheckIntersections(facet, 20, {});
@@ -651,11 +672,11 @@ BOOST_AUTO_TEST_CASE(horizontal_intersections_concave_facet) {
 
   // Empty at top
   CheckIntersections(facet, 60, {});
-  BOOST_CHECK_EQUAL(facet.Centroid(), Pixel(50, 46));
+  BOOST_CHECK_EQUAL(facet.Centroid(), PixelPosition(50, 46));
 #endif
 }
 
-BOOST_AUTO_TEST_CASE(check_facet_alignment) {
+BOOST_AUTO_TEST_CASE(facet_continuity) {
   std::pair<Facet, Facet> facets = CreateConnectedFacets();
 
   for (int y = 0; y != 8; ++y) {
@@ -671,39 +692,6 @@ BOOST_AUTO_TEST_CASE(check_facet_alignment) {
   }
 }
 
-namespace {
-void CheckEncapsulates(const BoundingBox& untrimmed_box,
-                       const BoundingBox& trimmed_box) {
-  BOOST_CHECK_LE(untrimmed_box.Min().x, trimmed_box.Min().x);
-  BOOST_CHECK_GE(untrimmed_box.Max().x, trimmed_box.Max().x);
-  BOOST_CHECK_LE(untrimmed_box.Min().y, trimmed_box.Min().y);
-  BOOST_CHECK_GE(untrimmed_box.Max().y, trimmed_box.Max().y);
-}
-
-void CheckEncapsulates(const BoundingBox& trimmed_box, const Pixel& min_coord,
-                       const Pixel& max_coord) {
-  // Checks are slightly counter-intuitive, but due to the
-  // coordinate system conventions. See documentation for CalculatePixels
-  const int image_size =
-      static_cast<int>(kImageSize);  // Use signed arithmatic.
-  BOOST_CHECK_LE(trimmed_box.Min().x, -min_coord.x + image_size / 2);
-  BOOST_CHECK_LE(trimmed_box.Min().y, min_coord.y + image_size / 2);
-  BOOST_CHECK_GE(trimmed_box.Max().x, -max_coord.x + image_size / 2);
-  BOOST_CHECK_GE(trimmed_box.Max().y, max_coord.y + image_size / 2);
-}
-
-struct SquareFixture {
-  SquareFixture() : data(kScale, kImageSize) {
-    data.padding = 1.4;
-    data.align = 4;
-    data.make_square = true;
-  }
-
-  Facet::InitializationData data;
-};
-
-}  // namespace
-
 BOOST_FIXTURE_TEST_CASE(square_bounding_box, SquareFixture) {
   /**
    * These and the next 4 auto test cases check the make_square=true option. In
@@ -712,9 +700,9 @@ BOOST_FIXTURE_TEST_CASE(square_bounding_box, SquareFixture) {
    * encapsulate all coordinates; b) the bounding boxes are still properly
    * aligned; and c) the bounding boxes are square shaped.
    */
-  const Pixel min_coord(0, 2);
-  const Pixel mid_coord(5, 5);
-  const Pixel max_coord(10, 8);
+  const PixelPosition min_coord(0, 2);
+  const PixelPosition mid_coord(5, 5);
+  const PixelPosition max_coord(10, 8);
   std::vector<Coord> coords{{min_coord.x * kScale, min_coord.y * kScale},
                             {mid_coord.x * kScale, mid_coord.y * kScale},
                             {max_coord.x * kScale, max_coord.y * kScale}};
@@ -731,8 +719,8 @@ BOOST_FIXTURE_TEST_CASE(square_bounding_box, SquareFixture) {
 }
 
 BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_right_edge, SquareFixture) {
-  const Pixel min_coord(-49, -49);
-  const Pixel max_coord(-48, 2);
+  const PixelPosition min_coord(-49, -49);
+  const PixelPosition max_coord(-48, 2);
   std::vector<Coord> coords{{min_coord.x * kScale, min_coord.y * kScale},
                             {min_coord.x * kScale, max_coord.y * kScale},
                             {max_coord.x * kScale, max_coord.y * kScale}};
@@ -749,8 +737,8 @@ BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_right_edge, SquareFixture) {
 }
 
 BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_bottom_edge, SquareFixture) {
-  const Pixel min_coord(2, -49);
-  const Pixel max_coord(49, -48);
+  const PixelPosition min_coord(2, -49);
+  const PixelPosition max_coord(49, -48);
   std::vector<Coord> coords{{min_coord.x * kScale, min_coord.y * kScale},
                             {max_coord.x * kScale, min_coord.y * kScale},
                             {max_coord.x * kScale, max_coord.y * kScale}};
@@ -767,8 +755,8 @@ BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_bottom_edge, SquareFixture) {
 }
 
 BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_left_edge, SquareFixture) {
-  const Pixel min_coord(48, 2);
-  const Pixel max_coord(50, 49);
+  const PixelPosition min_coord(48, 2);
+  const PixelPosition max_coord(50, 49);
   std::vector<Coord> coords{{min_coord.x * kScale, min_coord.y * kScale},
                             {max_coord.x * kScale, min_coord.y * kScale},
                             {max_coord.x * kScale, max_coord.y * kScale}};
@@ -785,8 +773,8 @@ BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_left_edge, SquareFixture) {
 }
 
 BOOST_FIXTURE_TEST_CASE(square_bounding_box_near_top_edge, SquareFixture) {
-  const Pixel min_coord(2, 48);
-  const Pixel max_coord(49, 50);
+  const PixelPosition min_coord(2, 48);
+  const PixelPosition max_coord(49, 50);
   std::vector<Coord> coords{{min_coord.x * kScale, min_coord.y * kScale},
                             {min_coord.x * kScale, max_coord.y * kScale},
                             {max_coord.x * kScale, max_coord.y * kScale}};
@@ -812,7 +800,7 @@ BOOST_AUTO_TEST_CASE(serialization) {
 
   // Create a facet with different bounding boxes. See facet_bounding_boxes
   // test.
-  Facet input = CreateRectangularFacet(1.5, 25, true);
+  Facet input = CreateRectangularFacet(1.5, 25, true, 30);
   BOOST_CHECK_EQUAL(input.RA(), 0.0);
   BOOST_CHECK_EQUAL(input.Dec(), 0.0);
   input.SetRA(kRa);

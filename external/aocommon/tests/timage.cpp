@@ -181,6 +181,23 @@ BOOST_AUTO_TEST_CASE(stddev_from_mad) {
                              5.0f, 0.05);
 }
 
+BOOST_AUTO_TEST_CASE(median_and_stddev_from_mad) {
+  Image image(3, 3, 1.0);
+  std::pair<float, float> result = image.MedianAndStdDevFromMAD();
+  BOOST_CHECK_CLOSE_FRACTION(result.first, 1.0, 1e-5);
+  BOOST_CHECK_CLOSE_FRACTION(result.second, 0.0, 1e-5);
+
+  image =
+      Image(3, 3, {0.0f, 1.0f, 2.0f, 10.0f, 11.0f, 12.0f, 20.0f, 21.0f, 22.0f});
+  result = image.MedianAndStdDevFromMAD();
+  BOOST_CHECK_CLOSE_FRACTION(result.first, 11.0, 1e-5);
+  constexpr double mad_to_stddev = 1.48260221850560;
+  // The median is 11. The absolute deviations from the median are therefore:
+  // 11, 10, 9, 1, 0, 1, 9, 10, 11. After sorting:
+  // 0, 1, 1, 9, 9, 10, 10, 11, 11 -> MAD is 9.
+  BOOST_CHECK_CLOSE_FRACTION(result.second, 9.0 * mad_to_stddev, 1e-5);
+}
+
 BOOST_AUTO_TEST_CASE(uninitialized_constructor) {
   const size_t kWidth = 10;
   const size_t kHeight = 20;
@@ -383,6 +400,17 @@ BOOST_AUTO_TEST_CASE(trim_and_untrim) {
   BOOST_CHECK_EQUAL(
       std::accumulate(untrimmed_image.begin(), untrimmed_image.end(), 0.0f),
       std::accumulate(trimmed_image.begin(), trimmed_image.end(), 0.0f));
+}
+
+BOOST_AUTO_TEST_CASE(untrim_equal_size) {
+  const size_t kWidth = 64;
+  const size_t kHeight = 64;
+  const Image image = CreateTestImage(kWidth, kHeight);
+  const Image trimmed = image.Untrim(kWidth, kHeight);
+  BOOST_REQUIRE_EQUAL(trimmed.Width(), kWidth);
+  BOOST_REQUIRE_EQUAL(trimmed.Height(), kHeight);
+  BOOST_CHECK_EQUAL_COLLECTIONS(image.begin(), image.end(), trimmed.begin(),
+                                trimmed.end());
 }
 
 BOOST_AUTO_TEST_CASE(resize_equal_size) {

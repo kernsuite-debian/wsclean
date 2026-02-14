@@ -162,14 +162,23 @@ class SerialIStream {
 
   /**
    * Read a vector of objects from the stream.
-   * @tparam T Object type, which must implement Unserialize(SerialIStream&).
+   * @tparam T Object type, which must either implement
+   * T(SerialIStream&) or Unserialize(SerialIStream&).
    */
   template <typename T>
   SerialIStream& ObjectVector(std::vector<T>& objects) {
     uint64_t size = UInt64();
-    objects.resize(size);
-    for (T& object : objects) {
-      object.Unserialize(*this);
+    if constexpr (std::is_constructible_v<T, SerialIStream&>) {
+      objects.clear();
+      objects.reserve(size);
+      for (uint64_t i = 0; i < size; ++i) {
+        objects.emplace_back(*this);
+      }
+    } else {
+      objects.resize(size);
+      for (T& object : objects) {
+        object.Unserialize(*this);
+      }
     }
     return *this;
   }

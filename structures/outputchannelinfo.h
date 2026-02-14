@@ -5,28 +5,37 @@
 #include <cstring>
 #include <vector>
 
+#include "../gridding/averagecorrection.h"
+
+namespace wsclean {
+
 struct OutputChannelInfo {
-  OutputChannelInfo()
-      : weight(0.0),
-        normalizationFactor(1.0),
-        wGridSize(0),
-        visibilityCount(0),
-        effectiveVisibilityCount(0.0),
-        visibilityWeightSum(0.0),
-        beamMaj(0.0),
-        beamMin(0.0),
-        beamPA(0.0),
-        beamSizeEstimate(0.0),
-        theoreticBeamSize(0.0),
-        psfNormalizationFactor(1.0) {}
-  double weight, normalizationFactor;
-  std::size_t wGridSize, visibilityCount;
-  double effectiveVisibilityCount, visibilityWeightSum;
-  double beamMaj, beamMin, beamPA;
+  OutputChannelInfo(size_t n_facets = 0, size_t n_dd_psfs = 0)
+      : averageFacetCorrection(n_facets),
+        averageBeamFacetCorrection(n_facets),
+        averageDdPsfCorrection(n_dd_psfs) {}
+  double weight = 0.0;
+  double normalizationFactor = 1.0;
+  std::size_t wGridSize = 0;
+  std::size_t visibilityCount = 0;
+  double effectiveVisibilityCount = 0.0;
+  double visibilityWeightSum = 0.0;
+  double beamMaj = 0.0;
+  double beamMin = 0.0;
+  double beamPA = 0.0;
   // The beam size estimate is calculated from the longest baseline, and used
   // as initial value when fitting the (accurate) beam
-  double beamSizeEstimate;
-  double theoreticBeamSize, psfNormalizationFactor;
+  double beamSizeEstimate = 0.0;
+  double theoreticBeamSize = 0.0;
+  double psfNormalizationFactor = 1.0;
+  // For dd psf mode, this is the facet index that holds the central
+  // psf.
+  std::size_t centralPsfIndex = 0;
+  // See VisibilityModifier for an explanation
+  std::vector<AverageCorrection> averageFacetCorrection;
+  std::vector<AverageCorrection> averageBeamFacetCorrection;
+  // Same as averageFacetCorrection, but then for the DD PSF facets
+  std::vector<AverageCorrection> averageDdPsfCorrection;
 };
 
 /**
@@ -48,5 +57,7 @@ inline double SmallestTheoreticBeamSize(
              ? std::numeric_limits<double>::quiet_NaN()
              : smallest_theoretic_beam_size;
 }
+
+}  // namespace wsclean
 
 #endif

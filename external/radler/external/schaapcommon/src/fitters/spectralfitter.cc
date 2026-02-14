@@ -143,7 +143,6 @@ void SpectralFitter::Evaluate(NumT* values,
   switch (mode_) {
     default:
     case SpectralFittingMode::kNoFitting:
-    case SpectralFittingMode::kForcedTerms:
       break;
 
     case SpectralFittingMode::kPolynomial: {
@@ -154,7 +153,10 @@ void SpectralFitter::Evaluate(NumT* values,
       }
     } break;
 
-    case SpectralFittingMode::kLogPolynomial: {
+    // Both logarithmic polynomial and forced-spectra fitting use the
+    // same basis functions, i.e. terms have the same meaning.
+    case SpectralFittingMode::kLogPolynomial:
+    case SpectralFittingMode::kForcedTerms: {
       const double reference = ReferenceFrequency();
       for (size_t i = 0; i != frequencies_.size(); ++i) {
         values[i] = NonLinearPowerLawFitter::Evaluate(frequencies_[i], terms,

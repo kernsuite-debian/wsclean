@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.12)
 
 project(wsclean)
 
@@ -24,34 +24,17 @@ else()
   add_compile_options(-DNDEBUG)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(PORTABLE "Generate portable code" OFF)
+option(PORTABLE "Build portable binaries (with slightly decreased performance)"
+       OFF)
 option(BUILD_PACKAGES "Build Debian packages" OFF)
 
-include(CheckCXXCompilerFlag)
-if(PORTABLE)
-  if(DEFINED TARGET_CPU)
-    message(WARNING "You have selected to build PORTABLE binaries. "
-                    "TARGET_CPU settings will be ignored.")
-    unset(TARGET_CPU CACHE)
-  endif()
-else()
-  if(DEFINED TARGET_CPU)
-    add_compile_options(-march=${TARGET_CPU})
-    set(RADLER_TARGET_CPU "-DTARGET_CPU=${TARGET_CPU}")
-  else()
-    check_cxx_compiler_flag("-march=native" COMPILER_HAS_MARCH_NATIVE)
-    if(COMPILER_HAS_MARCH_NATIVE)
-      add_compile_options(-march=native)
-    else()
-      message(
-        WARNING "The compiler doesn't support -march=native for your CPU.")
-    endif()
-  endif()
-endif()
+set(RADLER_CXX_FLAGS
+    " "
+    CACHE STRING "Extra C++ flags used for compiling Radler")
 
 set(ExternalSubmoduleDirectories aocommon pybind11 radler schaapcommon)
 foreach(ExternalSubmodule ${ExternalSubmoduleDirectories})
@@ -87,14 +70,20 @@ if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
   endif()
 endif()
 
-# Include aocommon
+# User may optionally set `TARGET_CPU` if `PORTABLE=OFF`
+include(external/aocommon/CMake/SetTargetCPU.cmake)
+
+# Include aocommon.
 include_directories("${CMAKE_SOURCE_DIR}/external/aocommon/include/")
 
+# LRUCache11
+include_directories("${CMAKE_SOURCE_DIR}/external/lrucache11")
+
 # Schaapcommon
+set(SCHAAPCOMMON_MODULES ducc0 facets fitters h5parm math reordering)
 add_subdirectory("${CMAKE_SOURCE_DIR}/external/schaapcommon")
 include_directories("${CMAKE_SOURCE_DIR}/external/schaapcommon/include")
-
-include_directories(external/wgridder)
+include_directories("${CMAKE_SOURCE_DIR}/external/schaapcommon/external")
 
 # Casacore has a separate CMake file in this directory
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/CMake)
@@ -106,7 +95,8 @@ find_package(
 add_definitions(${HDF5_DEFINITIONS})
 
 set(CASACORE_MAKE_REQUIRED_EXTERNALS_OPTIONAL TRUE)
-find_package(Casacore REQUIRED COMPONENTS casa ms tables measures fits)
+find_package(Casacore 3.6 REQUIRED COMPONENTS casa ms tables measures fits)
+
 find_package(CFITSIO REQUIRED)
 # Chgcentre uses a lapack function. EveryBeam provides lapack, but because
 # EveryBeam is not required, chgcentre will fail to link when EveryBeam is not
@@ -122,9 +112,10 @@ find_path(
   NAMES fftw3.h
   HINTS ENV FFTW3_INCLUDE)
 
-find_package(PythonLibs 3 REQUIRED)
-find_package(PythonInterp REQUIRED)
-message(STATUS "Using python version ${PYTHON_VERSION_STRING}")
+find_package(
+  Python3
+  COMPONENTS Interpreter Development
+  REQUIRED)
 
 # Include pybind11
 add_subdirectory("${CMAKE_SOURCE_DIR}/external/pybind11")
@@ -132,6 +123,10 @@ include_directories(SYSTEM ${pybind11_INCLUDE_DIRS})
 
 #Prevent accidentally finding old BoostConfig.cmake file from casapy
 set(Boost_NO_BOOST_CMAKE ON)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
+  # Disable warning; both old and new policies are fine
+  cmake_policy(SET CMP0167 NEW)
+endif()
 find_package(
   Boost
   COMPONENTS date_time filesystem system program_options
@@ -163,7 +158,8 @@ if(MPI_FOUND)
   endif()
   add_definitions(-DHAVE_MPI)
   include_directories(SYSTEM ${MPI_INCLUDE_PATH})
-  set(MPI_CPP_FILES scheduling/mpischeduler.cpp distributed/mpibig.cpp)
+  set(MPI_CPP_FILES scheduling/mpischeduler.cpp
+                    scheduling/mpiworkerscheduler.cpp distributed/mpibig.cpp)
 else(MPI_FOUND)
   message(
     WARNING
@@ -175,12 +171,12 @@ endif(MPI_FOUND)
 
 find_package(EveryBeam NO_MODULE QUIET)
 if(${EVERYBEAM_FOUND})
-  if(${EVERYBEAM_VERSION} VERSION_LESS "0.5.2" OR ${EVERYBEAM_VERSION}
-                                                  VERSION_GREATER_EQUAL "0.6.0")
+  if(${EVERYBEAM_VERSION} VERSION_LESS "0.6.0" OR ${EVERYBEAM_VERSION}
+                                                  VERSION_GREATER_EQUAL "0.8.0")
     message(STATUS "EveryBeam version is incompatible")
     message(
       FATAL_ERROR
-        "WSClean needs EveryBeam version 0.5.x with x>=2 - but found version ${EVERYBEAM_VERSION}"
+        "EveryBeam version ${EVERYBEAM_VERSION} was found, but it is not compatible with this version of WSClean. This WSClean version requires EveryBeam version 0.6.x or 0.7.x."
     )
   else()
     include_directories(${EVERYBEAM_INCLUDE_DIRS})
@@ -225,7 +221,7 @@ include_directories(SYSTEM ${CFITSIO_INCLUDE_DIR})
 include_directories(SYSTEM ${FFTW3_INCLUDE_DIR})
 include_directories(SYSTEM ${GSL_INCLUDE_DIR})
 include_directories(SYSTEM ${HDF5_INCLUDE_DIRS})
-include_directories(SYSTEM ${PYTHON_INCLUDE_DIRS})
+include_directories(SYSTEM ${Python3_INCLUDE_DIRS})
 
 include(CheckCXXSourceCompiles)
 
@@ -235,7 +231,7 @@ add_definitions(-DHAVE_GSL)
 # Radler
 set(RADLER_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/external/radler)
 set(RADLER_LIB
-    ${RADLER_INSTALL_PREFIX}/lib/libradler${CMAKE_SHARED_LIBRARY_SUFFIX})
+    ${RADLER_INSTALL_PREFIX}/lib/libradler${CMAKE_STATIC_LIBRARY_SUFFIX})
 ExternalProject_Add(
   radler-module
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/radler
@@ -245,9 +241,11 @@ ExternalProject_Add(
   CMAKE_ARGS
     -DCOMPILE_AS_EXTERNAL_PROJECT=On
     -DPORTABLE=${PORTABLE}
-    -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}
+    -DTARGET_CPU=${TARGET_CPU}
+    -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
     -DCMAKE_INCLUDE_PATH=${CMAKE_INCLUDE_PATH}
     -DCMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}
+    -DBoost_INCLUDE_DIR=${Boost_INCLUDE_DIR}
     -DCFITSIO_ROOT_DIR=${CFITSIO_ROOT_DIR}
     # The casacore root is set to the location where casacore was found.
     # Note that CASACORE_ROOT_DIR isn't set/updated by the find script, so we
@@ -261,7 +259,7 @@ ExternalProject_Add(
     -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
     -DCMAKE_INSTALL_PREFIX=${RADLER_INSTALL_PREFIX}
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    ${RADLER_TARGET_CPU})
+    -DCMAKE_CXX_FLAGS=${RADLER_CXX_FLAGS})
 
 set(RADLER_INCLUDE_DIR ${RADLER_INSTALL_PREFIX}/include)
 include_directories(${RADLER_INCLUDE_DIR})
@@ -308,13 +306,36 @@ endif()
 
 add_library(
   wsclean-object OBJECT
+  # These wgridder files are given first because they take a long time to compile. In multi-threaded compilation,
+  # this has the advantage that it allows better parallelization.
+  # Instantiation is split over multiple files to help make it more parallel and reduce memory requirements
+  wgridder/wgriddingmsgridder.cpp
+  wgridder/gridder_simple_float.cpp
+  wgridder/gridder_simple_double.cpp
+  wgridder/callback_float_xx.cpp
+  wgridder/callback_double_xx.cpp
+  wgridder/callback_float_yy.cpp
+  wgridder/callback_double_yy.cpp
+  wgridder/callback_float_diagonal.cpp
+  wgridder/callback_double_diagonal.cpp
+  wgridder/callback_float_trace.cpp
+  wgridder/callback_double_trace.cpp
+  wgridder/callback_float_full.cpp
+  wgridder/callback_double_full.cpp
   main/commandline.cpp
+  main/imageweightinitializer.cpp
+  main/mshelper.cpp
   main/progressbar.cpp
+  main/settings.cpp
   main/stopwatch.cpp
   main/wsclean.cpp
-  main/settings.cpp
+  gridding/averagecorrection.cpp
   gridding/directmsgridder.cpp
-  gridding/msgridderbase.cpp
+  gridding/h5solutiondata.cpp
+  gridding/msgridder.cpp
+  gridding/msgridderdata.cpp
+  gridding/msgriddermanager.cpp
+  gridding/msprovidercollection.cpp
   gridding/visibilitymodifier.cpp
   gridding/wsmsgridder.cpp
   gridding/wstackinggridder.cpp
@@ -338,16 +359,17 @@ add_library(
   msproviders/msrowprovider.cpp
   msproviders/msrowproviderbase.cpp
   msproviders/noisemsrowprovider.cpp
-  msproviders/partitionedms.cpp
-  msproviders/timestepbuffer.cpp
+  msproviders/reorderedmsprovider.cpp
   msproviders/synchronizedms.cpp
+  msproviders/timestepbuffer.cpp
   msproviders/msreaders/contiguousmsreader.cpp
-  msproviders/msreaders/partitionedmsreader.cpp
+  msproviders/msreaders/reorderedmsreader.cpp
   msproviders/msreaders/timestepbufferreader.cpp
   msproviders/msweightcolumn.cpp
+  scheduling/griddingtask.cpp
+  scheduling/griddingtaskfactory.cpp
   scheduling/griddingtaskmanager.cpp
   scheduling/griddingresult.cpp
-  scheduling/griddingtask.cpp
   scheduling/metadatacache.cpp
   scheduling/threadedscheduler.cpp
   structures/facetutil.cpp
@@ -359,13 +381,6 @@ add_library(
   structures/primarybeam.cpp
   structures/resources.cpp
   system/pythonfilepath.cpp
-  wgridder/wgriddingmsgridder.cpp
-  wgridder/wgriddinggridder_simple.cpp
-  external/wgridder/ducc0/math/gridding_kernel.cc
-  external/wgridder/ducc0/math/gl_integrator.cc
-  external/wgridder/ducc0/infra/threading.cc
-  external/wgridder/ducc0/infra/mav.cc
-  external/wgridder/ducc0/wgridder/wgridder.cc
   ${IDG_FILES}
   ${MPI_CPP_FILES})
 
@@ -374,7 +389,8 @@ add_library(
 # allowed. Note that visibilities can be NaN hence this can not be turned
 # on for all files.
 set_source_files_properties(
-  wsclean/wstackinggridder.cpp wgridder/wgriddinggridder_simple.cpp
+  wsclean/directmsgridder.cpp wsclean/wstackinggridder.cpp
+  wgridder/gridder_simple_float.cpp wgridder/gridder_simple_double.cpp
   PROPERTIES COMPILE_FLAGS -ffast-math)
 
 # Add radler-module dependency to wsclean-object to ensure all
@@ -383,18 +399,18 @@ add_dependencies(wsclean-object radler-module)
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
 
-set(WSCLEANFILES $<TARGET_OBJECTS:wsclean-object>)
+target_link_libraries(wsclean-object PUBLIC schaapcommon)
 
-set(ALL_LIBRARIES
+set(EXTERNAL_LIBRARIES
     ${CASACORE_LIBRARIES}
     ${FFTW3_LIB}
     ${FFTW3_THREADS_LIB}
     ${FFTW3F_LIB}
     ${FFTW3F_THREADS_LIB}
-    ${Boost_DATE_TIME_LIBRARY}
-    ${Boost_FILESYSTEM_LIBRARY}
-    ${Boost_PROGRAM_OPTIONS_LIBRARY}
-    ${Boost_SYSTEM_LIBRARY}
+    Boost::date_time
+    Boost::filesystem
+    Boost::program_options
+    Boost::system
     ${CFITSIO_LIBRARY}
     ${GSL_LIB}
     ${GSL_CBLAS_LIB}
@@ -403,23 +419,32 @@ set(ALL_LIBRARIES
     ${HDF5_LIBRARIES}
     ${MPI_LIBRARIES}
     ${EVERYBEAM_LIB}
-    schaapcommon)
+    schaapcommon
+    pybind11::embed)
 
 # Perform the BLAS check from aocommon
 include("${CMAKE_CURRENT_LIST_DIR}/external/aocommon/CMake/CheckBLAS.cmake")
-check_blas(LIBRARIES ${ALL_LIBRARIES})
+check_blas(LIBRARIES ${EXTERNAL_LIBRARIES})
 # Radler lib cannot be checked on BLAS consistenty as it doesn't exist
-# at cmake time.
-list(APPEND ALL_LIBRARIES ${RADLER_LIB})
+# at cmake time. It needs to be first in the link order because Radler
+# itself also depends on some of the libraries in the EXTERNAL_LIBRARIES list.
+list(PREPEND EXTERNAL_LIBRARIES ${RADLER_LIB})
 
-add_library(wsclean-lib STATIC ${WSCLEANFILES})
-target_link_libraries(wsclean-lib PRIVATE pybind11::embed ${ALL_LIBRARIES})
+add_library(wsclean-lib STATIC)
+target_link_libraries(wsclean-lib PRIVATE ${EXTERNAL_LIBRARIES} wsclean-object)
 set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
 set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 
-add_library(wsclean-shared SHARED ${WSCLEANFILES})
-target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES})
+add_library(wsclean-shared SHARED)
+target_link_libraries(wsclean-shared PRIVATE ${EXTERNAL_LIBRARIES}
+                                             wsclean-object)
 set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
+
+# Make schaapcommon a PUBLIC dependency, since some WSClean headers use
+# schaapcommon headers. An application/test linking to wsclean-lib or
+# wsclean-shared thus needs schaapcommon as well.
+target_link_libraries(wsclean-lib PUBLIC schaapcommon)
+target_link_libraries(wsclean-shared PUBLIC schaapcommon)
 
 add_executable(wsclean main/main.cpp)
 target_link_libraries(wsclean wsclean-lib)
@@ -434,20 +459,17 @@ target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
                       ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
 
 add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp)
-target_link_libraries(wsuvbinning PRIVATE wsclean-lib ${ALL_LIBRARIES})
+target_link_libraries(wsuvbinning PRIVATE wsclean-lib)
 
 add_executable(
   wspredictionexample EXCLUDE_FROM_ALL gridding/examples/wspredictionexample.cpp
                                        gridding/wstackinggridder.cpp)
-target_link_libraries(wspredictionexample ${ALL_LIBRARIES})
+target_link_libraries(wspredictionexample ${EXTERNAL_LIBRARIES})
 
 install(TARGETS wsclean DESTINATION bin)
 install(TARGETS wsclean-lib DESTINATION lib)
 install(TARGETS chgcentre DESTINATION bin)
 install(FILES interface/wscleaninterface.h DESTINATION include)
-# Installing the radler library to ${CMAKE_INSTALL_FULL_LIBDIR}
-# ensures that users do not manually have to set the LD_LIBRARY_PATH
-install(FILES ${RADLER_LIB} DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR})
 
 if(MPI_FOUND)
   install(TARGETS wsclean-mp DESTINATION bin)

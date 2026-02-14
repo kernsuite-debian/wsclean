@@ -13,7 +13,9 @@
 #include <limits>
 #include <stdexcept>
 
-//#define EXTRA_ASSERTIONS 1
+// #define EXTRA_ASSERTIONS 1
+
+namespace wsclean {
 
 class SpectralEnergyDistribution {
  public:
@@ -110,5 +112,7 @@ class SpectralEnergyDistribution {
     }
   }
 };
+
+}  // namespace wsclean
 
 #endif

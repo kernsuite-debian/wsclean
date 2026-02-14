@@ -42,11 +42,14 @@ inline NumT MedianWithCopyImplementation(const NumT* data, size_t size,
   }
 }
 
+/**
+ * Returns the median and the median-absolute-deviation (MAD).
+ */
 template <typename NumT>
-inline NumT MadImplementation(const NumT* data, size_t size) {
+inline std::pair<NumT, NumT> MadImplementation(const NumT* data, size_t size) {
   aocommon::UVector<NumT> copy;
-  NumT median = MedianWithCopyImplementation(data, size, copy);
-  if (copy.empty()) return 0.0;
+  const NumT median = MedianWithCopyImplementation(data, size, copy);
+  if (copy.empty()) return {0.0, 0.0};
 
   // Replace all values by the difference from the mean
   typename aocommon::UVector<NumT>::iterator mid =
@@ -59,13 +62,13 @@ inline NumT MadImplementation(const NumT* data, size_t size) {
     *i = *i - median;
 
   std::nth_element(copy.begin(), mid, copy.end());
-  median = *mid;
+  NumT mad = *mid;
   bool even = (copy.size() % 2) == 0;
   if (even) {
     std::nth_element(mid, mid + 1, copy.end());
-    median = (median + *(mid + 1)) * 0.5;
+    mad = (mad + *(mid + 1)) * 0.5;
   }
-  return median;
+  return {median, mad};
 }
 }  // namespace detail
 
@@ -414,7 +417,7 @@ class ImageBase {
       std::fill_n(ptr, start_x, 0.0);
       std::copy_n(&input[(y - start_y) * in_width], in_width,
                   &output[y * out_width + start_x]);
-      std::fill_n(ptr + end_x, out_width, 0.0);
+      std::fill_n(ptr + end_x, out_width - end_x, 0.0);
     }
     for (size_t y = end_y; y != out_height; ++y) {
       value_type* ptr = &output[y * out_width];
@@ -540,9 +543,32 @@ class ImageBase {
   value_type StdDevFromMAD() const {
     return StdDevFromMAD(data_, width_ * height_);
   }
+
   static value_type StdDevFromMAD(const value_type* data, size_t size) {
     // norminv(0.75) x MAD
     return value_type(1.48260221850560) * MAD(data, size);
+  }
+
+  /**
+   * Calculates both median and median-absolute-deviation (MAD). Because
+   * calculating MAD requires calculating the median, this is more efficient
+   * than calling
+   * @ref Median() and @ref MAD() after each other.
+   * @returns {median, mad}
+   */
+  std::pair<value_type, value_type> MedianAndMAD() const;
+
+  /**
+   * Calculates both median and a standard deviation estimate from the
+   * median-absolute-deviation (MAD). Because calculating MAD requires
+   * calculating the median, this is more efficient than calling
+   * @ref Median() and @ref StdDevFromMAD() after each other.
+   * @returns {median, stddev_estimate}
+   */
+  std::pair<value_type, value_type> MedianAndStdDevFromMAD() const {
+    const std::pair<value_type, value_type> median_and_mad = MedianAndMAD();
+    return {median_and_mad.first,
+            value_type(1.48260221850560) * median_and_mad.second};
   }
 
   value_type RMS() const { return RMS(data_, width_ * height_); }
@@ -662,19 +688,40 @@ typename ImageBase<NumT>::value_type ImageBase<NumT>::Median(
 template <>
 inline typename ImageBase<float>::value_type ImageBase<float>::MAD(
     const value_type* data, size_t size) {
-  return detail::MadImplementation(data, size);
+  return detail::MadImplementation(data, size).second;
 }
 
 template <>
 inline typename ImageBase<double>::value_type ImageBase<double>::MAD(
     const value_type* data, size_t size) {
-  return detail::MadImplementation(data, size);
+  return detail::MadImplementation(data, size).second;
 }
 
 template <typename NumT>
 typename ImageBase<NumT>::value_type ImageBase<NumT>::MAD(const value_type*,
                                                           size_t) {
   throw std::runtime_error("not implemented");
+}
+
+template <typename NumT>
+typename std::pair<typename ImageBase<NumT>::value_type,
+                   typename ImageBase<NumT>::value_type>
+ImageBase<NumT>::MedianAndMAD() const {
+  throw std::runtime_error("not implemented");
+}
+
+template <>
+inline typename std::pair<typename ImageBase<float>::value_type,
+                          typename ImageBase<float>::value_type>
+ImageBase<float>::MedianAndMAD() const {
+  return detail::MadImplementation(data_, width_ * height_);
+}
+
+template <>
+inline typename std::pair<typename ImageBase<double>::value_type,
+                          typename ImageBase<double>::value_type>
+ImageBase<double>::MedianAndMAD() const {
+  return detail::MadImplementation(data_, width_ * height_);
 }
 
 }  // namespace aocommon

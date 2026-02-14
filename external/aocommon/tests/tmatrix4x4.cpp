@@ -12,6 +12,22 @@ using aocommon::Vector4;
 
 BOOST_AUTO_TEST_SUITE(matrix4x4)
 
+namespace {
+constexpr MC4x4 GetExampleMatrix() {
+  return MC4x4{{1.0, -2.0},    {3.0, 4.0},     {-5.0, 6.0},   {-7.0, -8.0},
+               {9.0, -10.0},   {11.0, 12.0},   {13.0, -14.0}, {-15.0, -16.0},
+               {-17.0, -18.0}, {-19.0, 20.0},  {21.0, 22.0},  {23.0, -24.0},
+               {25.0, -26.0},  {-27.0, -28.0}, {29.0, 30.0},  {-31.0, 32.0}};
+}
+
+constexpr MC4x4 GetExampleMatrixHermTransposed() {
+  return MC4x4{{1.0, 2.0},   {9.0, 10.0},   {-17.0, 18.0},  {25.0, 26.0},
+               {3.0, -4.0},  {11.0, -12.0}, {-19.0, -20.0}, {-27.0, 28.0},
+               {-5.0, -6.0}, {13.0, 14.0},  {21.0, -22.0},  {29.0, -30.0},
+               {-7.0, 8.0},  {-15.0, 16.0}, {23.0, 24.0},   {-31.0, -32.0}};
+}
+}  // namespace
+
 static void CheckMatrix(const Matrix4x4& result, const Matrix4x4& groundtruth) {
   for (size_t i = 0; i != 16; ++i) {
     BOOST_CHECK_CLOSE(result[i].real(), groundtruth[i].real(), 1e-6);
@@ -22,9 +38,6 @@ static void CheckMatrix(const Matrix4x4& result, const Matrix4x4& groundtruth) {
 BOOST_AUTO_TEST_CASE(construction) {
   CheckMatrix(MC4x4(), MC4x4{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                              0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
-
-  // Constructor must take 16 values if a list is given:
-  BOOST_CHECK_THROW(MC4x4({3, 4}), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(unit) {
@@ -32,6 +45,33 @@ BOOST_AUTO_TEST_CASE(unit) {
   MC4x4 ref{1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
             0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   CheckMatrix(unit, ref);
+}
+
+BOOST_AUTO_TEST_CASE(multiplication) {
+  const MC4x4 unit = MC4x4::Unit();
+  CheckMatrix(unit * unit, unit);
+
+  const MC4x4 a{1.0, 2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+                9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0};
+  const MC4x4 b = a * 3.0;
+  const MC4x4 result{270, 300,  330,  360,  606,  684,  762,  840,
+                     942, 1068, 1194, 1320, 1278, 1452, 1626, 1800};
+  CheckMatrix(a * b, result);
+
+  const MC4x4 result2{810,  900,  990,  1080, 1818, 2052, 2286, 2520,
+                      2826, 3204, 3582, 3960, 3834, 4356, 4878, 5400};
+  CheckMatrix(b.Square(), result2);
+}
+
+BOOST_AUTO_TEST_CASE(herm_transpose) {
+  CheckMatrix(MC4x4::Zero(), MC4x4::Zero().HermTranspose());
+  CheckMatrix(MC4x4::Unit() * 3, (MC4x4::Unit() * 3).HermTranspose());
+  CheckMatrix(GetExampleMatrix().HermTranspose(),
+              GetExampleMatrixHermTransposed());
+  CheckMatrix(GetExampleMatrix(),
+              GetExampleMatrixHermTransposed().HermTranspose());
+  CheckMatrix(GetExampleMatrix().HermTranspose().HermTranspose(),
+              GetExampleMatrix());
 }
 
 BOOST_AUTO_TEST_CASE(inversion) {
@@ -47,6 +87,14 @@ BOOST_AUTO_TEST_CASE(inversion) {
 
   MC4x4 m3;
   BOOST_CHECK(!m3.Invert());
+}
+
+BOOST_AUTO_TEST_CASE(hermitian_square) {
+  CheckMatrix(MC4x4::Zero().HermitianSquare().ToMatrix(), MC4x4::Zero());
+  CheckMatrix(MC4x4::Unit().HermitianSquare().ToMatrix(), MC4x4::Unit());
+
+  constexpr MC4x4 m = GetExampleMatrix();
+  CheckMatrix(m.HermitianSquare().ToMatrix(), m.HermTranspose() * m);
 }
 
 static void checkKroneckerProduct(const MC2x2& a, const MC2x2& x,

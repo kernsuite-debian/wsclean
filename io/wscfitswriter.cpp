@@ -6,13 +6,15 @@
 
 #include <aocommon/fits/fitsreader.h>
 
-#include <schaapcommon/fft/restoreimage.h>
+#include <schaapcommon/math/restoreimage.h>
 
 #include "../math/renderer.h"
 
 #include "../model/bbsmodel.h"
 
-#include "../gridding/msgridderbase.h"
+#include "../gridding/msgridder.h"
+
+namespace wsclean {
 
 WSCFitsWriter::WSCFitsWriter(
     const ImagingTableEntry& entry, bool isImaginary, const Settings& settings,
@@ -94,9 +96,6 @@ void WSCFitsWriter::setGridderConfiguration(
   _writer.SetTelescopeName(observationInfo.telescopeName);
   _writer.SetObserver(observationInfo.observer);
   _writer.SetObjectName(observationInfo.fieldName);
-
-  /* This is the normalization factor that was applied. The factor is useful
-   * to undo the normalization for e.g. conversion to Kelvins. */
   _writer.SetExtraKeyword("WSCDATAC", settings.dataColumnName);
   _writer.SetExtraKeyword("WSCWEIGH", settings.weightMode.ToString());
   _writer.SetExtraKeyword("WSCGKRNL", settings.antialiasingKernelSize);
@@ -128,6 +127,8 @@ void WSCFitsWriter::setChannelKeywords(const ImagingTableEntry& entry,
                bandwidth = bandEnd - bandStart;
   _writer.SetFrequency(centreFrequency, bandwidth);
   _writer.SetExtraKeyword("WSCIMGWG", channelInfo.weight);
+  /* This is the normalization factor that was applied. The factor is useful
+   * to undo the normalization for e.g. conversion to Kelvins. */
   _writer.SetExtraKeyword("WSCNORMF", channelInfo.normalizationFactor);
   _writer.SetExtraKeyword("WSCNWLAY", channelInfo.wGridSize);
   _writer.SetExtraKeyword("WSCNVIS", channelInfo.visibilityCount);
@@ -255,10 +256,21 @@ void WSCFitsWriter::Restore(const Settings& settings) {
     beamPA = imgReader.BeamPositionAngle();
   }
 
-  schaapcommon::fft::RestoreImage(
-      image.data(), model.data(), imgReader.ImageWidth(),
-      imgReader.ImageHeight(), beamMaj, beamMin, beamPA, imgReader.PixelSizeX(),
-      imgReader.PixelSizeY(), settings.threadCount);
+  long double pixel_size_x = imgReader.PixelSizeX();
+  long double pixel_size_y = imgReader.PixelSizeY();
+  if (pixel_size_x == 0.0 || pixel_size_y == 0.0) {
+    pixel_size_x = settings.pixelScaleX;
+    pixel_size_y = settings.pixelScaleY;
+    if (pixel_size_x == 0.0 || pixel_size_y == 0.0) {
+      throw std::runtime_error(
+          "Input fits file specifies no pixel size and no -scale was given: "
+          "can't restore with no pixel size");
+    }
+  }
+  schaapcommon::math::RestoreImage(image.data(), model.data(),
+                                   imgReader.ImageWidth(),
+                                   imgReader.ImageHeight(), beamMaj, beamMin,
+                                   beamPA, pixel_size_x, pixel_size_y);
 
   aocommon::FitsWriter writer(WSCFitsWriter(imgReader).Writer());
   writer.SetBeamInfo(beamMaj, beamMin, beamPA);
@@ -289,9 +301,11 @@ void WSCFitsWriter::RestoreList(const Settings& settings) {
   renderer::RestoreWithEllipticalBeam(
       image, imageSettings, model, beamMaj, beamMin, beamPA,
       frequency - bandwidth * 0.5, frequency + bandwidth * 0.5,
-      aocommon::Polarization::StokesI, settings.threadCount);
+      aocommon::Polarization::StokesI);
 
   aocommon::FitsWriter writer(WSCFitsWriter(imgReader).Writer());
   writer.SetBeamInfo(beamMaj, beamMin, beamPA);
   writer.Write(settings.restoreOutput, image.Data());
 }
+
+}  // namespace wsclean

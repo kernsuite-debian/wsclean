@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+
+# base
+FROM ubuntu:24.04
+# libclang, llvm just needed for docstrings (for development only)
+RUN export DEBIAN_FRONTEND="noninteractive" && \
+    apt-get update && \
+    apt-get upgrade -y && \
+    apt-get -y install \
+    	black \
+        casacore-dev \
+        casacore-tools \
+	clang-format-14 \
+	clang-tidy \
+        cmake \
+	doxygen \
+        g++ \
+        gcovr \
+        git \
+        libboost-all-dev \
+        libcfitsio-dev \
+        libfftw3-dev \
+        libgsl-dev \
+        libhdf5-dev \
+        libpython3-dev \
+        llvm \
+        locales \
+        make \
+        ninja-build \
+	python3-breathe \
+	python3-numpy \
+        python3-pip \
+	python3-pytest \
+	python3-sphinx \
+	python3-sphinx-rtd-theme \
+        wcslib-dev \
+        wget \
+    && \
+    rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --break-system-packages \
+        cmake-format \
+        pybind11-mkdoc \
+        pytest-lazy-fixtures
+RUN locale-gen en_US.UTF-8  # Necessary for creating docstrings (Högbom)
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:UTF-8
+ENV LC_ALL en_US.UTF-8

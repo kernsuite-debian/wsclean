@@ -10,7 +10,7 @@ SOURCE_DIR=$(dirname "$0")/..
 
 #Directories that must be excluded from formatting. These paths are
 #relative to SOURCE_DIR.
-EXCLUDE_DIRS=(build cmake/external)
+EXCLUDE_DIRS=(build cmake/external external)
 
 #End script configuration.
 

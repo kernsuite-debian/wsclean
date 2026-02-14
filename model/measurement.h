@@ -1,12 +1,14 @@
 #ifndef MODEL_MEASUREMENT_H
 #define MODEL_MEASUREMENT_H
 
-//#define EXTRA_ASSERTIONS 1
+// #define EXTRA_ASSERTIONS 1
 
 #include <cstring>
 #include <array>
 
 #include <aocommon/polarization.h>
+
+namespace wsclean {
 
 class Measurement {
  public:
@@ -105,5 +107,7 @@ class Measurement {
   std::array<long double, 4> _fluxDensities;
   std::array<long double, 4> _fluxDensityStddevs;
 };
+
+}  // namespace wsclean
 
 #endif

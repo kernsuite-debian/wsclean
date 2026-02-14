@@ -507,6 +507,108 @@ class Polarization {
     return list;
   }
 
+  /**
+   * Converts a set of linearly polarized visibilities to a single specified
+   * polarization component (e.g. Stokes Q). When converting a full set of
+   * linear polarizations to e.g. 4 Stokes parameters, it is more efficient to
+   * use @ref LinearToStokes() instead of calling this function 4 times.
+   * @param linear array of 4 linearly-polarized values (XX, XY, YX and YY).
+   * @param destination polarization type to convert to
+   * @returns The converted value.
+   */
+  template <typename NumType>
+  static std::complex<NumType> ConvertFromLinear(
+      const std::complex<NumType>* linear, PolarizationEnum destination) {
+    constexpr NumType half = 0.5;
+    switch (destination) {
+      case PolarizationEnum::StokesI:
+        return half * (linear[0] + linear[3]);
+      case PolarizationEnum::StokesQ:
+        return half * (linear[0] - linear[3]);
+      case PolarizationEnum::StokesU:
+        return half * (linear[1] + linear[2]);
+      case PolarizationEnum::StokesV:
+        return half *
+               std::complex<NumType>(linear[1].imag() - linear[2].imag(),
+                                     linear[2].real() - linear[1].real());
+      case PolarizationEnum::XX:
+        return linear[0];
+      case PolarizationEnum::XY:
+        return linear[1];
+      case PolarizationEnum::YX:
+        return linear[2];
+      case PolarizationEnum::YY:
+        return linear[3];
+      default:
+        throw std::runtime_error(
+            "Conversion from linear polarization not implemented");
+    }
+  }
+
+  /**
+   * Converts a single polarization component to a set of linearly polarized
+   * visibilities. It is therefore the counterpart of @ref ConvertFromLinear().
+   */
+  template <typename NumType>
+  static void ConvertToLinear(std::complex<NumType> source,
+                              PolarizationEnum source_polarization,
+                              std::complex<NumType>* linear) {
+    switch (source_polarization) {
+      case PolarizationEnum::StokesI:
+        linear[0] = source;
+        linear[1] = 0.0;
+        linear[2] = 0.0;
+        linear[3] = source;
+        break;
+      case PolarizationEnum::StokesQ:
+        linear[0] = source;
+        linear[1] = 0.0;
+        linear[2] = 0.0;
+        linear[3] = -source;
+        break;
+      case PolarizationEnum::StokesU:
+        linear[0] = 0.0;
+        linear[1] = source;
+        linear[2] = source;
+        linear[3] = 0.0;
+        break;
+      case PolarizationEnum::StokesV:
+        linear[0] = 0.0;
+        linear[1] = std::complex(-source.imag(), source.real());
+        // YX = U - iV
+        linear[2] = std::complex(source.imag(), -source.real());
+        linear[3] = 0.0;
+        break;
+      case PolarizationEnum::XX:
+        linear[0] = source;
+        linear[1] = 0.0;
+        linear[2] = 0.0;
+        linear[3] = 0.0;
+        break;
+      case PolarizationEnum::XY:
+        linear[0] = 0.0;
+        linear[1] = source;
+        linear[2] = 0.0;
+        linear[3] = 0.0;
+        break;
+      case PolarizationEnum::YX:
+        linear[0] = 0.0;
+        linear[1] = 0.0;
+        linear[2] = source;
+        linear[3] = 0.0;
+        break;
+      case PolarizationEnum::YY:
+        linear[0] = 0.0;
+        linear[1] = 0.0;
+        linear[2] = 0.0;
+        linear[3] = source;
+        break;
+      default:
+        throw std::runtime_error(
+            "Conversion from linear polarization not implemented");
+    }
+  }
+
   template <typename NumType>
   static void LinearToStokes(const std::complex<NumType>* linear,
                              NumType* stokes) {

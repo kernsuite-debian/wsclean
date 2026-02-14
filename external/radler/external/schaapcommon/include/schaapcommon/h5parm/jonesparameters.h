@@ -16,31 +16,31 @@
 namespace schaapcommon {
 namespace h5parm {
 
+/**
+ * Type of Jones matrix.
+ * NOTE: kScalarPhase, kScalarAmplitude, kRealImaginary and
+ * kFullJonesRealImaginary are added to be compatible with ParmDB.
+ */
+enum class GainType {
+  kDiagonalComplex,
+  kFullJones,
+  kScalarComplex,
+  kTec,
+  kClock,
+  kRotationAngle,
+  kScalarPhase,
+  kDiagonalPhase,
+  kRotationMeasure,
+  kScalarAmplitude,
+  kDiagonalAmplitude,
+  kDiagonalRealImaginary,
+  kFullJonesRealImaginary
+};
+
 /// @brief Class to extract Jones matrices from an h5parm.
 /// Provides some compatibility with ParmDB.
 class JonesParameters {
  public:
-  /**
-   * Type of Jones matrix.
-   * NOTE: SCALARPHASE, SCALARAMPLITUDE, GAIN_RE_IM and FULLJONES_RE_IM are
-   * added to be compatible with ParmDB.
-   */
-  enum CorrectType {
-    GAIN,
-    FULLJONES,
-    SCALARGAIN,
-    TEC,
-    CLOCK,
-    ROTATIONANGLE,
-    SCALARPHASE,
-    PHASE,
-    ROTATIONMEASURE,
-    SCALARAMPLITUDE,
-    AMPLITUDE,
-    GAIN_RE_IM,
-    FULLJONES_RE_IM
-  };
-
   /**
    * What to do with missing antennas
    */
@@ -64,7 +64,11 @@ class JonesParameters {
    * \param correct_type Correction type of the Jones matrix
    * \param interpolation_type Interpolation type of the Jones matrix
    * \param direction Direction number in the H5parm
-   * \param parm_values Parameter values (e.g. TEC values)
+   * \param parm_values Parameter values (e.g. TEC values). Inner vector
+   * has dimension n_times * n_frequencies, the middle vector has
+   * dimension n_antennas, outer vector has dimension n_parameters
+   * (e.g. phase and amplitude). These are the parameters as they are
+   * stored (e.g. TEC values).
    * \param invert (optional default=false) Invert the parameters
    * \param sigma_mmse (optional default=0.) Minimum mean square error parameter
    * (remnant from BBS times, leave at 0 unless you know what you're doing).
@@ -72,8 +76,8 @@ class JonesParameters {
   JonesParameters(const std::vector<double>& freqs,
                   const std::vector<double>& times,
                   const std::vector<std::string>& antenna_names,
-                  CorrectType correct_type,
-                  InterpolationType interpolation_type, hsize_t direction,
+                  GainType gain_type, InterpolationType interpolation_type,
+                  hsize_t direction,
                   std::vector<std::vector<std::vector<double>>>&& parm_values,
                   bool invert = false, float sigma_mmse = 0.);
 
@@ -92,7 +96,7 @@ class JonesParameters {
    */
   JonesParameters(
       const std::vector<double>& freqs, const std::vector<double>& times,
-      const std::vector<std::string>& antenna_names, CorrectType correct_type,
+      const std::vector<std::string>& antenna_names, GainType gain_type,
       const std::vector<std::vector<std::complex<double>>>& solution,
       bool invert = false, float sigma_mmse = 0.);
 
@@ -119,12 +123,11 @@ class JonesParameters {
   JonesParameters(const std::vector<double>& freqs,
                   const std::vector<double>& times,
                   const std::vector<std::string>& antenna_names,
-                  CorrectType correct_type,
-                  InterpolationType interpolation_type, hsize_t direction,
-                  schaapcommon::h5parm::SolTab* sol_tab,
+                  GainType gain_type, InterpolationType interpolation_type,
+                  hsize_t direction, schaapcommon::h5parm::SolTab* sol_tab,
                   schaapcommon::h5parm::SolTab* sol_tab2 = nullptr,
                   bool invert = false, float sigma_mmse = 0.,
-                  unsigned int parm_size = 0,
+                  size_t parm_size = 0,
                   MissingAntennaBehavior missing_antenna_behavior =
                       MissingAntennaBehavior::kError);
 
@@ -136,14 +139,18 @@ class JonesParameters {
   const casacore::Cube<std::complex<float>>& GetParms() const { return parms_; }
 
   /**
-   * Parse a string into an enum value
+   * Parse a H5Parm type string into an GainType enum value.
+   * The H5 strings are not equal to the corresponding strings
+   * that are returned by @ref GainTypeToHumanReadableString().
+   * @throws std::runtime_error when string is unrecognized
    */
-  static JonesParameters::CorrectType StringToCorrectType(const std::string&);
+  static GainType H5ParmTypeStringToGainType(
+      const std::string& h5parm_type_string);
 
   /**
-   * Convert CorrectType to string
+   * Convert GainType to a string suitable for outputting to the user.
    */
-  static std::string CorrectTypeToString(JonesParameters::CorrectType);
+  static std::string GainTypeToHumanReadableString(GainType);
 
   /**
    * Parse a missing antennabehavior string into an enum value
@@ -165,19 +172,21 @@ class JonesParameters {
    * ONLY have an effect on RotationMeasure and RotationAngle. Other effects
    * have to be inverted explicitly by calling Invert()
    */
-  void MakeComplex(size_t ant, const std::vector<double>& freqs,
-                   CorrectType correct_type, bool invert = false);
+  void MakeComplex(
+      const std::vector<std::vector<std::vector<double>>>& parm_values,
+      size_t ant, const std::vector<double>& freqs, GainType correct_type,
+      bool invert = false);
 
   /**
    * Get the number of parameters for a given @param correct_type.
    */
-  static unsigned int GetNParms(CorrectType correct_type);
+  static size_t GetNParms(GainType correct_type);
 
   /**
    * Get the dimension for parm_values, i.e. the number of parameter names in
    * the H5Parm.
    */
-  static unsigned int GetNParmValues(CorrectType correct_type);
+  static size_t GetNParmValues(GainType correct_type);
 
   /**
    * Fill the JonesParameters parameter values from the solution tables
@@ -191,19 +200,14 @@ class JonesParameters {
    * \param correct_type Correction type of the Jones matrix
    * \param interpolation_type Interpolation type of the Jones matrix
    */
-  void FillParmValues(schaapcommon::h5parm::SolTab* sol_tab,
-                      schaapcommon::h5parm::SolTab* sol_tab2,
-                      const std::vector<double>& freqs,
-                      const std::vector<double>& times,
-                      const std::vector<std::string>& antenna_names, size_t ant,
-                      CorrectType correct_type,
-                      InterpolationType interpolation_type, hsize_t direction);
-
-  /**
-   * Replace values by NaN on places where weight is zero
-   */
-  static void ApplyFlags(std::vector<double>& values,
-                         const std::vector<double>& weights);
+  void FillParmValues(
+      std::vector<std::vector<std::vector<double>>>& parm_values,
+      schaapcommon::h5parm::SolTab* sol_tab,
+      schaapcommon::h5parm::SolTab* sol_tab2, const std::vector<double>& freqs,
+      const std::vector<double>& times,
+      const std::vector<std::string>& antenna_names, size_t ant,
+      GainType gain_type, InterpolationType interpolation_type,
+      hsize_t direction);
 
   /**
    *  Static function to invert the complex parameters. Is automatically called
@@ -215,14 +219,8 @@ class JonesParameters {
    * \param correct_type Correction type of the Jones matrix
    */
   static void Invert(casacore::Cube<std::complex<float>>& parms,
-                     float sigma_mmse, CorrectType correct_type);
+                     float sigma_mmse, GainType gain_type);
 
-  /// Parameter values, inner vector has dimension num_times * num_frequencies,
-  /// the middle vector has dimension number_antennas, outer vector has
-  /// dimension num_parameters (e.g. phase and amplitude)
-  /// These are the paramters as they are stored (e.g. TEC values)
-  /// TODO: This probably does not need to be a member
-  std::vector<std::vector<std::vector<double>>> parm_values_;
   /// Stored Jones matrices, dimensions (nparms, nantenna, ntime*nfreq),
   /// frequency varies fastest. nparms is 2 for diagonal, 4 for full jones
   /// parameters.

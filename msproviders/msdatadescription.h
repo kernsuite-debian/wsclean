@@ -2,11 +2,14 @@
 #define MS_DATA_DESCRIPTION_H
 
 #include "msprovider.h"
-#include "partitionedms.h"
+#include "reorderedmsprovider.h"
 
 #include <aocommon/io/serialstreamfwd.h>
+#include <schaapcommon/reordering/storagemanagertype.h>
 
 #include <memory>
+
+namespace wsclean {
 
 /**
  * This class contains all the information necessary to open
@@ -21,30 +24,34 @@ class MSDataDescription {
  public:
   static std::unique_ptr<MSDataDescription> ForContiguous(
       const std::string& filename, const std::string& dataColumnName,
-      const MSSelection& selection, aocommon::PolarizationEnum polarization,
-      size_t dataDescId, bool useMPI) {
+      const std::string& modelColumnName,
+      schaapcommon::reordering::StorageManagerType modelStorageManager,
+      const schaapcommon::reordering::MSSelection& selection,
+      aocommon::PolarizationEnum polarization, size_t dataDescId, bool useMPI) {
     std::unique_ptr<MSDataDescription> mdd(new MSDataDescription());
-    mdd->_isPartitioned = false;
+    mdd->_isReordered = false;
     mdd->_useMPI = useMPI;
     mdd->_polarization = polarization;
     mdd->_dataDescId = dataDescId;
     mdd->_selection = selection;
     mdd->_filename = filename;
     mdd->_dataColumnName = dataColumnName;
+    mdd->_modelColumnName = modelColumnName;
+    mdd->_modelStorageManager = modelStorageManager;
     return mdd;
   }
 
-  static std::unique_ptr<MSDataDescription> ForPartitioned(
-      PartitionedMS::Handle partitionHandle, const MSSelection& selection,
-      size_t partIndex, aocommon::PolarizationEnum polarization,
-      size_t dataDescId, bool useMPI) {
+  static std::unique_ptr<MSDataDescription> ForReordered(
+      ReorderedMsProvider::ReorderedHandle reorderedHandle,
+      const schaapcommon::reordering::MSSelection& selection, size_t partIndex,
+      aocommon::PolarizationEnum polarization, size_t dataDescId, bool useMPI) {
     std::unique_ptr<MSDataDescription> mdd(new MSDataDescription());
-    mdd->_isPartitioned = true;
+    mdd->_isReordered = true;
     mdd->_useMPI = useMPI;
     mdd->_polarization = polarization;
     mdd->_dataDescId = dataDescId;
     mdd->_selection = selection;
-    mdd->_partitionHandle = std::move(partitionHandle);
+    mdd->_reorderedHandle = std::move(reorderedHandle);
     mdd->_partIndex = partIndex;
     return mdd;
   }
@@ -56,7 +63,9 @@ class MSDataDescription {
    * measurement set that is selected. This includes separating
    * channels caused by e.g. -channels-out and -channel-range.
    */
-  const MSSelection& Selection() const { return _selection; }
+  const schaapcommon::reordering::MSSelection& Selection() const {
+    return _selection;
+  }
 
   size_t DataDescId() const { return _dataDescId; }
 
@@ -68,19 +77,23 @@ class MSDataDescription {
   MSDataDescription(){};
 
   // Common
-  bool _isPartitioned;
+  bool _isReordered;
   bool _useMPI;
   aocommon::PolarizationEnum _polarization;
   size_t _dataDescId;
-  MSSelection _selection;
+  schaapcommon::reordering::MSSelection _selection;
 
   // Contiguous
   std::string _filename;
   std::string _dataColumnName;
+  std::string _modelColumnName;
+  schaapcommon::reordering::StorageManagerType _modelStorageManager;
 
-  // Partitioned
-  PartitionedMS::Handle _partitionHandle;
+  // Reordered
+  ReorderedMsProvider::ReorderedHandle _reorderedHandle;
   size_t _partIndex;
 };
+
+}  // namespace wsclean
 
 #endif

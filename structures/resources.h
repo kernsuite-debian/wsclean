@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstddef>
 
+namespace wsclean {
+
 class Resources {
  public:
   Resources() = default;
@@ -13,6 +15,7 @@ class Resources {
   size_t NCpus() const { return n_cpus_; }
   int64_t Memory() const { return memory_; }
 
+  Resources GetCombined(size_t num_combined) const;
   Resources GetPart(size_t part_size) const;
 
  private:
@@ -31,5 +34,7 @@ class Resources {
  * @returns available memory in bytes.
  */
 int64_t GetAvailableMemory(double memory_fraction, double abs_memory_limit);
+
+}  // namespace wsclean
 
 #endif

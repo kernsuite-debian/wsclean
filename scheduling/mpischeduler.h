@@ -1,5 +1,5 @@
-#ifndef MPI_SCHEDULER_H
-#define MPI_SCHEDULER_H
+#ifndef SCHEDULING_MPI_SCHEDULER_H_
+#define SCHEDULING_MPI_SCHEDULER_H_
 
 #ifdef HAVE_MPI
 
@@ -12,11 +12,17 @@
 #include <thread>
 #include <condition_variable>
 
+namespace wsclean {
+
 class MPIScheduler final : public GriddingTaskManager {
  public:
   MPIScheduler(const class Settings& settings);
-  ~MPIScheduler();
+  ~MPIScheduler() { Finish(); }
 
+  /**
+   * Main Run function.
+   * Either sends the task to another MPI node or runs it locally.
+   */
   void Run(GriddingTask&& task,
            std::function<void(GriddingResult&)> finishCallback) override;
 
@@ -24,51 +30,18 @@ class MPIScheduler final : public GriddingTaskManager {
 
   void Start(size_t nWriterGroups) override;
 
-  LockGuard GetLock(size_t writerGroupIndex) override;
-
- private:
-  class WorkerWriterLock : public WriterLock {
-   public:
-    WorkerWriterLock() : _writerGroupIndex(0) {}
-    ~WorkerWriterLock() {}
-
-    void SetWriterGroupIndex(size_t writerGroupIndex) {
-      _writerGroupIndex = writerGroupIndex;
-    }
-    void lock() override;
-    void unlock() override;
-
-   protected:
-    size_t GetWriterGroupIndex() const { return _writerGroupIndex; }
-
-   private:
-    size_t _writerGroupIndex;  ///< Index of the lock that must be acquired.
-  };
-
-  class MasterWriterLock final : public WorkerWriterLock {
-   public:
-    explicit MasterWriterLock(MPIScheduler& scheduler)
-        : WorkerWriterLock(), _scheduler(scheduler) {}
-    ~MasterWriterLock() {}
-
-    void lock() override;
-    void unlock() override;
-
-   private:
-    MPIScheduler& _scheduler;  ///< For direct lock calls to the scheduler.
-  };
-
-  friend class MasterWriterLock;
-
-  enum class NodeState { kAvailable, kBusy };
+  std::unique_ptr<WriterLock> GetLock(size_t writerGroupIndex) override {
+    // Since WSClean uses a static outputchannel-to-node mapping,
+    // synchronisation of writes only needs to happen within a node.
+    return _localScheduler.GetLock(writerGroupIndex);
+  }
 
   /**
    * Send a task to a worker node or run it on the master
-   * If all nodes are busy, the call will block until a node is
-   * available.
+   * If all nodes are busy, the call will block until a node is available.
    */
   void send(GriddingTask&& task,
-            const std::function<void(GriddingResult&)>& callback);
+            std::function<void(GriddingResult&)>&& callback);
 
   /**
    * Wait until results are available and push these to the 'ready list'.
@@ -78,20 +51,14 @@ class MPIScheduler final : public GriddingTaskManager {
   void receiveLoop();
 
   /**
-   * Directly run the given task. This is a blocking call.
+   * Gets a node index for executing a (compound) task according
+   * to the channel to index mapping.
+   * Updates the number of tasks assigned to the node and stores
+   * the callback function.
+   * @return The index of the node executing the task.
    */
-  void runTaskOnNode0(GriddingTask&& task);
-
-  /**
-   * This "atomically" finds a node with a certain state and assigns a new value
-   * to it. The return value is the index of the node that matched the state.
-   * Searching is done from the last node to the first, so that the master node
-   * is selected last.
-   */
-  int findAndSetNodeState(
-      MPIScheduler::NodeState currentState,
-      std::pair<MPIScheduler::NodeState, std::function<void(GriddingResult&)>>
-          newState);
+  int getNode(const GriddingTask& task,
+              std::function<void(GriddingResult&)>&& callback);
 
   /**
    * If any results are available, call the callback functions and remove these
@@ -105,42 +72,55 @@ class MPIScheduler final : public GriddingTaskManager {
   void processReadyList_UNSYNCHRONIZED();
 
   /**
-   * Return true if any tasks are still running.
+   * Return true if any tasks are still running on worker nodes.
    * Remember that the return value is independent of the state of the
-   * master node: when the master node is gridding, it will nevertheless
+   * main node: when the main node is gridding, it will nevertheless
    * return false if the other nodes are not running tasks.
    *
    * This function is UNSYNCHRONIZED: the caller should
    * hold the mutex locked while calling it.
    */
-  bool receiveTasksAreRunning_UNSYNCHRONIZED();
+  bool AWorkerIsRunning_UNSYNCHRONIZED();
 
   void processGriddingResult(int node, size_t bodySize);
-  void processLockRequest(int node, size_t lockId);
-  void processLockRelease(int node, size_t lockId);
-  void grantLock(int node, size_t lockId);
+  /**
+   * Stores 'result' in _readyList and updates the available slots of 'node'.
+   */
+  void StoreResult(GriddingResult&& result, int node);
 
-  const bool _masterDoesWork;
   bool _isRunning;
   bool _isFinishing;
   std::condition_variable _notify;
   std::mutex _mutex;
   std::thread _receiveThread;
-  std::thread _workThread;
-  std::vector<std::pair<GriddingResult, std::function<void(GriddingResult&)>>>
-      _readyList;
-  std::vector<std::pair<NodeState, std::function<void(GriddingResult&)>>>
-      _nodes;
-  std::unique_ptr<WorkerWriterLock> _writerLock;
+  /** Stores results of ready tasks. */
+  std::vector<GriddingResult> _readyList;
+  /** Stores callbacks, indexed by task id. */
+  std::map<size_t, std::function<void(GriddingResult&)>> _callbacks;
 
   /**
-   * For each lock, a queue with the nodes that are waiting for the lock.
-   * The first node in a queue currently has the lock.
-   * Successive nodes are waiting for the lock.
-   * If a queue is empty, nobody has the lock.
+   * Available execution room for tasks for each node.
+   * A compound task, with multiple facets, counts as n_facets tasks.
+   * The value is negative if the scheduler sent more tasks to the
+   * node than it can execute in parallel. This situation occurs if:
+   * - A compound task contains more sub-tasks than the available room.
+   *   The scheduler still schedules such tasks, since there's no need to wait
+   *   until the node has room for the entire task. In it's available room,
+   *   the node can start with sub-tasks instead of being idle.
+   * - The scheduler sends tasks prematurely. When a node finishes a task,
+   *   it can then immediately start with the prematurely sent task instead
+   *   of waiting for a new task.
    */
-  std::vector<aocommon::Queue<int>> _writerLockQueues;
+  std::vector<int> _availableRoom;
+
+  /**
+   * The lower-level local scheduler on an MPI node.
+   * Using the threaded scheduler ensures that gridding uses a separate thread.
+   */
+  ThreadedScheduler _localScheduler;
 };
+
+}  // namespace wsclean
 
 #endif  // HAVE_MPI
 

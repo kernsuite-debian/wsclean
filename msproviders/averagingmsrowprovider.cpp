@@ -7,6 +7,8 @@
 
 using aocommon::Logger;
 
+namespace wsclean {
+
 namespace {
 template <typename ArrayT>
 void copyAndResize(const ArrayT& source, ArrayT& destination) {
@@ -17,12 +19,13 @@ void copyAndResize(const ArrayT& source, ArrayT& destination) {
 }  // namespace
 
 AveragingMSRowProvider::AveragingMSRowProvider(
-    double nWavelengthsAveraging, const string& msPath,
+    double nWavelengthsAveraging, const std::string& msPath,
     const MSSelection& selection,
     const std::map<size_t, size_t>& selectedDataDescIds, size_t fieldId,
-    const string& dataColumnName, bool requireModel)
+    const std::string& dataColumnName, const std::string& modelColumnName,
+    bool requireModel)
     : MSRowProvider(msPath, selection, selectedDataDescIds, dataColumnName,
-                    requireModel),
+                    modelColumnName, requireModel),
       _fieldId(fieldId) {
   casacore::MSAntenna antennaTable(Ms().antenna());
   _nAntennae = antennaTable.nrow();
@@ -333,3 +336,5 @@ void AveragingMSRowProvider::AveragingBuffer::Reset(size_t n) {
   _averagedDataCount = 0;
   _summedWeight = 0.0;
 }
+
+}  // namespace wsclean

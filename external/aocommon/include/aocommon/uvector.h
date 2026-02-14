@@ -356,8 +356,7 @@ class UVector : private Alloc {
       _endOfStorage = _begin + n;
     }
     _end = _begin + n;
-    if (oldSize < n)
-      std::uninitialized_fill<Tp*, size_t>(_begin + oldSize, _end, val);
+    if (oldSize < n) std::uninitialized_fill<Tp*>(_begin + oldSize, _end, val);
   }
 
   /** @brief Get the number of elements the container can currently hold without

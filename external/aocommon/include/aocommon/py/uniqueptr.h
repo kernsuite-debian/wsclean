@@ -34,28 +34,28 @@ class PyUniquePointer {
 
   /// @return A reference to the wrapped object.
   /// @throw std::runtime_error If the PyUniquePointer holds a null pointer.
-  [[nodiscard]] T& operator*() {
+  T& operator*() {
     CheckPointer();
     return *pointer_;
   }
 
   /// @return A const reference to the wrapped object.
   /// @throw std::runtime_error If the PyUniquePointer holds a null pointer.
-  [[nodiscard]] const T& operator*() const {
+  const T& operator*() const {
     CheckPointer();
     return *pointer_;
   }
 
   /// @return A pointer to the wrapped object.
   /// @throw std::runtime_error If the PyUniquePointer holds a null pointer.
-  [[nodiscard]] T* operator->() {
+  T* operator->() {
     CheckPointer();
     return pointer_.get();
   }
 
   /// @return A const pointer to the wrapped object.
   /// @throw std::runtime_error If the PyUniquePointer holds a null pointer.
-  [[nodiscard]] const T* operator->() const {
+  const T* operator->() const {
     CheckPointer();
     return pointer_.get();
   }

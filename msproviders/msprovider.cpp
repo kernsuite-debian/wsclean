@@ -1,26 +1,22 @@
 #include "msprovider.h"
+
 #include "msreaders/msreader.h"
 
 #include <aocommon/logger.h>
 
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
+#include <casacore/tables/DataMan/DataManager.h>
 #include <casacore/tables/Tables/ScalarColumn.h>
 #include <casacore/tables/Tables/ArrColDesc.h>
 
 #include "../structures/msselection.h"
 
 using aocommon::Logger;
+using schaapcommon::reordering::MSSelection;
+using schaapcommon::reordering::StorageManagerType;
 
+namespace wsclean {
 namespace {
-template <bool add>
-void AddOrAssign(std::complex<float>* dest, std::complex<float> source) {
-  *dest += source;
-}
-
-template <>
-void AddOrAssign<false>(std::complex<float>* dest, std::complex<float> source) {
-  *dest = source;
-}
 
 void FillModelColumn(const casacore::ArrayColumn<casacore::Complex>& dataColumn,
                      casacore::ArrayColumn<casacore::Complex>& modelColumn) {
@@ -34,697 +30,6 @@ void FillModelColumn(const casacore::ArrayColumn<casacore::Complex>& dataColumn,
 }  // namespace
 
 MSProvider::~MSProvider() {}
-
-void MSProvider::CopyData(std::complex<float>* dest, size_t startChannel,
-                          size_t endChannel,
-                          const std::vector<aocommon::PolarizationEnum>& polsIn,
-                          const casacore::Array<std::complex<float>>& data,
-                          aocommon::PolarizationEnum polOut) {
-  const size_t polCount = polsIn.size();
-  casacore::Array<std::complex<float>>::const_contiter inPtr =
-      data.cbegin() + startChannel * polCount;
-  const size_t selectedChannelCount = endChannel - startChannel;
-
-  if (polOut == aocommon::Polarization::Instrumental) {
-    if (polsIn.size() != 4) {
-      throw std::runtime_error(
-          "This mode requires the four polarizations to be present in the "
-          "measurement set");
-    }
-    for (size_t ch = 0; ch != selectedChannelCount * polsIn.size(); ++ch) {
-      if (IsCFinite(*inPtr))
-        dest[ch] = *inPtr;
-      else
-        dest[ch] = 0;
-      ++inPtr;
-    }
-  } else if (polOut == aocommon::Polarization::DiagonalInstrumental) {
-    if (polsIn.size() == 4) {
-      size_t ch = 0;
-      while (ch != selectedChannelCount * 2) {
-        if (IsCFinite(*inPtr))
-          dest[ch] = *inPtr;
-        else
-          dest[ch] = 0;
-        inPtr += 3;  // jump from xx to yy
-        ++ch;
-        if (IsCFinite(*inPtr))
-          dest[ch] = *inPtr;
-        else
-          dest[ch] = 0;
-        ++inPtr;
-        ++ch;
-      }
-    } else if (polsIn.size() == 2) {
-      for (size_t ch = 0; ch != selectedChannelCount * 2; ++ch) {
-        if (IsCFinite(*inPtr))
-          dest[ch] = *inPtr;
-        else
-          dest[ch] = 0;
-        ++inPtr;
-      }
-    } else
-      throw std::runtime_error(
-          "Diagonal instrument visibilities requested, but this requires 2 or "
-          "4 polarizations in the data");
-  } else if (size_t polIndex;
-             aocommon::Polarization::TypeToIndex(polOut, polsIn, polIndex)) {
-    inPtr += polIndex;
-    for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-      if (IsCFinite(*inPtr))
-        dest[ch] = *inPtr;
-      else
-        dest[ch] = 0;
-      inPtr += polCount;
-    }
-  } else {
-    // Copy the right visibilities with conversion if necessary.
-    switch (polOut) {
-      case aocommon::Polarization::StokesI: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsIn, polIndexA);
-        bool hasYY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsIn, polIndexB);
-        if (!hasXX || !hasYY) {
-          bool hasRR = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::RR, polsIn, polIndexA);
-          bool hasLL = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::LL, polsIn, polIndexB);
-          if (!hasRR || !hasLL)
-            throw std::runtime_error(
-                "Can not form requested polarization (Stokes I) from available "
-                "polarizations");
-        }
-
-        for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-          inPtr += polIndexA;
-          casacore::Complex val = *inPtr;
-          inPtr += polIndexB - polIndexA;
-
-          // I = (XX + YY) / 2
-          val = (*inPtr + val) * 0.5f;
-
-          if (IsCFinite(val))
-            dest[ch] = val;
-          else
-            dest[ch] = 0.0;
-
-          inPtr += polCount - polIndexB;
-        }
-      } break;
-      case aocommon::Polarization::StokesQ: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsIn, polIndexA);
-        bool hasYY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsIn, polIndexB);
-        if (hasXX && hasYY) {
-          // Convert to StokesQ from XX and YY
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            inPtr += polIndexA;
-            casacore::Complex val = *inPtr;
-            inPtr += polIndexB - polIndexA;
-
-            // Q = (XX - YY)/2
-            val = (val - *inPtr) * 0.5f;
-
-            if (IsCFinite(val))
-              dest[ch] = val;
-            else
-              dest[ch] = 0.0;
-
-            inPtr += polCount - polIndexB;
-          }
-        } else {
-          // Convert to StokesQ from RR and LL
-          bool hasRL = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::RL, polsIn, polIndexA);
-          bool hasLR = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::LR, polsIn, polIndexB);
-          if (!hasRL || !hasLR)
-            throw std::runtime_error(
-                "Can not form requested polarization (Stokes Q) from available "
-                "polarizations");
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            inPtr += polIndexA;
-            casacore::Complex val = *inPtr;
-            inPtr += polIndexB - polIndexA;
-
-            // Q = (RL + LR)/2
-            val = (*inPtr + val) * 0.5f;
-
-            if (IsCFinite(val))
-              dest[ch] = val;
-            else
-              dest[ch] = 0.0;
-
-            inPtr += polCount - polIndexB;
-          }
-        }
-      } break;
-      case aocommon::Polarization::StokesU: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XY, polsIn, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YX, polsIn, polIndexB);
-        if (hasXY && hasYX) {
-          // Convert to StokesU from XY and YX
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            inPtr += polIndexA;
-            casacore::Complex val = *inPtr;
-            inPtr += polIndexB - polIndexA;
-
-            // U = (XY + YX)/2
-            val = (val + *inPtr) * 0.5f;
-
-            if (IsCFinite(val))
-              dest[ch] = val;
-            else
-              dest[ch] = 0.0;
-
-            inPtr += polCount - polIndexB;
-          }
-        } else {
-          // Convert to StokesU from RR and LL
-          bool hasRL = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::RL, polsIn, polIndexA);
-          bool hasLR = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::LR, polsIn, polIndexB);
-          if (!hasRL || !hasLR)
-            throw std::runtime_error(
-                "Can not form requested polarization (Stokes U) from available "
-                "polarizations");
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            inPtr += polIndexA;
-            casacore::Complex val = *inPtr;
-            inPtr += polIndexB - polIndexA;
-
-            // U = -i (RL - LR)/2
-            val = (val - *inPtr) * 0.5f;
-            val = casacore::Complex(val.imag(), -val.real());
-
-            if (IsCFinite(val))
-              dest[ch] = val;
-            else
-              dest[ch] = 0.0;
-
-            inPtr += polCount - polIndexB;
-          }
-        }
-      } break;
-      case aocommon::Polarization::StokesV: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XY, polsIn, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YX, polsIn, polIndexB);
-        if (hasXY && hasYX) {
-          // Convert to StokesV from XX and YY
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            inPtr += polIndexA;
-            casacore::Complex val = *inPtr;
-            inPtr += polIndexB - polIndexA;
-
-            // V = -i(XY - YX)/2
-            val = (val - *inPtr) * 0.5f;
-            val = casacore::Complex(val.imag(), -val.real());
-
-            if (IsCFinite(val))
-              dest[ch] = val;
-            else
-              dest[ch] = 0.0;
-
-            inPtr += polCount - polIndexB;
-          }
-        } else {
-          // Convert to StokesV from RR and LL
-          bool hasRL = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::RR, polsIn, polIndexA);
-          bool hasLR = aocommon::Polarization::TypeToIndex(
-              aocommon::Polarization::LL, polsIn, polIndexB);
-          if (!hasRL || !hasLR)
-            throw std::runtime_error(
-                "Can not form requested polarization (Stokes V) from available "
-                "polarizations");
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            inPtr += polIndexA;
-            casacore::Complex val = *inPtr;
-            inPtr += polIndexB - polIndexA;
-
-            // V = (RR - LL)/2
-            val = (val - *inPtr) * 0.5f;
-
-            if (IsCFinite(val))
-              dest[ch] = val;
-            else
-              dest[ch] = 0.0;
-
-            inPtr += polCount - polIndexB;
-          }
-        }
-      } break;
-      default:
-        throw std::runtime_error(
-            "Could not convert ms polarizations to requested polarization");
-    }
-  }
-}
-
-template <typename NumType>
-void MSProvider::CopyWeights(
-    NumType* dest, size_t startChannel, size_t endChannel,
-    const std::vector<aocommon::PolarizationEnum>& polsIn,
-    const casacore::Array<std::complex<float>>& data,
-    const casacore::Array<float>& weights, const casacore::Array<bool>& flags,
-    aocommon::PolarizationEnum polOut) {
-  const size_t polCount = polsIn.size();
-  casacore::Array<std::complex<float>>::const_contiter dataPtr =
-      data.cbegin() + startChannel * polCount;
-  casacore::Array<float>::const_contiter weightPtr =
-      weights.cbegin() + startChannel * polCount;
-  casacore::Array<bool>::const_contiter flagPtr =
-      flags.cbegin() + startChannel * polCount;
-  const size_t selectedChannelCount = endChannel - startChannel;
-
-  size_t polIndex;
-  if (polOut == aocommon::Polarization::Instrumental) {
-    for (size_t ch = 0; ch != selectedChannelCount * polsIn.size(); ++ch) {
-      if (!*flagPtr && IsCFinite(*dataPtr))
-        // The factor of 4 is to be consistent with StokesI
-        // It is for having conjugate visibilities and because IDG doesn't
-        // separately count XX and YY visibilities
-        dest[ch] = *weightPtr * 4.0f;
-      else
-        dest[ch] = 0.0f;
-      dataPtr++;
-      weightPtr++;
-      flagPtr++;
-    }
-  } else if (polOut == aocommon::Polarization::DiagonalInstrumental) {
-    if (polsIn.size() == 4) {
-      size_t ch = 0;
-      while (ch != selectedChannelCount * 2) {
-        if (!*flagPtr && IsCFinite(*dataPtr))
-          // See explanation above for factor of 4
-          dest[ch] = *weightPtr * 4.0f;
-        else
-          dest[ch] = 0.0f;
-        dataPtr += 3;  // jump from xx to yy
-        weightPtr += 3;
-        flagPtr += 3;
-        ++ch;
-        if (!*flagPtr && IsCFinite(*dataPtr))
-          dest[ch] = *weightPtr * 4.0f;
-        else
-          dest[ch] = 0.0f;
-        ++dataPtr;
-        ++weightPtr;
-        ++flagPtr;
-        ++ch;
-      }
-    } else if (polsIn.size() == 2) {
-      for (size_t ch = 0; ch != selectedChannelCount * 2; ++ch) {
-        if (!*flagPtr && IsCFinite(*dataPtr))
-          dest[ch] = *weightPtr * 4.0f;
-        else
-          dest[ch] = 0.0f;
-        ++dataPtr;
-        ++weightPtr;
-        ++flagPtr;
-      }
-    }
-  } else if (aocommon::Polarization::TypeToIndex(polOut, polsIn, polIndex)) {
-    dataPtr += polIndex;
-    weightPtr += polIndex;
-    flagPtr += polIndex;
-    for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-      if (!*flagPtr && IsCFinite(*dataPtr))
-        dest[ch] = *weightPtr;
-      else
-        dest[ch] = 0.0f;
-      dataPtr += polCount;
-      weightPtr += polCount;
-      flagPtr += polCount;
-    }
-  } else {
-    size_t polIndexA = 0, polIndexB = 0;
-    switch (polOut) {
-      case aocommon::Polarization::StokesI: {
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsIn, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsIn, polIndexB);
-        if (!hasXY || !hasYX) {
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RR,
-                                              polsIn, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LL,
-                                              polsIn, polIndexB);
-        }
-      } break;
-      case aocommon::Polarization::StokesQ: {
-        bool hasXX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsIn, polIndexA);
-        bool hasYY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsIn, polIndexB);
-        if (!hasXX || !hasYY) {
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RL,
-                                              polsIn, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LR,
-                                              polsIn, polIndexB);
-        }
-      } break;
-      case aocommon::Polarization::StokesU: {
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XY, polsIn, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YX, polsIn, polIndexB);
-        if (!hasXY || !hasYX) {
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RL,
-                                              polsIn, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LR,
-                                              polsIn, polIndexB);
-        }
-      } break;
-      case aocommon::Polarization::StokesV: {
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XY, polsIn, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YX, polsIn, polIndexB);
-        if (!hasXY || !hasYX) {
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RR,
-                                              polsIn, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LL,
-                                              polsIn, polIndexB);
-        }
-      } break;
-      default:
-        throw std::runtime_error(
-            "Could not convert ms polarizations to requested polarization");
-        break;
-    }
-
-    weightPtr += polIndexA;
-    dataPtr += polIndexA;
-    flagPtr += polIndexA;
-    for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-      NumType w;
-      if (!*flagPtr && IsCFinite(*dataPtr))
-        w = *weightPtr * 4.0f;
-      else
-        w = 0.0f;
-      dataPtr += polIndexB - polIndexA;
-      weightPtr += polIndexB - polIndexA;
-      flagPtr += polIndexB - polIndexA;
-      if (!*flagPtr && IsCFinite(*dataPtr))
-        w = std::min<NumType>(w, *weightPtr * 4.0f);
-      else
-        w = 0.0f;
-      dest[ch] = w;
-      weightPtr += polCount - polIndexB + polIndexA;
-      dataPtr += polCount - polIndexB + polIndexA;
-      flagPtr += polCount - polIndexB + polIndexA;
-    }
-  }
-}
-
-template void MSProvider::CopyWeights<float>(
-    float* dest, size_t startChannel, size_t endChannel,
-    const std::vector<aocommon::PolarizationEnum>& polsIn,
-    const casacore::Array<std::complex<float>>& data,
-    const casacore::Array<float>& weights, const casacore::Array<bool>& flags,
-    aocommon::PolarizationEnum polOut);
-
-template void MSProvider::CopyWeights<std::complex<float>>(
-    std::complex<float>* dest, size_t startChannel, size_t endChannel,
-    const std::vector<aocommon::PolarizationEnum>& polsIn,
-    const casacore::Array<std::complex<float>>& data,
-    const casacore::Array<float>& weights, const casacore::Array<bool>& flags,
-    aocommon::PolarizationEnum polOut);
-
-template <bool add>
-void MSProvider::ReverseCopyData(
-    casacore::Array<std::complex<float>>& dest, size_t startChannel,
-    size_t endChannel, const std::vector<aocommon::PolarizationEnum>& polsDest,
-    const std::complex<float>* source, aocommon::PolarizationEnum polSource) {
-  size_t polCount = polsDest.size();
-  const size_t selectedChannelCount = endChannel - startChannel;
-  casacore::Array<std::complex<float>>::contiter dataIter =
-      dest.cbegin() + startChannel * polCount;
-
-  size_t polIndex;
-  if (polSource == aocommon::Polarization::Instrumental) {
-    for (size_t chp = 0; chp != selectedChannelCount * polsDest.size(); ++chp) {
-      if (std::isfinite(source[chp].real())) {
-        AddOrAssign<add>(dataIter, source[chp]);
-      }
-      dataIter++;
-    }
-  } else if (polSource == aocommon::Polarization::DiagonalInstrumental) {
-    if (polsDest.size() == 2) {
-      for (size_t chp = 0; chp != selectedChannelCount * 2; ++chp) {
-        if (std::isfinite(source[chp].real())) {
-          AddOrAssign<add>(dataIter, source[chp]);
-        }
-        dataIter++;
-      }
-    } else {
-      size_t chp = 0;
-      while (chp != selectedChannelCount * 2) {
-        if (std::isfinite(source[chp].real())) {
-          AddOrAssign<add>(dataIter, source[chp]);
-        }
-        dataIter += 3;  // jump from xx to yy
-        ++chp;
-        if (std::isfinite(source[chp].real())) {
-          AddOrAssign<add>(dataIter, source[chp]);
-        }
-        ++dataIter;
-        ++chp;
-      }
-    }
-  } else if (aocommon::Polarization::TypeToIndex(polSource, polsDest,
-                                                 polIndex)) {
-    for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-      if (std::isfinite(source[ch].real())) {
-        AddOrAssign<add>(dataIter + polIndex, source[ch]);
-      }
-      dataIter += polCount;
-    }
-  } else {
-    switch (polSource) {
-      case aocommon::Polarization::StokesI: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsDest, polIndexA);
-        bool hasYY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsDest, polIndexB);
-        if (!hasXX || !hasYY) {
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RR,
-                                              polsDest, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LL,
-                                              polsDest, polIndexB);
-        }
-        for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-          if (std::isfinite(source[ch].real())) {
-            AddOrAssign<add>(dataIter + polIndexA,
-                             source[ch]);  // XX = I (or rr = I)
-            AddOrAssign<add>(dataIter + polIndexB,
-                             source[ch]);  // YY = I (or ll = I)
-          }
-          dataIter += polCount;
-        }
-      } break;
-      case aocommon::Polarization::StokesQ: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsDest, polIndexA);
-        bool hasYY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsDest, polIndexB);
-        if (hasXX && hasYY) {
-          // StokesQ to linear
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            if (std::isfinite(source[ch].real())) {
-              casacore::Complex stokesI =
-                  casacore::Complex::value_type(0.5) *
-                  (*(dataIter + polIndexB) + *(dataIter + polIndexA));
-              AddOrAssign<add>(dataIter + polIndexA,
-                               stokesI + source[ch]);  // XX = I + Q
-              AddOrAssign<add>(dataIter + polIndexB,
-                               stokesI - source[ch]);  // YY = I - Q
-            }
-            dataIter += polCount;
-          }
-        } else {
-          // StokesQ to circular
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RL,
-                                              polsDest, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LR,
-                                              polsDest, polIndexB);
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            if (std::isfinite(source[ch].real())) {
-              AddOrAssign<add>(dataIter + polIndexA,
-                               source[ch]);  // rl = Q + iU (with U still zero)
-              AddOrAssign<add>(dataIter + polIndexB,
-                               source[ch]);  // lr = Q - iU (with U still zero)
-            }
-            dataIter += polCount;
-          }
-        }
-      } break;
-      case aocommon::Polarization::StokesU: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XY, polsDest, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YX, polsDest, polIndexB);
-        if (hasXY && hasYX) {
-          // StokesU to linear
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            if (std::isfinite(source[ch].real())) {
-              AddOrAssign<add>(dataIter + polIndexA,
-                               source[ch]);  // XY = (U + iV), V still zero
-              AddOrAssign<add>(dataIter + polIndexB,
-                               source[ch]);  // YX = (U - iV), V still zero
-            }
-            dataIter += polCount;
-          }
-        } else {
-          // StokesU to circular
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RL,
-                                              polsDest, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LR,
-                                              polsDest, polIndexB);
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            if (std::isfinite(source[ch].real())) {
-              // Q = (RL + LR) / 2
-              casacore::Complex stokesQ =
-                  casacore::Complex::value_type(0.5) *
-                  (*(dataIter + polIndexA) + *(dataIter + polIndexB));
-              casacore::Complex iTimesStokesU =
-                  casacore::Complex(-source[ch].imag(), source[ch].real());
-              AddOrAssign<add>(dataIter + polIndexA,
-                               stokesQ + iTimesStokesU);  // rl = Q + iU
-              AddOrAssign<add>(dataIter + polIndexB,
-                               stokesQ - iTimesStokesU);  // lr = Q - iU
-            }
-            dataIter += polCount;
-          }
-        }
-      } break;
-      case aocommon::Polarization::StokesV: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XY, polsDest, polIndexA);
-        bool hasYX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YX, polsDest, polIndexB);
-        if (hasXY && hasYX) {
-          // StokesV to linear
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            if (std::isfinite(source[ch].real())) {
-              // U = (YX + XY)/2
-              casacore::Complex stokesU =
-                  casacore::Complex::value_type(0.5) *
-                  (*(dataIter + polIndexB) + *(dataIter + polIndexA));
-              casacore::Complex iTimesStokesV =
-                  casacore::Complex(-source[ch].imag(), source[ch].real());
-              AddOrAssign<add>(dataIter + polIndexA,
-                               stokesU + iTimesStokesV);  // XY = (U + iV)
-              AddOrAssign<add>(dataIter + polIndexB,
-                               stokesU - iTimesStokesV);  // YX = (U - iV)
-            }
-            dataIter += polCount;
-          }
-        } else {
-          // StokesV to circular
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RR,
-                                              polsDest, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LL,
-                                              polsDest, polIndexB);
-          for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-            if (std::isfinite(source[ch].real())) {
-              // I = (RR + LL)/2
-              casacore::Complex stokesI =
-                  casacore::Complex::value_type(0.5) *
-                  (*(dataIter + polIndexA) + *(dataIter + polIndexB));
-              AddOrAssign<add>(dataIter + polIndexA,
-                               stokesI + source[ch]);  // RR = I + V
-              AddOrAssign<add>(dataIter + polIndexB,
-                               stokesI - source[ch]);  // LL = I - V
-            }
-            dataIter += polCount;
-          }
-        }
-      } break;
-      default:
-        throw std::runtime_error(
-            "Can't store polarization in set (not implemented or conversion "
-            "not possible)");
-    }
-  }
-}
-
-// Explicit instantiation for true/false
-template void MSProvider::ReverseCopyData<true>(
-    casacore::Array<std::complex<float>>& dest, size_t startChannel,
-    size_t endChannel, const std::vector<aocommon::PolarizationEnum>& polsDest,
-    const std::complex<float>* source, aocommon::PolarizationEnum polSource);
-
-template void MSProvider::ReverseCopyData<false>(
-    casacore::Array<std::complex<float>>& dest, size_t startChannel,
-    size_t endChannel, const std::vector<aocommon::PolarizationEnum>& polsDest,
-    const std::complex<float>* source, aocommon::PolarizationEnum polSource);
-
-void MSProvider::ReverseCopyWeights(
-    casacore::Array<float>& dest, size_t startChannel, size_t endChannel,
-    const std::vector<aocommon::PolarizationEnum>& polsDest,
-    const float* source, aocommon::PolarizationEnum polSource) {
-  size_t polCount = polsDest.size();
-  const size_t selectedChannelCount = endChannel - startChannel;
-  casacore::Array<float>::contiter dataIter =
-      dest.cbegin() + startChannel * polCount;
-
-  size_t polIndex;
-  if (polSource == aocommon::Polarization::Instrumental) {
-    std::copy(source, source + selectedChannelCount * polsDest.size(),
-              dataIter);
-  } else if (aocommon::Polarization::TypeToIndex(polSource, polsDest,
-                                                 polIndex)) {
-    for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-      *(dataIter + polIndex) = source[ch];
-      dataIter += polCount;
-    }
-  } else {
-    switch (polSource) {
-      case aocommon::Polarization::StokesI: {
-        size_t polIndexA = 0, polIndexB = 0;
-        bool hasXX = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::XX, polsDest, polIndexA);
-        bool hasYY = aocommon::Polarization::TypeToIndex(
-            aocommon::Polarization::YY, polsDest, polIndexB);
-        if (!hasXX || !hasYY) {
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::RR,
-                                              polsDest, polIndexA);
-          aocommon::Polarization::TypeToIndex(aocommon::Polarization::LL,
-                                              polsDest, polIndexB);
-        }
-        for (size_t ch = 0; ch != selectedChannelCount; ++ch) {
-          *(dataIter + polIndexA) = source[ch];  // XX = I (or rr = I)
-          *(dataIter + polIndexB) = source[ch];  // YY = I (or ll = I)
-          dataIter += polCount;
-        }
-      } break;
-      case aocommon::Polarization::StokesQ:
-      case aocommon::Polarization::StokesU:
-      case aocommon::Polarization::StokesV:
-      default:
-        throw std::runtime_error(
-            "Can't store weights in measurement set for this combination of "
-            "polarizations (not implemented or conversion not possible)");
-    }
-  }
-}
 
 void MSProvider::GetRowRange(casacore::MeasurementSet& ms,
                              const MSSelection& selection, size_t& startRow,
@@ -800,7 +105,7 @@ void MSProvider::GetRowRangeAndIDMap(casacore::MeasurementSet& ms,
       casacore::Vector<double> uvw = uvwColumn(row);
       std::set<size_t>::const_iterator dataDescIdIter =
           dataDescIds.find(dataDescId);
-      if (selection.IsSelected(fieldId, timestepIndex, a1, a2, uvw) &&
+      if (selection.IsSelected(fieldId, timestepIndex, a1, a2, uvw.data()) &&
           dataDescIdIter != dataDescIds.end())
         idToMSRow.push_back(row);
     }
@@ -809,39 +114,62 @@ void MSProvider::GetRowRangeAndIDMap(casacore::MeasurementSet& ms,
                << idToMSRow.size() << " rows)\n";
 }
 
-void MSProvider::InitializeModelColumn(casacore::MeasurementSet& ms) {
-  casacore::ArrayColumn<casacore::Complex> dataColumn(
+void MSProvider::InitializeModelColumn(casacore::MeasurementSet& ms,
+                                       const std::string& model_column_name,
+                                       StorageManagerType type) {
+  casacore::ArrayColumn<casacore::Complex> data_column(
       ms, casacore::MS::columnName(casacore::MSMainEnums::DATA));
   ms.reopenRW();
-  if (ms.isColumn(casacore::MSMainEnums::MODEL_DATA)) {
-    casacore::ArrayColumn<casacore::Complex> modelColumn(
-        ms, casacore::MS::columnName(casacore::MSMainEnums::MODEL_DATA));
-    bool isDefined = modelColumn.isDefined(0);
-    bool isSameShape = false;
-    if (isDefined) {
-      casacore::IPosition modelShape = modelColumn.shape(0);
-      casacore::IPosition dataShape = dataColumn.shape(0);
-      isSameShape = modelShape == dataShape;
+  if (ms.tableDesc().isColumn(model_column_name)) {
+    casacore::ArrayColumn<casacore::Complex> model_column(ms,
+                                                          model_column_name);
+    const bool is_defined = model_column.isDefined(0);
+    bool is_same_shape = false;
+    if (is_defined) {
+      casacore::IPosition model_shape = model_column.shape(0);
+      casacore::IPosition data_shape = data_column.shape(0);
+      is_same_shape = model_shape == data_shape;
     }
-    if (!isDefined || !isSameShape) {
+    if (!is_defined || !is_same_shape) {
       Logger::Warn << "WARNING: Your model column does not have the same shape "
                       "as your data column: resetting MODEL column.\n";
-      FillModelColumn(dataColumn, modelColumn);
+      FillModelColumn(data_column, model_column);
     }
-  } else {  // No column named MODEL_DATA
-    Logger::Info << "Adding model data column... ";
+  } else {  // No column exists with the given model_column_name
+    Logger::Info << "Adding model data column " << model_column_name << "... ";
     Logger::Info.Flush();
-    casacore::ArrayColumnDesc<casacore::Complex> modelColumnDesc(
-        ms.columnName(casacore::MSMainEnums::MODEL_DATA));
-    try {
-      ms.addColumn(modelColumnDesc, "StandardStMan", true, true);
-    } catch (std::exception& e) {
-      ms.addColumn(modelColumnDesc, "StandardStMan", false, true);
+    std::string st_man_name = "StandardStMan";
+    bool use_direct_column = false;
+    switch (type) {
+      case StorageManagerType::Default:
+        break;
+      case StorageManagerType::StokesI:
+        st_man_name = "StokesIStMan";
+        use_direct_column = true;
     }
+    casacore::DataManagerCtor constructor =
+        casacore::DataManager::getCtor(st_man_name);
+    std::unique_ptr<casacore::DataManager> st_man(
+        constructor(model_column_name + "_dm", casacore::Record()));
+    if (!st_man)
+      throw std::runtime_error(
+          st_man_name +
+          " storage manager requested, but it is not available in "
+          "casacore");
+    casacore::ArrayColumnDesc<casacore::Complex> model_column_desc(
+        model_column_name);
+    if (use_direct_column) {
+      model_column_desc.setShape(data_column.shape(0));
+      model_column_desc.setOptions(casacore::ColumnDesc::Direct |
+                                   casacore::ColumnDesc::FixedShape);
+    }
+    casacore::TableDesc table_desc;
+    table_desc.addColumn(model_column_desc, model_column_name);
+    ms.addColumn(table_desc, *st_man, true);
 
-    casacore::ArrayColumn<casacore::Complex> modelColumn(
-        ms, casacore::MS::columnName(casacore::MSMainEnums::MODEL_DATA));
-    FillModelColumn(dataColumn, modelColumn);
+    casacore::ArrayColumn<casacore::Complex> model_column(ms,
+                                                          model_column_name);
+    FillModelColumn(data_column, model_column);
 
     Logger::Info << "DONE\n";
   }
@@ -879,25 +207,26 @@ casacore::ArrayColumn<float> MSProvider::InitializeImagingWeightColumn(
   }
 }
 
-std::vector<aocommon::PolarizationEnum> MSProvider::GetMSPolarizations(
-    size_t dataDescId, const casacore::MeasurementSet& ms) {
+std::set<aocommon::PolarizationEnum> MSProvider::GetMSPolarizations(
+    size_t data_desc_id, const casacore::MeasurementSet& ms) {
   // First get the polarization index corresponding with the data desc id
-  casacore::MSDataDescription dataDescriptionTable = ms.dataDescription();
-  casacore::ScalarColumn<int> polarizationIndexColumn(
-      dataDescriptionTable, casacore::MSDataDescription::columnName(
-                                casacore::MSDataDescription::POLARIZATION_ID));
-  const size_t polarizationIndex = polarizationIndexColumn(dataDescId);
-  casacore::MSPolarization polTable = ms.polarization();
-  std::vector<aocommon::PolarizationEnum> pols;
-  casacore::ArrayColumn<int> corrTypeColumn(
-      polTable, casacore::MSPolarization::columnName(
-                    casacore::MSPolarizationEnums::CORR_TYPE));
+  casacore::MSDataDescription data_description_table = ms.dataDescription();
+  casacore::ScalarColumn<int> polarization_index_column(
+      data_description_table,
+      casacore::MSDataDescription::columnName(
+          casacore::MSDataDescription::POLARIZATION_ID));
+  const size_t polarization_index = polarization_index_column(data_desc_id);
+  casacore::MSPolarization pol_table = ms.polarization();
+  std::set<aocommon::PolarizationEnum> pols;
+  casacore::ArrayColumn<int> corr_type_column(
+      pol_table, casacore::MSPolarization::columnName(
+                     casacore::MSPolarizationEnums::CORR_TYPE));
 
   // Now get the information corresponding with the polarization index
-  casacore::Array<int> corrTypeVec(corrTypeColumn(polarizationIndex));
-  for (casacore::Array<int>::const_contiter p = corrTypeVec.cbegin();
-       p != corrTypeVec.cend(); ++p) {
-    pols.push_back(aocommon::Polarization::AipsIndexToEnum(*p));
+  casacore::Array<int> corr_type_vec(corr_type_column(polarization_index));
+  for (casacore::Array<int>::const_contiter p = corr_type_vec.cbegin();
+       p != corr_type_vec.cend(); ++p) {
+    pols.emplace(aocommon::Polarization::AipsIndexToEnum(*p));
   }
 
   return pols;
@@ -935,3 +264,5 @@ bool MSProvider::OpenWeightSpectrumColumn(
   }
   return isWeightDefined;
 }
+
+}  // namespace wsclean

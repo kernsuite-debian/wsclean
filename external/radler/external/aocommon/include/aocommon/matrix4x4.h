@@ -1,23 +1,27 @@
 #ifndef AOCOMMON_MATRIX_4X4_H_
 #define AOCOMMON_MATRIX_4X4_H_
 
+#include <cassert>
+#include <cmath>
 #include <complex>
 #include <string>
 #include <sstream>
 #include <stdexcept>
 
-#include <aocommon/matrix2x2.h>
+#include "matrix2x2.h"
+
+#include "scalar/vector4.h"
 
 namespace aocommon {
 
+class HMatrix4x4;
+
 class Matrix4x4 {
  public:
-  Matrix4x4() {}
+  constexpr Matrix4x4() {}
 
-  Matrix4x4(std::initializer_list<std::complex<double>> list) {
-    if (list.size() != 16)
-      throw std::runtime_error(
-          "Matrix4x4 needs to be initialized with 16 items");
+  constexpr Matrix4x4(std::initializer_list<std::complex<double>> list) {
+    assert(list.size() == 16);
     size_t index = 0;
     for (const std::complex<double>& el : list) {
       _data[index] = el;
@@ -25,15 +29,11 @@ class Matrix4x4 {
     }
   }
 
-  static Matrix4x4 Zero() { return Matrix4x4(); }
+  static constexpr Matrix4x4 Zero() { return Matrix4x4(); }
 
-  static Matrix4x4 Unit() {
-    Matrix4x4 unit;
-    unit[0] = 1.0;
-    unit[5] = 1.0;
-    unit[10] = 1.0;
-    unit[15] = 1.0;
-    return unit;
+  static constexpr Matrix4x4 Unit() {
+    return Matrix4x4{1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                     0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   }
 
   Matrix4x4 operator+(const Matrix4x4& rhs) const {
@@ -63,6 +63,51 @@ class Matrix4x4 {
       v[3] += _data[i + 12] * rhs[i];
     }
     return v;
+  }
+
+  Matrix4x4 operator*(const Matrix4x4& rhs) const {
+    return {_data[0] * rhs[0] + _data[1] * rhs[4] + _data[2] * rhs[8] +
+                _data[3] * rhs[12],
+            _data[0] * rhs[1] + _data[1] * rhs[5] + _data[2] * rhs[9] +
+                _data[3] * rhs[13],
+            _data[0] * rhs[2] + _data[1] * rhs[6] + _data[2] * rhs[10] +
+                _data[3] * rhs[14],
+            _data[0] * rhs[3] + _data[1] * rhs[7] + _data[2] * rhs[11] +
+                _data[3] * rhs[15],
+            _data[4] * rhs[0] + _data[5] * rhs[4] + _data[6] * rhs[8] +
+                _data[7] * rhs[12],
+            _data[4] * rhs[1] + _data[5] * rhs[5] + _data[6] * rhs[9] +
+                _data[7] * rhs[13],
+            _data[4] * rhs[2] + _data[5] * rhs[6] + _data[6] * rhs[10] +
+                _data[7] * rhs[14],
+            _data[4] * rhs[3] + _data[5] * rhs[7] + _data[6] * rhs[11] +
+                _data[7] * rhs[15],
+            _data[8] * rhs[0] + _data[9] * rhs[4] + _data[10] * rhs[8] +
+                _data[11] * rhs[12],
+            _data[8] * rhs[1] + _data[9] * rhs[5] + _data[10] * rhs[9] +
+                _data[11] * rhs[13],
+            _data[8] * rhs[2] + _data[9] * rhs[6] + _data[10] * rhs[10] +
+                _data[11] * rhs[14],
+            _data[8] * rhs[3] + _data[9] * rhs[7] + _data[10] * rhs[11] +
+                _data[11] * rhs[15],
+            _data[12] * rhs[0] + _data[13] * rhs[4] + _data[14] * rhs[8] +
+                _data[15] * rhs[12],
+            _data[12] * rhs[1] + _data[13] * rhs[5] + _data[14] * rhs[9] +
+                _data[15] * rhs[13],
+            _data[12] * rhs[2] + _data[13] * rhs[6] + _data[14] * rhs[10] +
+                _data[15] * rhs[14],
+            _data[12] * rhs[3] + _data[13] * rhs[7] + _data[14] * rhs[11] +
+                _data[15] * rhs[15]};
+  }
+
+  Matrix4x4 HermTranspose() const {
+    auto C = [](std::complex<double> z) -> std::complex<double> {
+      return std::conj(z);
+    };
+    return Matrix4x4{C(_data[0]), C(_data[4]), C(_data[8]),  C(_data[12]),
+                     C(_data[1]), C(_data[5]), C(_data[9]),  C(_data[13]),
+                     C(_data[2]), C(_data[6]), C(_data[10]), C(_data[14]),
+                     C(_data[3]), C(_data[7]), C(_data[11]), C(_data[15])};
   }
 
   bool Invert() {
@@ -132,9 +177,11 @@ class Matrix4x4 {
     return true;
   }
 
-  std::complex<double>& operator[](size_t i) { return _data[i]; }
+  constexpr std::complex<double>& operator[](size_t i) { return _data[i]; }
 
-  const std::complex<double>& operator[](size_t i) const { return _data[i]; }
+  constexpr const std::complex<double>& operator[](size_t i) const {
+    return _data[i];
+  }
 
   double Norm() const {
     double n = 0.0;
@@ -143,6 +190,17 @@ class Matrix4x4 {
     }
     return n;
   }
+
+  /// @returns A^2.
+  Matrix4x4 Square() const { return (*this) * (*this); }
+
+  /**
+   * Calculates A^H A, i.e. the Hermitian transpose of itself multiplied by
+   * itself. The result is Hermitian (also for non-Hermitian inputs) and
+   * therefore a HMatrix4x4 is returned. This avoids calculating one half of the
+   * result and is therefore faster than A.HermTranspose() * A.
+   */
+  HMatrix4x4 HermitianSquare() const;
 
   std::string String() const {
     std::ostringstream str;
@@ -171,8 +229,45 @@ class Matrix4x4 {
   std::complex<double> _data[16];
 };
 
-// typedef Matrix4x4<std::complex<double>> MC4x4;
 typedef Matrix4x4 MC4x4;
+
+}  // namespace aocommon
+
+// Functions below require HMatrix4x4 to be available. They're separated from
+// the class because of a circular dependency.
+
+#include "hmatrix4x4.h"
+
+namespace aocommon {
+
+inline HMatrix4x4 Matrix4x4::HermitianSquare() const {
+  auto C = [](std::complex<double> z) -> std::complex<double> {
+    return std::conj(z);
+  };
+  auto N = [](std::complex<double> z) -> double { return std::norm(z); };
+  return {N(_data[0]) + N(_data[4]) + N(_data[8]) + N(_data[12]),
+          0.0,
+          0.0,
+          0.0,
+          C(_data[1]) * _data[0] + C(_data[5]) * _data[4] +
+              C(_data[9]) * _data[8] + C(_data[13]) * _data[12],
+          N(_data[1]) + N(_data[5]) + N(_data[9]) + N(_data[13]),
+          0.0,
+          0.0,
+          C(_data[2]) * _data[0] + C(_data[6]) * _data[4] +
+              C(_data[10]) * _data[8] + C(_data[14]) * _data[12],
+          C(_data[2]) * _data[1] + C(_data[6]) * _data[5] +
+              C(_data[10]) * _data[9] + C(_data[14]) * _data[13],
+          N(_data[2]) + N(_data[6]) + N(_data[10]) + N(_data[14]),
+          0.0,
+          C(_data[3]) * _data[0] + C(_data[7]) * _data[4] +
+              C(_data[11]) * _data[8] + C(_data[15]) * _data[12],
+          C(_data[3]) * _data[1] + C(_data[7]) * _data[5] +
+              C(_data[11]) * _data[9] + C(_data[15]) * _data[13],
+          C(_data[3]) * _data[2] + C(_data[7]) * _data[6] +
+              C(_data[11]) * _data[10] + C(_data[15]) * _data[14],
+          N(_data[3]) + N(_data[7]) + N(_data[11]) + N(_data[15])};
+}
 
 }  // namespace aocommon
 

@@ -15,6 +15,32 @@
 
 using aocommon::Logger;
 
+using wsclean::CommandLine;
+using wsclean::Settings;
+using wsclean::TaskMessage;
+using wsclean::Worker;
+using wsclean::WSClean;
+
+namespace {
+void SetMpiSettings(Settings& settings, size_t n_nodes) {
+  settings.nMpiNodes = n_nodes;
+
+  if (settings.channelToNode.empty()) {
+    // Create a default channel-to-node mapping.
+    settings.channelToNode.reserve(settings.channelsOut);
+    if (!settings.masterDoesWork) --n_nodes;
+    for (size_t channelIndex = 0; channelIndex < settings.channelsOut;
+         ++channelIndex) {
+      // Use a round-robin distribution, since later channels have higher
+      // frequencies and gridding is therefore more expensive.
+      size_t node_index = channelIndex % n_nodes;
+      if (!settings.masterDoesWork) ++node_index;
+      settings.channelToNode.push_back(node_index);
+    }
+  }
+}
+}  // namespace
+
 int main(int argc, char* argv[]) {
   int provided;
   MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
@@ -48,14 +74,12 @@ int main(int argc, char* argv[]) {
     check_openblas_multithreading();
     if (parseResult) {
       Settings& settings = wsclean.GetSettings();
-      settings.useMPI = true;
+      SetMpiSettings(settings, world_size);
       CommandLine::Validate(wsclean);
       shortException = false;
       if (main) {
         CommandLine::Run(wsclean);
-        TaskMessage message;
-        message.type = TaskMessage::Type::kFinish;
-        message.bodySize = 0;
+        const TaskMessage message(TaskMessage::Type::kFinish, 0);
         aocommon::SerialOStream msgStream;
         message.Serialize(msgStream);
         for (int i = 1; i != world_size; ++i) {
