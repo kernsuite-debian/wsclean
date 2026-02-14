@@ -1,3 +1,10 @@
+wsclean (3.6-1kern1) noble; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * New upstream release v3.6
+
+ -- KERN packaging <packaging@kernsuite.info>  Sat, 14 Feb 2026 19:17:23 +0000
+
 wsclean (3.4-2kern3) jammy; urgency=medium
 
   [ Athanaseus Javas Ramaila ]

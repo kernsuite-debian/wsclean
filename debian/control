@@ -19,6 +19,8 @@ Build-Depends: casacore-dev,
                libhdf5-dev,
                liblapack-dev,
                libopenmpi-dev,
+               libxtensor-dev,
+               xtl-dev,
                python3-dev,
                atool
 Standards-Version: 4.6.2.0
