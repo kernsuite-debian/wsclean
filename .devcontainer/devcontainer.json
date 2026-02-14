@@ -1,0 +1,28 @@
+{
+    "name": "Kern Suite Debian Packaging Environment",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {}
+    },
+    "onCreateCommand": "bash .devcontainer/setup.sh",
+    "remoteUser": "root",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "GitHub.copilot",
+                "GitHub.copilot-chat",
+                "ms-vscode.makefile-tools",
+                "ms-vscode.cmake-tools"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/bin/python3"
+            }
+        }
+    },
+    "forwardPorts": [],
+    "postCreateCommand": "echo 'Debian Packaging environment ready. Run: debian/fetch-upstream.sh <version>'",
+    "mounts": [],
+    "capAdd": [
+        "SYS_PTRACE"
+    ]
+}
