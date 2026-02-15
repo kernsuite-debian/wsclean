@@ -31,22 +31,22 @@ sudo apt install build-essential debhelper devscripts dh-make \
 ```bash
 cd /path/to/wsclean-repo
 
-# Fetch version 3.5 with all submodules
-debian/fetch-upstream.sh 3.5
+# Fetch version 3.6 with all submodules
+debian/fetch-upstream.sh 3.6
 
-# This creates: wsclean_3.5.orig.tar.gz in parent directory
+# This creates: wsclean_3.6.orig.tar.gz in parent directory
 ```
 
 ### 3. Update Package Metadata
 
 ```bash
 # One-command full workflow (fetch + changelog + build check)
-debian/update-package.sh 3.5 jammy
+debian/update-package.sh 3.6 noble
 
 # Manual steps if you prefer:
-dch --newversion 3.5-1kern1 \
-    --distribution jammy \
-    "New upstream release v3.5"
+dch --newversion 3.6-1kern1 \
+    --distribution noble \
+    "New upstream release v3.6"
 ```
 
 ### 4. Build & Check
@@ -56,7 +56,7 @@ dch --newversion 3.5-1kern1 \
 debuild -us -uc
 
 # Run lintian checks
-lintian ../wsclean_3.5-1kern1_*.deb
+lintian ../wsclean_3.6-1kern1_*.deb
 ```
 
 ---
@@ -67,9 +67,9 @@ lintian ../wsclean_3.5-1kern1_*.deb
 
 **Prompt for AI (Copilot/Agent):**
 ```
-I need to update wsclean to version 3.5 in Debian format.
+I need to update wsclean to version 3.6 in Debian format.
 
-1. Run: debian/update-package.sh 3.5 jammy
+1. Run: debian/update-package.sh 3.6 noble
 2. Check the output for any build warnings
 3. If CMake succeeds, tell me the next commands to build the .deb
 4. If there are errors, suggest fixes based on the CMakeLists.txt
@@ -106,9 +106,9 @@ The AI can read both files and cross-reference them, catching missing dependenci
 ```
 In the wsclean repo:
 
-1. Run: debian/fetch-upstream.sh 3.5
+1. Run: debian/fetch-upstream.sh 3.6
 2. Run: debuild -us -uc 2>&1 | head -100
-3. If the build succeeds, run: lintian ../wsclean_3.5*.deb
+3. If the build succeeds, run: lintian ../wsclean_3.6*.deb
 4. For each warning from lintian, tell me if it's critical or can be ignored
 5. Suggest the debian/* file changes needed to fix any critical warnings
 ```
@@ -145,11 +145,11 @@ gbp clone https://salsa.debian.org/debian-astro-team/wsclean.git
 # (assuming you're in the wsclean repo with debian/ dir)
 
 # Step 1: Create upstream branch with submodules
-debian/fetch-upstream.sh 3.5
-gbp import-orig --pristine-tar wsclean_3.5.orig.tar.gz
+debian/fetch-upstream.sh 3.6
+gbp import-orig --pristine-tar wsclean_3.6.orig.tar.gz
 
 # Step 2: Update debian/
-dch --newversion 3.5-1kern1 "New upstream v3.5"
+dch --newversion 3.6-1kern1 "New upstream v3.6"
 
 # Step 3: Build
 gbp buildpackage -us -uc
@@ -195,18 +195,10 @@ gbp push
 **Fix:**
 ```bash
 # Use this instead:
-debian/update-package.sh 3.5 jammy
+debian/update-package.sh 3.6 noble
 
 # OR for manual approach:
-debian/fetch-upstream.sh 3.5
-```
-
-### Issue: "Build fails with 'Package X not found'"
-
-**AI-assisted fix:**
-```
-Tell AI: "The build failed. Read debian/control and CMakeLists.txt, 
-then tell me which Build-Depends line needs to be added to fix the error."
+debian/fetch-upstream.sh 3.6
 ```
 
 ---
@@ -259,11 +251,8 @@ jobs:
 ## Key Advantages of This Workflow
 
 ✅ **Submodules included** — No more "repack" headaches  
-✅ **AI-auditable** — Scripts are readable by AI agents  
-✅ **Reproducible** — Same commands every time  
-✅ **Chainable** — One-liners orchestrate the full pipeline  
-✅ **CI/CD-ready** — Can be automated in GitHub Actions, GitLab CI  
-✅ **Codespace-native** — Pre-configured environment
+✅ **Reproducible** — Same commands every time   
+✅ **CI/CD-ready** — Can be automated in GitHub Actions, GitLab CI
 
 ---
 
