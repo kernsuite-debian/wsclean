@@ -4,7 +4,6 @@
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {}
     },
-    "onCreateCommand": "bash .devcontainer/setup.sh",
     "remoteUser": "root",
     "customizations": {
         "vscode": {
