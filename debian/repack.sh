@@ -65,14 +65,14 @@ find "${WORK_DIR}" -name ".gitignore" -delete
 find "${WORK_DIR}" -name ".gitlab-ci.yml" -delete
 
 # Step 4: Repackage as .orig.tar.gz
-ORIG_TARBALL="${PKG_NAME}_${VERSION}.orig.tar.gz"
-echo "📦 Creating orig.tar.gz..."
+ORIG_TARBALL="../${PKG_NAME}_${VERSION}.orig.tar.gz"
+echo "Creating orig.tar.gz..."
 tar -czf "${ORIG_TARBALL}" "${WORK_DIR}"
 
 # Clean build dir
 rm -rf "${WORK_DIR}"
 
-echo "✅ SUCCESS!"
+echo "SUCCESS!"
 echo "   Output: ${ORIG_TARBALL}"
 echo ""
 echo "Next steps:"
