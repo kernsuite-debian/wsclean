@@ -6,39 +6,39 @@ cat << 'EOF'
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║     🎉 WSClean Debian AI-Augmented Packaging - All Set! 🎉               ║
+║     WSClean Debian AI-Augmented Packaging - All Set!                      ║
 ║                                                                           ║
-║   Your manual "clone-rename-delete" workflow is now replaced with:       ║
-║   • Automated submodule handling                                         ║
-║   • AI-readable scripts                                                  ║
-║   • Pre-written Copilot prompts                                          ║
-║   • Zero-configuration Codespace environment                             ║
+║   Your manual "clone-rename-delete" workflow is now replaced with:        ║
+║   • Automated submodule handling                                          ║
+║   • AI-readable scripts                                                   ║
+║   • Pre-written Copilot prompts                                           ║
+║   • Zero-configuration Codespace environment                              ║
 ║                                                                           ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 
-📚 DOCUMENTATION HIERARCHY
+DOCUMENTATION HIERARCHY
 ══════════════════════════════════════════════════════════════════════════════
 
    Level 1: Just show me the commands
-   🔗 debian/QUICKREF.md ................................ 2-minute read
+   debian/QUICKREF.md ................................ 2-minute read
    
    Level 2: I want to understand the workflow  
-   🔗 debian/AI-PACKAGING.md ............................ 10-minute read
+   debian/AI-PACKAGING.md ............................ 10-minute read
    
    Level 3: Implementation details
-   🔗 DEBIAN_PACKAGING_SETUP.md (root) ................. Full breakdown
+   DEBIAN_PACKAGING_SETUP.md (root) ................. Full breakdown
 
 
-🚀 THREE WAYS TO USE THIS
+THREE WAYS TO USE THIS
 ══════════════════════════════════════════════════════════════════════════════
 
 ┌─ Way 1: "Just do it" (Manual Human) ───────────────────────────────────┐
 │                                                                           │
 │  1. cd /path/to/wsclean                                                 │
-│  2. debian/fetch-upstream.sh 3.5                                        │
+│  2. debian/fetch-upstream.sh 3.6                                        │
 │  3. debuild -us -uc                                                     │
-│  4. lintian ../wsclean_3.5*.deb                                         │
+│  4. lintian ../wsclean_3.6*.deb                                         │
 │                                                                           │
 │  ✓ Simple, straightforward, works every time                            │
 │                                                                           │
@@ -71,7 +71,7 @@ cat << 'EOF'
 └───────────────────────────────────────────────────────────────────────────┘
 
 
-🎯 TRY IT NOW (2 minutes)
+TRY IT NOW (2 minutes)
 ══════════════════════════════════════════════════════════════════════════════
 
    Step 1: Check the setup status
@@ -83,10 +83,10 @@ cat << 'EOF'
    Step 3: Verify the tarball was created
    $ ls -lh ../wsclean_3.6.orig.tar.gz
    
-   💡 If this works, everything is ready!
+   If this works, everything is ready!
 
 
-📋 WHAT YOU NOW HAVE
+WHAT YOU NOW HAVE
 ══════════════════════════════════════════════════════════════════════════════
 
    Automation Scripts (in debian/):
@@ -117,16 +117,16 @@ cat << 'EOF'
    │ mv wsclean wsclean-3.6                                 │
    │ dh_make --indep --createorig                           │
    └─────────────────────────────────────────────────────────┘
-   Time: 5-10 minutes | Manual steps: 5 | Error risk: HIGH ⚠️
+   Time: 5-10 minutes | Manual steps: 5 | Error risk: HIGH
 
    NEW FLOW (automated):
    ┌─────────────────────────────────────────────────────────┐
    │ debian/update-package.sh 3.6 noble && debuild -us -uc │
    └─────────────────────────────────────────────────────────┘
-   Time: 30 seconds | Manual steps: 0 | Error risk: LOW ✅
+   Time: 30 seconds | Manual steps: 0 | Error risk: LOW
 
 
-🤖 COPILOT PROMPTS (Ready to Use)
+COPILOT PROMPTS (Ready to Use)
 ══════════════════════════════════════════════════════════════════════════════
 
    Copy any of these into GitHub Copilot Chat:
@@ -152,7 +152,7 @@ cat << 'EOF'
     Report all errors."
 
 
-📊 ESTIMATED TIME SAVINGS
+ESTIMATED TIME SAVINGS
 ══════════════════════════════════════════════════════════════════════════════
 
    Per Release:
@@ -168,18 +168,18 @@ cat << 'EOF'
    Additional savings: 4-9 minutes per problem-build
 
 
-✅ VERIFICATION CHECKLIST
+VERIFICATION CHECKLIST
 ══════════════════════════════════════════════════════════════════════════════
 
    [ ] Ran: debian/status.sh (shows ✓ git, ✓ cmake)
-   [ ] Ran: debian/fetch-upstream.sh 3.4 (creates wscl_3.4.orig.tar.gz)
+   [ ] Ran: debian/fetch-upstream.sh 3.6 (creates wscl_3.6.orig.tar.gz)
    [ ] Ran: debuild -us -uc (builds successfully or shows clear error)
    [ ] Checked: lintian output (knows what warnings to ignore)
    [ ] Read: debian/QUICKREF.md (familiar with commands)
    [ ] Tested with Copilot: Pasted a prompt, saw it working
 
 
-🎓 NEXT LEVEL: CONTINUOUS INTEGRATION
+NEXT LEVEL: CONTINUOUS INTEGRATION
 ══════════════════════════════════════════════════════════════════════════════
 
    Ready for automation? See debian/AI-PACKAGING.md → "GitHub Actions"
@@ -187,21 +187,21 @@ cat << 'EOF'
    Quick setup:
    1. Copy workflow.yml example
    2. Save to .github/workflows/build-package.yml
-   3. Push a tag: git tag v3.5 && git push --tags
+   3. Push a tag: git tag v3.6 && git push --tags
    4. Watch GitHub Actions build automatically!
 
 
-💡 PRO TIPS
+PRO TIPS
 ══════════════════════════════════════════════════════════════════════════════
 
    • Fastest command: debian/fetch-upstream.sh <version>
    • Check deps first: debian/inspect-deps.py (before build)
-   • One-liner: debian/update-package.sh 3.5 jammy && debuild -us -uc
+   • One-liner: debian/update-package.sh 3.6 noble && debuild -us -uc
    • AI helper: Use Copilot for build error analysis
    • Watch file: Still works (uses repack.sh automatically)
 
 
-🆘 HELP
+HELP
 ══════════════════════════════════════════════════════════════════════════════
 
    Script not working?
@@ -218,15 +218,12 @@ cat << 'EOF'
    → Then: See error → Ask Copilot
 
 
-🎉 YOU'RE READY!
+YOU'RE READY!
 ══════════════════════════════════════════════════════════════════════════════
 
    Your wsclean packaging workflow is now:
-   ✅ Automated
-   ✅ Reproducible
-   ✅ AI-friendly
-   ✅ Chainable in CI/CD
-   ✅ Well-documented
+   - Automated
+   - Reproducible
 
    Next step: Try it!
    

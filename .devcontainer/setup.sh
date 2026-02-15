@@ -3,7 +3,7 @@
 
 set -e
 
-echo "🚀 Installing Debian packaging tools..."
+echo "Installing Debian packaging tools..."
 
 apt-get update
 apt-get install -y \
@@ -34,7 +34,7 @@ apt-get install -y \
     python3-dev \
     atool
 
-echo "✅ Debian packaging environment initialized!"
+echo "Debian packaging environment initialized!"
 echo "Available commands:"
 echo "  • debian/fetch-upstream.sh <version>    # Fetch and prepare upstream with submodules"
 echo "  • debuild                               # Build the package"
