@@ -57,8 +57,11 @@ echo "Latest version: $VERSION (tag: $LATEST_TAG)"
 echo ""
 
 PKG_NAME="wsclean"
-WORK_DIR="${PKG_NAME}-${VERSION}"
-TARBALL="${PKG_NAME}_${VERSION}.orig.tar.gz"
+WORK_DIR="../og/${PKG_NAME}-${VERSION}"
+TARBALL="../${PKG_NAME}_${VERSION}.orig.tar.gz"
+
+# Ensure og directory exists
+mkdir -p ../og
 
 # Clean previous builds
 if [ -d "${WORK_DIR}" ]; then
@@ -92,23 +95,24 @@ find . -name ".gitattributes" -type f -delete
 find . -name ".gitlab-ci.yml" -type f -delete
 
 # Create tarball
-cd ..
+cd ../..
 echo "Creating orig.tar.gz..."
+TARBALL_NAME="${PKG_NAME}_${VERSION}.orig.tar.gz"
 tar \
     --exclude='*.swp' \
     --exclude='*.swo' \
     --exclude='.DS_Store' \
-    -czf "${TARBALL}" "${WORK_DIR}"
+    -czf "${TARBALL_NAME}" -C og "${PKG_NAME}-${VERSION}"
 
 # Verify
-TARBALL_SIZE=$(du -h "${TARBALL}" | cut -f1)
-TARBALL_FILES=$(tar -tzf "${TARBALL}" | wc -l)
+TARBALL_SIZE=$(du -h "${TARBALL_NAME}" | cut -f1)
+TARBALL_FILES=$(tar -tzf "${TARBALL_NAME}" | wc -l)
 
 echo ""
 echo "SUCCESS! Auto-fetched and prepared:"
 echo "   Version:  ${VERSION}"
 echo "   Tag:      ${LATEST_TAG}"
-echo "   File:     ${TARBALL}"
+echo "   File:     ${TARBALL_NAME}"
 echo "   Size:     ${TARBALL_SIZE}"
 echo "   Files:    ${TARBALL_FILES}"
 echo ""

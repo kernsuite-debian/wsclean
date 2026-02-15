@@ -55,11 +55,33 @@ echo "Step 1: Updating debian/changelog..."
 echo "----------------------------------------------------------------"
 
 if command -v dch &>/dev/null; then
-    dch --newversion "${VERSION}-1kern1" \
+    # Check if version already exists in changelog
+    CURRENT_TOP=$(head -1 debian/changelog | grep -oP '\(\K[^)]+')
+    NEW_VERSION=""
+    
+    if echo "$CURRENT_TOP" | grep -q "^${VERSION}-"; then
+        # Version exists, increment kern number
+        if echo "$CURRENT_TOP" | grep -qP "${VERSION}-\d+kern\d+"; then
+            # Extract and increment kern number
+            DEBIAN_REV=$(echo "$CURRENT_TOP" | grep -oP "${VERSION}-\K\d+")
+            KERN_NUM=$(echo "$CURRENT_TOP" | grep -oP "kern\K\d+")
+            NEW_KERN=$((KERN_NUM + 1))
+            NEW_VERSION="${VERSION}-${DEBIAN_REV}kern${NEW_KERN}"
+            echo "[INFO] Version ${VERSION} exists, incrementing to ${NEW_VERSION}"
+        else
+            NEW_VERSION="${VERSION}-1kern1"
+        fi
+    else
+        # New upstream version
+        NEW_VERSION="${VERSION}-1kern1"
+        echo "[INFO] New upstream version ${VERSION}"
+    fi
+    
+    DEBFULLNAME="KERN packaging" DEBEMAIL="packaging@kernsuite.info" \
+    dch --newversion "${NEW_VERSION}" \
         --distribution "${DISTRO}" \
-        --maintainer "KERN packaging <packaging@kernsuite.info>" \
         "New upstream release v${VERSION}"
-    echo "[OK] Changelog updated"
+    echo "[OK] Changelog updated to ${NEW_VERSION}"
 else
     echo "[WARN] dch not available, skipping automatic changelog update"
     echo "   Manual edit debian/changelog with:"

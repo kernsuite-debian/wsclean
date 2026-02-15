@@ -10,7 +10,7 @@ DISTRO="noble"
 GPG_KEY=""
 
 # Parse arguments
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case $1 in
         --distro) DISTRO="$2"; shift 2 ;;
         --sign) GPG_KEY="$2"; shift 2 ;;

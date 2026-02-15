@@ -14,12 +14,15 @@ fi
 
 UPSTREAM_URL="https://gitlab.com/aroffringa/wsclean.git"
 PKG_NAME="wsclean"
-WORK_DIR="${PKG_NAME}-${VERSION}"
-TARBALL="${PKG_NAME}_${VERSION}.orig.tar.gz"
+WORK_DIR="../og/${PKG_NAME}-${VERSION}"
+TARBALL="../${PKG_NAME}_${VERSION}.orig.tar.gz"
 
 echo " Starting wsclean Debian upstream fetch workflow..."
 echo "   Version: ${VERSION}"
 echo "   Target: ${TARBALL}"
+
+# Ensure og directory exists
+mkdir -p ../og
 
 # Step 1: Clean previous builds
 if [ -d "${WORK_DIR}" ]; then
@@ -54,21 +57,22 @@ find . -name ".gitattributes" -type f -delete
 find . -name ".gitlab-ci.yml" -type f -delete
 
 # Step 5: Create tarball
-cd ..
+cd ../..
 echo "Creating orig tarball..."
+TARBALL_NAME="${PKG_NAME}_${VERSION}.orig.tar.gz"
 tar \
     --exclude='*.swp' \
     --exclude='*.swo' \
     --exclude='.DS_Store' \
-    -czf "${TARBALL}" "${WORK_DIR}"
+    -czf "${TARBALL_NAME}" -C og "${PKG_NAME}-${VERSION}"
 
 # Step 6: Verify integrity
-TARBALL_SIZE=$(du -h "${TARBALL}" | cut -f1)
-TARBALL_FILES=$(tar -tzf "${TARBALL}" | wc -l)
+TARBALL_SIZE=$(du -h "${TARBALL_NAME}" | cut -f1)
+TARBALL_FILES=$(tar -tzf "${TARBALL_NAME}" | wc -l)
 
 echo ""
 echo "SUCCESS! Tarball created:"
-echo "   File: ${TARBALL}"
+echo "   File: ${TARBALL_NAME}"
 echo "   Size: ${TARBALL_SIZE}"
 echo "   Files: ${TARBALL_FILES}"
 echo ""
