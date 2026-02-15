@@ -1,6 +1,6 @@
 #!/bin/bash
 # AI-Ready script to handle wsclean submodules for Debian packaging
-# Usage: ./fetch-upstream.sh 3.5
+# Usage: ./fetch-upstream.sh 3.6
 # This script automates the clone-submodule-tarball workflow
 
 set -e
@@ -8,7 +8,7 @@ set -e
 VERSION="${1}"
 if [ -z "$VERSION" ]; then
     echo "Usage: $0 <VERSION>"
-    echo "Example: $0 3.5"
+    echo "Example: $0 3.6"
     exit 1
 fi
 
@@ -67,7 +67,7 @@ TARBALL_SIZE=$(du -h "${TARBALL}" | cut -f1)
 TARBALL_FILES=$(tar -tzf "${TARBALL}" | wc -l)
 
 echo ""
-echo "✅ SUCCESS! Tarball created:"
+echo "SUCCESS! Tarball created:"
 echo "   File: ${TARBALL}"
 echo "   Size: ${TARBALL_SIZE}"
 echo "   Files: ${TARBALL_FILES}"
