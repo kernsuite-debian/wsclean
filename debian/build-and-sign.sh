@@ -25,12 +25,12 @@ BUILD_DIR="../build-area"
 UPLOAD_DIR="../wsclean-debs-${VERSION}"
 
 echo ""
-echo "╔════════════════════════════════════════════════════════════╗"
-echo "║     WSClean Build, Sign & Local Upload Workflow            ║"
-echo "╚════════════════════════════════════════════════════════════╝"
+echo "================================================================"
+echo "     WSClean Build, Sign & Local Upload Workflow"
+echo "================================================================"
 echo ""
 
-echo "📋 Configuration:"
+echo "Configuration:"
 echo "   Version:    ${VERSION}"
 echo "   Distro:     ${DISTRO}"
 echo "   Tarball:    ${TARBALL}"
@@ -43,65 +43,65 @@ echo ""
 
 # Verify tarball exists
 if [ ! -f "../${TARBALL}" ]; then
-    echo "❌ ERROR: Tarball not found: ../${TARBALL}"
+    echo "ERROR: Tarball not found: ../${TARBALL}"
     echo ""
     echo "First, run: debian/fetch-latest.sh"
     exit 1
 fi
 
 # Step 1: Update changelog
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 1: Updating debian/changelog..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 if command -v dch &>/dev/null; then
     dch --newversion "${VERSION}-1kern1" \
         --distribution "${DISTRO}" \
         --maintainer "KERN packaging <packaging@kernsuite.info>" \
         "New upstream release v${VERSION}"
-    echo "✅ Changelog updated"
+    echo "[OK] Changelog updated"
 else
-    echo "⚠️  dch not available, skipping automatic changelog update"
+    echo "[WARN] dch not available, skipping automatic changelog update"
     echo "   Manual edit debian/changelog with:"
     echo "   ${PKG_NAME} (${VERSION}-1kern1) ${DISTRO}; urgency=medium"
 fi
 echo ""
 
 # Step 2: Import into git-buildpackage (optional but recommended)
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 2: Building package..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 # Create build directory
 mkdir -p "${BUILD_DIR}"
 
 # Build (unsigned first for testing)
-echo "🔨 Building (unsigned test build)..."
+echo "Building (unsigned test build)..."
 debuild --no-tgz-check -us -uc 2>&1 | tail -30
 
 # Check if build succeeded
 if [ ! -f "../${PKG_NAME}_${VERSION}-1kern1_"*.deb ]; then
     echo ""
-    echo "❌ Build failed! Check output above for errors."
+    echo "[FAIL] Build failed! Check output above for errors."
     exit 1
 fi
 
 echo ""
-echo "✅ Build succeeded!"
+echo "[OK] Build succeeded!"
 echo ""
 
 # Step 3: List generated files
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 3: Generated files (ready for signing)..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 ls -lh ../${PKG_NAME}_${VERSION}-1kern1* | grep -v ".build"
 echo ""
 
 # Step 4: Sign files
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 4: Signing files..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 # Sign the .changes file (this signs all referenced files)
 CHANGES_FILE="../${PKG_NAME}_${VERSION}-1kern1_"*".changes"
@@ -109,26 +109,26 @@ CHANGES_FILE="../${PKG_NAME}_${VERSION}-1kern1_"*".changes"
 if [ -f "$CHANGES_FILE" ]; then
     # Check if already signed
     if grep -q "^BEGIN PGP SIGNATURE" "$CHANGES_FILE"; then
-        echo "⚠️  Changes file already signed"
+        echo "[WARN] Changes file already signed"
     else
-        echo "🔐 Signing ${CHANGES_FILE##*/}..."
+        echo "Signing ${CHANGES_FILE##*/}..."
         if [ -n "$GPG_KEY" ]; then
             debsign -k "$GPG_KEY" "$CHANGES_FILE"
         else
             debsign "$CHANGES_FILE"
         fi
-        echo "✅ Files signed"
+        echo "[OK] Files signed"
     fi
 else
-    echo "❌ Changes file not found!"
+    echo "[FAIL] Changes file not found!"
     exit 1
 fi
 echo ""
 
 # Step 5: Create upload directory
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 5: Preparing local upload directory..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 mkdir -p "${UPLOAD_DIR}"
 
@@ -138,41 +138,41 @@ cp ../${PKG_NAME}_${VERSION}-1kern1_*.changes "${UPLOAD_DIR}/"
 cp ../${PKG_NAME}_${VERSION}-1kern1_*.dsc "${UPLOAD_DIR}/"
 cp ../${TARBALL} "${UPLOAD_DIR}/"
 
-echo "📁 Files prepared in: ${UPLOAD_DIR}"
+echo "Files prepared in: ${UPLOAD_DIR}"
 ls -lh "${UPLOAD_DIR}/"
 echo ""
 
 # Step 6: Run lintian checks
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 6: Running quality checks (lintian)..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 if command -v lintian &>/dev/null; then
-    echo "🔍 Checking .deb packages..."
+    echo "Checking .deb packages..."
     lintian "${UPLOAD_DIR}"/${PKG_NAME}_${VERSION}-1kern1_*.deb 2>&1 | head -20 || true
     
     echo ""
-    echo "🔍 Checking .dsc source..."
+    echo "Checking .dsc source..."
     lintian "${UPLOAD_DIR}"/${PKG_NAME}_${VERSION}-1kern1_*.dsc 2>&1 | head -20 || true
 else
-    echo "⚠️  lintian not available, skipping package checks"
+    echo "[WARN] lintian not available, skipping package checks"
 fi
 echo ""
 
 # Step 7: Verification
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 7: Verification Summary"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
-echo "✅ Package built: $(ls -1 ${UPLOAD_DIR}/${PKG_NAME}_${VERSION}-1kern1_*.deb | wc -l) .deb file(s)"
-echo "✅ Signed: $(grep -l 'BEGIN PGP SIGNATURE' ${UPLOAD_DIR}/*.changes)"
-echo "✅ Ready for upload: ${UPLOAD_DIR}"
+echo "[OK] Package built: $(ls -1 ${UPLOAD_DIR}/${PKG_NAME}_${VERSION}-1kern1_*.deb | wc -l) .deb file(s)"
+echo "[OK] Signed: $(grep -l 'BEGIN PGP SIGNATURE' ${UPLOAD_DIR}/*.changes)"
+echo "[OK] Ready for upload: ${UPLOAD_DIR}"
 echo ""
 
 # Step 8: Show upload options
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "Step 8: Next Steps - Upload Options"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 CHANGES_FILE_SHORT="${PKG_NAME}_${VERSION}-1kern1_"*.changes
 
@@ -195,5 +195,5 @@ echo "Option D: Create an archive for distribution"
 echo "  $ tar -czf wsclean-${VERSION}-debs.tar.gz ${UPLOAD_DIR}/"
 echo ""
 
-echo "✨ Ready to upload!"
+echo "Ready to upload!"
 echo ""

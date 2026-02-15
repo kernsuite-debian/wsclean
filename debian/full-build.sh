@@ -19,32 +19,33 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo ""
-echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  WSClean Full Workflow: Fetch Latest → Build → Sign → Upload║"
-echo "║                                                            ║"
-echo "║  This script auto-detects the latest version and builds!  ║"
-echo "╚════════════════════════════════════════════════════════════╝"
+echo "================================================================"
+echo "  WSClean Full Workflow: Fetch Latest -> Build -> Sign -> Upload"
+echo ""
+echo "  This script auto-detects the latest version and builds!"
+echo "================================================================"
 echo ""
 
 # Step 1: Fetch latest
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "STEP 1: Auto-Detect and Fetch Latest Version"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 debian/fetch-latest.sh
 
 # Extract version from generated tarball
-TARBALL=$(ls -1 wsclean_*.orig.tar.gz | tail -1)
-VERSION="${TARBALL#wsclean_}"
+TARBALL=$(ls -1 ../wsclean_*.orig.tar.gz | tail -1)
+TARBALL_NAME=$(basename "$TARBALL")
+VERSION="${TARBALL_NAME#wsclean_}"
 VERSION="${VERSION%.orig.tar.gz}"
 
-echo "🎯 Detected version: ${VERSION}"
+echo "Detected version: ${VERSION}"
 echo ""
 
 # Step 2: Build and sign
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 echo "STEP 2: Build, Sign, and Prepare Upload"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "----------------------------------------------------------------"
 
 if [ -n "$GPG_KEY" ]; then
     debian/build-and-sign.sh "$VERSION" "$DISTRO" "$GPG_KEY"
@@ -53,11 +54,11 @@ else
 fi
 
 echo ""
-echo "╔════════════════════════════════════════════════════════════╗"
-echo "║                    🎉 ALL DONE! 🎉                         ║"
-echo "╚════════════════════════════════════════════════════════════╝"
+echo "================================================================"
+echo "                    ALL DONE!"
+echo "================================================================"
 echo ""
-echo "✨ Summary:"
+echo "Summary:"
 echo "  Version:      $VERSION"
 echo "  Distribution: $DISTRO"
 echo "  Upload dir:   ../wsclean-debs-${VERSION}"
