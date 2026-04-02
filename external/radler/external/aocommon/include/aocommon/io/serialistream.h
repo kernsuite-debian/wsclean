@@ -11,6 +11,11 @@
 
 namespace aocommon {
 
+/**
+ * An input stream that is used for unserialization of objects, particularly
+ * with the aim to send objects over a network. It's the counterpart of the
+ * @ref SerialOStream class, which contains more about the motivation.
+ */
 class SerialIStream {
  public:
   SerialIStream(UVector<unsigned char>&& buffer)
@@ -120,6 +125,7 @@ class SerialIStream {
    */
   template <typename T>
   SerialIStream& Vector(std::vector<T>& values) {
+    static_assert(std::is_trivial_v<T> || details::is_complex_t<T>());
     uint64_t size = UInt64();
     values.resize(size);
     size_t n = size * sizeof(T);
@@ -162,14 +168,23 @@ class SerialIStream {
 
   /**
    * Read a vector of objects from the stream.
-   * @tparam T Object type, which must implement Unserialize(SerialIStream&).
+   * @tparam T Object type, which must either implement
+   * T(SerialIStream&) or Unserialize(SerialIStream&).
    */
   template <typename T>
   SerialIStream& ObjectVector(std::vector<T>& objects) {
     uint64_t size = UInt64();
-    objects.resize(size);
-    for (T& object : objects) {
-      object.Unserialize(*this);
+    if constexpr (std::is_constructible_v<T, SerialIStream&>) {
+      objects.clear();
+      objects.reserve(size);
+      for (uint64_t i = 0; i < size; ++i) {
+        objects.emplace_back(*this);
+      }
+    } else {
+      objects.resize(size);
+      for (T& object : objects) {
+        object.Unserialize(*this);
+      }
     }
     return *this;
   }

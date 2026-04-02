@@ -1,4 +1,4 @@
-#include "../../msproviders/noisemsrowprovider.h"
+#include "../../msproviders/rowproviders/noisemsrowprovider.h"
 
 #include <aocommon/logger.h>
 
@@ -6,10 +6,12 @@
 
 #include <sstream>
 
+namespace wsclean {
+
 BOOST_AUTO_TEST_SUITE(noise_ms_row_provider)
 
 BOOST_AUTO_TEST_CASE(noise_baseline_map) {
-  aocommon::Logger::SetVerbosity(aocommon::Logger::kQuietVerbosity);
+  aocommon::Logger::SetVerbosity(aocommon::LogVerbosityLevel::kQuiet);
   BOOST_CHECK(NoiseMSRowProvider::NoiseMap().Empty());
 
   const std::string input =
@@ -37,3 +39,5 @@ BOOST_AUTO_TEST_CASE(noise_baseline_map) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+}  // namespace wsclean

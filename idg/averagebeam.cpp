@@ -8,6 +8,8 @@
 
 #include <cassert>
 
+namespace wsclean {
+
 namespace {
 constexpr size_t kNPolarizations = 4;
 }  // namespace
@@ -70,7 +72,7 @@ std::unique_ptr<AverageBeam> AverageBeam::Load(
   std::unique_ptr<AverageBeam> result;
   if (!scalar_cache.Empty()) {
     aocommon::Logger::Debug << "Loading average beam from cache.\n";
-    result.reset(new AverageBeam());
+    result = std::make_unique<AverageBeam>();
 
     // Scalar beam
     result->scalar_width_ = scalar_cache.Writer().Width();
@@ -123,3 +125,5 @@ void AverageBeam::Store(CachedImageSet& scalar_cache,
                        false);
   }
 }
+
+}  // namespace wsclean

@@ -1,6 +1,9 @@
 #ifndef WSCLEAN_H
 #define WSCLEAN_H
 
+#include <optional>
+#include <set>
+
 #include <aocommon/image.h>
 #include <aocommon/fits/fitsreader.h>
 #include <aocommon/fits/fitswriter.h>
@@ -12,6 +15,7 @@
 #include <radler/radler.h>
 
 #include "../scheduling/griddingresult.h"
+#include "../scheduling/griddingtaskfactory.h"
 
 #include "../io/cachedimageset.h"
 #include "../io/wscfitswriter.h"
@@ -22,24 +26,24 @@
 #include "../structures/outputchannelinfo.h"
 #include "../structures/weightmode.h"
 
-#include "../gridding/msgridderbase.h"
+#include "../gridding/msgridder.h"
 
-#include "../msproviders/partitionedms.h"
+#include "../msproviders/reorderedmsprovider.h"
 
+#include "mshelper.h"
 #include "stopwatch.h"
 #include "settings.h"
 
-#include <optional>
-#include <set>
+namespace schaapcommon::facets {
+class FacetImage;
+}  // namespace schaapcommon::facets
+
+namespace wsclean {
 
 class ImageWeightCache;
 class PrimaryBeam;
 
-namespace schaapcommon {
-namespace facets {
-class FacetImage;
-}
-}  // namespace schaapcommon
+enum class StitchImageType { kPSF, kDirty, kFacetPbModel, kOther };
 
 class WSClean {
  public:
@@ -62,26 +66,29 @@ class WSClean {
    */
   void RunPredict();
 
+  /**
+   * @brief Create a FITS image based on a skymodel.
+   */
+  void DrawModel();
+
  private:
   void runIndependentGroup(ImagingTable& groupTable,
                            std::unique_ptr<PrimaryBeam>& primaryBeam);
   void saveRestoredImagesForGroup(
-      const ImagingTable& table,
+      const ImagingTable::Group& group,
       std::unique_ptr<PrimaryBeam>& primaryBeam) const;
   void predictGroup(const ImagingTable& groupTable);
 
   void runFirstInversions(ImagingTable& groupTable,
-                          std::unique_ptr<PrimaryBeam>& primaryBeam,
-                          bool requestPolarizationsAtOnce,
-                          bool parallelizePolarizations);
-  void runSingleFirstInversion(ImagingTableEntry& entry,
-                               std::unique_ptr<PrimaryBeam>& primaryBeam);
+                          std::unique_ptr<PrimaryBeam>& primaryBeam);
+  /**
+   * @brief Run first inversion on all entries within a group.
+   * @details A group should contain all facets of a single image.
+   */
+  void runFirstInversionGroup(ImagingTable::Group& facetGroup,
+                              std::unique_ptr<PrimaryBeam>& primaryBeam);
   void runMajorIterations(ImagingTable& groupTable,
-                          std::unique_ptr<PrimaryBeam>& primaryBeam,
-                          bool requestPolarizationsAtOnce,
-                          bool parallelizePolarizations);
-
-  void performReordering(bool isPredictMode);
+                          std::unique_ptr<PrimaryBeam>& primaryBeam);
 
   /**
    * Returns true when gridding is done with a-terms. This can either
@@ -102,26 +109,18 @@ class WSClean {
            !_settings.facetSolutionFiles.empty() || griddingUsesATerms();
   }
 
-  ObservationInfo getObservationInfo() const;
-  /**
-   * Add the phase shift of a facet
-   * @param entry entry. If its facet is null, nothing happens.
-   * @param l_shift is updated.
-   * @param m_shift is updated.
-   */
+  std::string PredictModelFileSuffix() const {
+    return _settings.applyFacetBeam
+               ? "-model-fpb.fits"
+               : ((_settings.UseFacetCorrections() || griddingUsesATerms())
+                      ? "-model-pb.fits"
+                      : "-model.fits");
+  }
 
+  ObservationInfo getObservationInfo() const;
   std::pair<double, double> getLMShift() const;
 
-  void applyFacetPhaseShift(const ImagingTableEntry& entry, double& l_shift,
-                            double& m_shift) const;
-  std::shared_ptr<ImageWeights> initializeImageWeights(
-      const ImagingTableEntry& entry,
-      std::vector<std::unique_ptr<MSDataDescription>>& msList);
-  void initializeMFImageWeights();
-  void initializeMSList(
-      const ImagingTableEntry& entry,
-      std::vector<std::unique_ptr<MSDataDescription>>& msList);
-  void resetModelColumns(const ImagingTable& groupTable);
+  void ResetModelColumnsIfUsingFacets(const ImagingTable::Groups& facet_groups);
   void resetModelColumns(const ImagingTableEntry& entry);
   void storeAndCombineXYandYX(CachedImageSet& dest, size_t joinedChannelIndex,
                               const ImagingTableEntry& entry,
@@ -162,19 +161,19 @@ class WSClean {
    * to be reset.
    */
   bool overrideImageSettings(const aocommon::FitsReader& reader);
-  GriddingResult loadExistingImage(ImagingTableEntry& entry, bool isPSF);
-  void loadExistingPSF(ImagingTableEntry& entry);
-  void loadExistingDirty(ImagingTableEntry& entry, bool updateBeamInfo);
+  void loadExistingImage(ImagingTableEntry& entry, bool isPSF);
 
-  void imagePSF(ImagingTableEntry& entry);
-  void imagePSFCallback(ImagingTableEntry& entry, GriddingResult& result);
+  void ImagePsf(ImagingTable::Group&& facet_group);
+  void ImagePsfCallback(ImagingTable::Group facet_group,
+                        GriddingResult& result);
 
-  void imageMain(ImagingTableEntry& entry, bool isFirstInversion,
-                 bool updateBeamInfo);
-  void imageMainCallback(ImagingTableEntry& entry, GriddingResult& result,
-                         bool updateBeamInfo, bool isInitialInversion);
+  void ImageMain(ImagingTable::Group& facet_group, bool is_first_inversion,
+                 bool update_beam_info);
+  void ImageMainCallback(ImagingTable::Group facet_group,
+                         GriddingResult& result, bool update_beam_info,
+                         bool is_first_inversion);
 
-  void predict(const ImagingTableEntry& entry);
+  void Predict(const ImagingTable::Group& facet_group);
 
   void saveUVImage(const aocommon::Image& image, const ImagingTableEntry& entry,
                    bool isImaginary, const std::string& prefix) const;
@@ -185,16 +184,14 @@ class WSClean {
 
   void processFullPSF(aocommon::Image& image, const ImagingTableEntry& entry);
 
+  void ApplyFacetCorrectionForSingleChannel(const ImagingTable& squared_group,
+                                            CachedImageSet& image_cache);
+
   /**
    * @brief Stitch facets for all FacetGroups
-   *
-   * @param table Imaging table
-   * @param cachedImage CachedImages
-   * @param writeDirty Write dirty image?
-   * @param writePSF Write PSF image?
    */
-  void stitchFacets(const ImagingTable& table, CachedImageSet& imageCache,
-                    bool writeDirty, bool isPSF);
+  void stitchFacets(const ImagingTable& table, CachedImageSet& image_cache,
+                    StitchImageType type);
 
   /**
    * Stitch facet for a single (Facet)Group
@@ -202,28 +199,29 @@ class WSClean {
    * or should be an image with the right size. This can be used to reuse
    * the same weight image over multiple calls and prevent re-allocation.
    */
-  void stitchSingleGroup(const ImagingTable& facetGroup, size_t imageIndex,
-                         CachedImageSet& imageCache, bool writeDirty,
-                         bool isPSF, aocommon::Image& fullImage,
+  void stitchSingleGroup(const ImagingTable::Group& facetGroup,
+                         size_t imageIndex, CachedImageSet& imageCache,
+                         StitchImageType type, aocommon::Image& fullImage,
                          std::unique_ptr<aocommon::Image>& weight_image,
                          schaapcommon::facets::FacetImage& facetImage,
-                         size_t nFacetGroups);
+                         size_t maxFacetGroupIndex, bool apply_scalar);
   /**
    * Partition model image into facets and save them into fits files
    */
-  void partitionModelIntoFacets(const ImagingTable& table, bool isPredictOnly);
+  void partitionModelIntoFacets(const ImagingTable::Groups& facetGroups,
+                                bool isPredictOnly);
 
   /**
    * Partition image into facets for a single (Facet)Group
    */
-  void partitionSingleGroup(const ImagingTable& facetGroup, size_t imageIndex,
-                            CachedImageSet& imageCache,
+  void partitionSingleGroup(const ImagingTable::Group& facetGroup,
+                            size_t imageIndex, CachedImageSet& imageCache,
                             const aocommon::Image& fullImage,
                             schaapcommon::facets::FacetImage& facetImage,
                             bool isPredictOnly);
 
   void writeFirstResidualImages(const ImagingTable& groupTable) const;
-  void writeModelImages(const ImagingTable& groupTable) const;
+  void WriteModelImages(const ImagingTable::Groups& facet_groups) const;
 
   double minTheoreticalBeamSize(const ImagingTable& table) const;
 
@@ -243,7 +241,8 @@ class WSClean {
    * @brief Apply the H5 solution to the (restored) image and save as -pb.fits
    * file. Method is only invoked in case no beam corrections are applied.
    */
-  void correctImagesH5(aocommon::FitsWriter& writer, const ImagingTable& table,
+  void correctImagesH5(aocommon::FitsWriter& writer,
+                       const ImagingTable::Group& group,
                        const ImageFilename& imageName,
                        const std::string& filenameKind) const;
 
@@ -260,48 +259,9 @@ class WSClean {
    */
   size_t getMaxNrMSProviders() const {
     size_t msCount = 0;
-    for (const auto& msBand : _msBands) msCount += msBand.DataDescCount();
+    for (const auto& msBand : _msBands)
+      msCount += msBand.HighestDataDescId() + 1;
     return msCount;
-  }
-
-  /**
-   * Determines if IDG uses diagonal instrumental or full instrumental
-   * polarizations.
-   */
-  aocommon::PolarizationEnum getProviderPolarization(
-      aocommon::PolarizationEnum entry_polarization) const {
-    if (_settings.gridderType == GridderType::IDG) {
-      if (_settings.polarizations.size() == 1 &&
-          *_settings.polarizations.begin() == aocommon::Polarization::StokesI) {
-        if ((_settings.ddPsfGridWidth > 1 || _settings.ddPsfGridHeight > 1) &&
-            _settings.gridWithBeam) {
-          return aocommon::Polarization::StokesI;
-        } else {
-          return aocommon::Polarization::DiagonalInstrumental;
-        }
-      } else {
-        return aocommon::Polarization::Instrumental;
-      }
-    } else if (_settings.diagonalSolutions) {
-      return aocommon::Polarization::DiagonalInstrumental;
-    } else {
-      return entry_polarization;
-    }
-  }
-
-  long double GetFacetCorrectionFactor(const ImagingTableEntry& entry) const {
-    const std::map<size_t, std::unique_ptr<MetaDataCache>>::const_iterator
-        entry_cache = _msGridderMetaCache.find(entry.index);
-    assert(entry_cache != _msGridderMetaCache.end());
-    return entry_cache->second->correctionSum / entry.imageWeight;
-  }
-
-  bool DataDescIdIsUsed(size_t ms_index, size_t data_desc_id) const {
-    const size_t band_index = _msBands[ms_index].GetBandIndex(data_desc_id);
-    // An empty selection means that all bands are selected
-    return _settings.spectralWindows.empty() ||
-           _settings.spectralWindows.find(band_index) !=
-               _settings.spectralWindows.end();
   }
 
   MSSelection _globalSelection;
@@ -311,19 +271,19 @@ class WSClean {
 
   std::vector<OutputChannelInfo> _infoPerChannel;
   OutputChannelInfo _infoForMFS;
-  std::map<size_t, std::unique_ptr<MetaDataCache>> _msGridderMetaCache;
 
+  std::unique_ptr<MsHelper> _msHelper;
+  std::unique_ptr<GriddingTaskFactory> _griddingTaskFactory;
   std::unique_ptr<GriddingTaskManager> _griddingTaskManager;
   std::unique_ptr<ImageWeightCache> _imageWeightCache;
   Stopwatch _inversionWatch, _predictingWatch, _deconvolutionWatch;
-  bool _isFirstInversion;
+  bool _isFirstInversionTask;  // Becomes false after the first inversion task.
   size_t _majorIterationNr;
   CachedImageSet _psfImages;
   CachedImageSet _modelImages;
   CachedImageSet _residualImages;
   CachedImageSet _scalarBeamImages;
   CachedImageSet _matrixBeamImages;
-  std::vector<PartitionedMS::Handle> _partitionedMSHandles;
   std::vector<aocommon::MultiBandData> _msBands;
   // Radler object only needed in RunClean runs.
   std::optional<radler::Radler> _deconvolution;
@@ -340,5 +300,7 @@ class WSClean {
 
   double _lastStartTime;
 };
+
+}  // namespace wsclean
 
 #endif

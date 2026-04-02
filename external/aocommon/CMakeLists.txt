@@ -1,13 +1,30 @@
-cmake_minimum_required(VERSION 3.11)
+# 'FetchContent' in FetchXTensor.cmake requires CMake 3.11.
+# 'add_compile_definitions' in FetchXTensor.cmake requires CMake 3.12.
+cmake_minimum_required(VERSION 3.12)
 
-project(aocommon)
+project(aocommon LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -Wall -Werror=zero-as-null-pointer-constant -ggdb")
+add_compile_options(
+  -O3
+  -Wall
+  -Wnon-virtual-dtor
+  -Wzero-as-null-pointer-constant
+  -Wduplicated-branches
+  -Wundef
+  -Wvla
+  -Wpointer-arith
+  -Wextra
+  -Wno-unused-parameter
+  -ggdb)
+
+# Use may optionally set `TARGET_CPU` if `PORTABLE=OFF`
+option(PORTABLE "Build portable binaries (with slightly decreased performance)"
+       OFF)
+include(CMake/SetTargetCPU.cmake)
 
 # add target to generate API documentation with Doxygen
 find_package(Threads REQUIRED)
@@ -24,10 +41,7 @@ if(DOXYGEN_FOUND)
     VERBATIM)
 endif(DOXYGEN_FOUND)
 
-find_package(
-  Boost
-  COMPONENTS unit_test_framework date_time
-  REQUIRED)
+find_package(Boost REQUIRED COMPONENTS unit_test_framework)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -48,37 +62,42 @@ add_executable(
   tests/tangle.cpp
   tests/tbanddata.cpp
   tests/tbarrier.cpp
+  tests/tvectormap.cpp
+  tests/tcounting_semaphore.cpp
+  tests/tdynamicfor.cpp
   tests/tfits.cpp
   tests/tfluxdensity.cpp
   tests/thmatrix4x4.cpp
   tests/timage.cpp
+  tests/timagecoordinates.cpp
   tests/tlane.cpp
   tests/tlogger.cpp
   tests/tmatrix2x2.cpp
   tests/tmatrix2x2diag.cpp
   tests/tmatrix4x4.cpp
   tests/tmultibanddata.cpp
-  tests/tparallelfor.cpp
+  tests/toptionalnumber.cpp
+  tests/toverlappingtaskprocessor.cpp
   tests/tpolarization.cpp
   tests/tpyuniqueptr.cpp
   tests/tqueue.cpp
   tests/tradeccoord.cpp
+  tests/trecursivefor.cpp
   tests/tstaticfor.cpp
   tests/tserialstream.cpp
   tests/tspan.cpp
+  tests/ttaskqueue.cpp
   tests/tthreadpool.cpp
   tests/tthrowruntimeerror.cpp
   tests/ttransform_if.cpp
   tests/tutensor.cpp
-  tests/tuvector.cpp)
-target_link_libraries(
-  runtests
-  ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}
-  ${Boost_DATE_TIME_LIBRARY}
-  ${CMAKE_THREAD_LIBS_INIT}
-  ${CASACORE_LIBRARIES}
-  ${CFITSIO_LIBRARY}
-  xtensor)
+  tests/tuvector.cpp
+  tests/avx/tDiagonalMatrixComplexDouble2x2.cpp
+  tests/avx/tDiagonalMatrixComplexFloat2x2.cpp
+  tests/avx/tMatrixComplexDouble2x2.cpp
+  tests/avx/tMatrixComplexFloat2x2.cpp)
+target_link_libraries(runtests ${Boost_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+                      ${CASACORE_LIBRARIES} ${CFITSIO_LIBRARY} xtensor)
 
 add_custom_target(execute_runtests_target ALL DEPENDS execute_runtests)
 add_custom_command(
@@ -88,9 +107,8 @@ add_custom_command(
 
 add_custom_target(
   coverage
-  COMMAND gcovr -r .. -e '.*/tests/.*' -e '.*/CompilerIdCXX/.*'
-  COMMAND gcovr -r .. -e '.*/tests/.*' -e '.*/CompilerIdCXX/.*' --xml >
-          coverage.xml
+  COMMAND gcovr -r ${CMAKE_SOURCE_DIR} -e '.*/tests/.*' -e '.*/CompilerIdCXX/.*'
+          -e '_deps/.*' --txt --xml coverage.xml ${CMAKE_BINARY_DIR}
   DEPENDS execute_runtests)
 
 # CMAKE_CXX_FLAGS does not contain all flags.

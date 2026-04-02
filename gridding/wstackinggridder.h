@@ -7,7 +7,7 @@
 #define WSTACKING_GRIDDER_H
 
 #ifndef AVOID_CASACORE
-#include <aocommon/banddata.h>
+#include <aocommon/multibanddata.h>
 #endif
 
 #include "gridmode.h"
@@ -21,6 +21,8 @@
 #include <vector>
 #include <stack>
 #include <thread>
+
+namespace wsclean {
 
 /**
  * This class grids and/or samples visibilities to/from UV space.
@@ -64,7 +66,7 @@
  grid
  * several samples that only differ in frequency. To use @ref AddData(), it is
  necessary to
- * call @ref PrepareBand() first.
+ * call @ref PrepareBands() first.
  *
  * For prediction, the sequence is similar:
  *
@@ -79,7 +81,7 @@
  * Similar to Inversion, all values for a band can be predicted at once by
  calling
  * @ref SampleData() instead of @ref SampleDataSample() when the band has been
- * set beforehand with @ref PrepareBand().
+ * set beforehand with @ref PrepareBands().
  *
  * Prediction does not require any finalisation calls.
  *
@@ -169,7 +171,7 @@ class WStackingGridder {
    * dataDescId to a set of contiguous frequencies. This corresponds with the
    * DATA_DESC_ID field in meaurement sets.
    */
-  void PrepareBand(const aocommon::BandData &bandData) { _bandData = bandData; }
+  void PrepareBands(const aocommon::MultiBandData &bands) { _bands = bands; }
 #endif  // AVOID_CASACORE
 
   /**
@@ -281,12 +283,9 @@ class WStackingGridder {
    *
    * @param data Array of samples for different channels. The size of this array
    * is given by the band referred to by dataDescId.
-   * @param uInM U value of UVW coordinate, in meters.
-   * @param vInM V value of UVW coordinate, in meters.
-   * @param wInM W value of UVW coordinate, in meters.
    */
-  void AddData(const std::complex<float> *data, double uInM, double vInM,
-               double wInM);
+  void AddData(const std::complex<float> *data, size_t data_desc_id,
+               double u_in_m, double v_in_m, double w_in_m);
 #endif
 
   /**
@@ -320,10 +319,10 @@ class WStackingGridder {
 
   /**
    * Finalize inversion once all passes are performed.
-   * @param multiplicationFactor Apply this factor to all pixels. This can be
+   * @param multiplication_factor Apply this factor to all pixels. This can be
    * used to normalize the image for the weighting scheme.
    */
-  void FinalizeImage(double multiplicationFactor);
+  void FinalizeImage(double multiplication_factor);
 
   /**
    * Initialize gridder for prediction and specify image to predict for.
@@ -378,12 +377,9 @@ class WStackingGridder {
    *
    * @param data Array of samples for different channels. The size of this array
    * is given by the band.
-   * @param uInM U value of UVW coordinate, in meters.
-   * @param vInM V value of UVW coordinate, in meters.
-   * @param wInM W value of UVW coordinate, in meters.
    */
-  void SampleData(std::complex<float> *data, double uInM, double vInM,
-                  double wInM);
+  void SampleData(std::complex<float> *data, size_t data_desc_id, double u_in_m,
+                  double v_in_m, double w_in_m);
 #endif
 
   /**
@@ -578,10 +574,11 @@ class WStackingGridder {
   void fftToImageThreadFunction(std::mutex *mutex, std::stack<size_t> *tasks,
                                 size_t threadIndex);
   void fftToUVThreadFunction(std::mutex *mutex, std::stack<size_t> *tasks);
-  void finalizeImage(double multiplicationFactor,
-                     std::vector<aocommon::ImageBase<num_t>> &dataArray);
-  void initializePrediction(aocommon::Image image,
-                            std::vector<aocommon::ImageBase<num_t>> &dataArray);
+  void finalizeImage(double multiplication_factor,
+                     std::vector<aocommon::ImageBase<num_t>> &data_array);
+  void initializePrediction(
+      aocommon::Image image,
+      std::vector<aocommon::ImageBase<num_t>> &data_array);
 
   void makeKernels();
   /**
@@ -620,7 +617,7 @@ class WStackingGridder {
   double _minW, _maxW, _l_shift, _m_shift;
   bool _isComplex, _imageConjugatePart;
 #ifndef AVOID_CASACORE
-  aocommon::BandData _bandData;
+  aocommon::MultiBandData _bands;
 #endif
 
   GriddingKernelMode _gridMode;
@@ -633,5 +630,7 @@ class WStackingGridder {
   std::vector<num_t> _sqrtLMLookupTable;
   size_t _nFFTThreads;
 };
+
+}  // namespace wsclean
 
 #endif

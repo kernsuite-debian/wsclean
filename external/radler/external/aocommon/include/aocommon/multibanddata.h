@@ -3,30 +3,210 @@
 
 #include <aocommon/banddata.h>
 
+// Because current Casacore versions aren't suporting C++20 yet in the Ubuntu
+// versions, the casacore overloads are removed using this macro. This prevents
+// having to compile Casacore in CI only for a few overloads that are not tested
+// anyway. This check can be removed once Casacore support is improved.
+#ifndef DISABLE_CASACORE_IN_BANDDATA
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
 
 #include <casacore/tables/Tables/ArrayColumn.h>
 #include <casacore/tables/Tables/ScalarColumn.h>
+#endif
 
 #include <algorithm>
+#include <cassert>
+#include <set>
 #include <stdexcept>
 
+#include "optionalnumber.h"
+#include "vectormap.h"
+
+#include "io/serialistream.h"
+#include "io/serialostream.h"
+
 namespace aocommon {
+
+/**
+ * Iterator over a multibanddata that provides const BandData references.
+ */
+class MultiBandDataConstIterator {
+ public:
+  using value_type = const BandData;
+  using pointer = const BandData*;
+  using reference = const BandData&;
+  using difference_type = std::ptrdiff_t;
+  using iterator_category = std::forward_iterator_tag;
+
+  MultiBandDataConstIterator& operator++() {
+    assert(iterator_ != end_);
+    ++iterator_;
+    while (iterator_ != end_ && !iterator_->first) ++iterator_;
+    return *this;
+  }
+
+  MultiBandDataConstIterator operator++(int) {
+    assert(iterator_ != end_);
+    MultiBandDataConstIterator before(*this);
+    ++iterator_;
+    while (iterator_ != end_ && !iterator_->first) ++iterator_;
+    return before;
+  }
+
+  const BandData& operator*() const { return iterator_->second; }
+  const BandData* operator->() const { return &iterator_->second; }
+
+  bool operator==(const MultiBandDataConstIterator& rhs) const {
+    return iterator_ == rhs.iterator_;
+  }
+
+ protected:
+  using parent_const_iterator = VectorMap<
+      std::pair<aocommon::OptionalNumber<size_t>, BandData>>::const_iterator;
+  MultiBandDataConstIterator(parent_const_iterator iter,
+                             parent_const_iterator end_iter)
+      : iterator_(iter), end_(end_iter) {
+    while (iterator_ != end_ && !iterator_->first) ++iterator_;
+  }
+
+  parent_const_iterator iterator_;
+  parent_const_iterator end_;
+  friend class MultiBandData;
+};
+
+/**
+ * Iterator over a multibanddata that provides (writable) BandData references.
+ */
+class MultiBandDataIterator final : public MultiBandDataConstIterator {
+ public:
+  using value_type = BandData;
+  using pointer = BandData*;
+  using reference = BandData&;
+
+  BandData& operator*() const {
+    // Because MultiBandDataConstIterator is used as base, iterator_ is a
+    // const iterator. It's however certain that it points to a non-const
+    // object, because the constructor of MultiBandDataIterator takes
+    // a non-const iterator.
+    return const_cast<BandData&>(iterator_->second);
+  }
+  BandData* operator->() const {
+    return const_cast<BandData*>(&iterator_->second);
+  }
+
+ private:
+  using parent_iterator = VectorMap<
+      std::pair<aocommon::OptionalNumber<size_t>, BandData>>::iterator;
+  MultiBandDataIterator(parent_iterator iter, parent_iterator end_iter)
+      : MultiBandDataConstIterator(iter, end_iter) {}
+  friend class MultiBandData;
+};
+
+/**
+ * Iterator over a multibanddata that provides (only) the data desc ids.
+ */
+class DataDescIdIterator {
+ public:
+  using value_type = size_t;
+  using pointer = size_t*;
+  // 'reference' should be the type returned by operator* (not necessarily a
+  // reference for an input iterator).
+  using reference = size_t;
+  using difference_type = std::ptrdiff_t;
+  using iterator_category = std::forward_iterator_tag;
+
+  DataDescIdIterator& operator++() {
+    assert(iterator_ != data_->end());
+    ++iterator_;
+    while (iterator_ != data_->end() && !iterator_->first) ++iterator_;
+    return *this;
+  }
+
+  DataDescIdIterator operator++(int) {
+    assert(iterator_ != data_->end());
+    DataDescIdIterator before(*this);
+    ++iterator_;
+    while (iterator_ != data_->end() && !iterator_->first) ++iterator_;
+    return before;
+  }
+
+  size_t operator*() const {
+    assert(iterator_ != data_->end());
+    assert(iterator_->first);
+    return iterator_ - data_->begin();
+  }
+
+  bool operator==(const DataDescIdIterator& rhs) const {
+    return iterator_ == rhs.iterator_;
+  }
+
+ private:
+  friend class DataDescIdRange;
+  using element_type = std::pair<aocommon::OptionalNumber<size_t>, BandData>;
+  using parent_const_iterator = VectorMap<element_type>::const_iterator;
+  DataDescIdIterator(parent_const_iterator iter,
+                     const VectorMap<element_type>& data)
+      : iterator_(iter), data_(&data) {
+    while (iterator_ != data_->end() && !iterator_->first) ++iterator_;
+  }
+
+  parent_const_iterator iterator_;
+  const VectorMap<element_type>* data_;
+};
+
+/**
+ * Class that can provide the begin and end iterators for iterating over the
+ * data desc ids of a multiband. This is used in @ref
+ * MultiBandData::DataDescIds().
+ */
+class DataDescIdRange {
+ public:
+  using iterator = DataDescIdIterator;
+  using const_iterator = DataDescIdIterator;
+
+  DataDescIdIterator begin() const {
+    return DataDescIdIterator(data_->begin(), *data_);
+  }
+
+  DataDescIdIterator end() const {
+    return DataDescIdIterator(data_->end(), *data_);
+  }
+
+ private:
+  friend class MultiBandData;
+  using element_type = DataDescIdIterator::element_type;
+  DataDescIdRange(const VectorMap<element_type>& data) : data_(&data) {}
+
+  const VectorMap<element_type>* data_;
+};
+
 /**
  * Contains information about a set of bands. This follows the CASA Measurement
  * Set model; one MultiBandData instance can contain the band information
  * contained in the CASA Measurement Set.
+ *
+ * The interface allows "missing data descriptions", e.g. the class supports
+ * that only data desc id 0 and 3 are defined. Before accessing a band by its
+ * data desc id, the caller should check using @ref HasDataDescId() if the data
+ * desc id exists.
+ *
+ * The casacore measurement set does not allow such 'missing' data desc ids,
+ * because data descriptions are indexed by its row numbers (and an 'empty' row
+ * is not allowed). The X-radio format may however specify non-consecutive
+ * band/data description ids. Missing data desc ids could also occur because
+ * some data desc ids are not selected in the wsclean call.
  */
 class MultiBandData {
  public:
-  using iterator = std::vector<BandData>::iterator;
-  using const_iterator = std::vector<BandData>::const_iterator;
+  using iterator = MultiBandDataIterator;
+  using const_iterator = MultiBandDataConstIterator;
 
   /**
    * Construct an empty MultiBandData.
    */
   MultiBandData() = default;
 
+#ifndef DISABLE_CASACORE_IN_BANDDATA
   /**
    * Construct a MultiBandData from a Measurement Set.
    * @param ms A measurement set. MultiBandData reads the spectral window table
@@ -42,19 +222,17 @@ class MultiBandData {
    */
   MultiBandData(const casacore::MSSpectralWindow& spw_table,
                 const casacore::MSDataDescription& data_desc_table)
-      : data_desc_to_band_(data_desc_table.nrow()),
-        band_data_(spw_table.nrow()) {
-    for (size_t spw = 0; spw != band_data_.size(); ++spw) {
-      band_data_[spw] = BandData(spw_table, spw);
-    }
-
+      : band_data_(data_desc_table.nrow()) {
     casacore::ScalarColumn<int> spw_column(
         data_desc_table,
         casacore::MSDataDescription::columnName(
             casacore::MSDataDescriptionEnums::SPECTRAL_WINDOW_ID));
-    for (size_t id = 0; id != data_desc_to_band_.size(); ++id)
-      data_desc_to_band_[id] = spw_column(id);
+    for (size_t id = 0; id != band_data_.Size(); ++id) {
+      const size_t spw = spw_column(id);
+      band_data_[id] = std::pair(spw, BandData(spw_table, spw));
+    }
   }
+#endif
 
   /**
    * Construct a MultiBandData from another instance but only select a part of
@@ -69,13 +247,13 @@ class MultiBandData {
    */
   MultiBandData(const MultiBandData& source, size_t start_channel,
                 size_t end_channel)
-      : data_desc_to_band_(source.data_desc_to_band_),
-        band_data_(source.BandCount()) {
-    for (size_t spw = 0; spw != source.BandCount(); ++spw) {
+      : band_data_(source.band_data_.Size()) {
+    for (size_t data_desc_id : source.DataDescIds()) {
+      const element_type& source_band = source.band_data_[data_desc_id];
       // In case end_channel is beyond the nr of channels in this band,
       // set end_channel to the last channel of this band.
       const size_t band_end_channel =
-          std::min(source.band_data_[spw].ChannelCount(), end_channel);
+          std::min(source_band.second.ChannelCount(), end_channel);
       if (start_channel > band_end_channel)
         throw std::runtime_error(
             "Invalid band selection: MultiBandData constructed with "
@@ -84,8 +262,9 @@ class MultiBandData {
             std::to_string(band_end_channel) + ", source bandwidth = " +
             std::to_string(source.LowestFrequency() / 1e6) + " - " +
             std::to_string(source.HighestFrequency() / 1e6) + " MHz.");
-      band_data_[spw] =
-          BandData(source.band_data_[spw], start_channel, band_end_channel);
+      band_data_[data_desc_id] = std::pair(
+          source_band.first,
+          BandData(source_band.second, start_channel, band_end_channel));
     }
   }
 
@@ -96,31 +275,68 @@ class MultiBandData {
    * @returns The BandData for the requested band.
    */
   const BandData& operator[](size_t data_desc_id) const {
-    return band_data_[data_desc_to_band_[data_desc_id]];
+    assert(HasDataDescId(data_desc_id));
+    return band_data_[data_desc_id].second;
   }
 
   /**
    * Get number of bands stored.
    * @returns Number of bands.
    */
-  size_t BandCount() const { return band_data_.size(); }
+  size_t BandCount() const {
+    return std::count_if(band_data_.begin(), band_data_.end(),
+                         [](const element_type& element) -> bool {
+                           return element.first.HasValue();
+                         });
+  }
 
   /**
-   * Returns the unique number of data description IDs.
+   * Returns the largest data description id, or zero if empty.
    * @returns Unique number of data desc IDs.
    */
-  size_t DataDescCount() const { return data_desc_to_band_.size(); }
+  size_t HighestDataDescId() const {
+    return std::max<size_t>(1, band_data_.Size()) - 1;
+  }
 
   /**
-   * Get lowest frequency.
+   * Returns the largest data description id, or zero if empty.
+   * @returns Unique number of data desc IDs.
+   */
+  size_t HighestBandId() const {
+    constexpr auto compare = [](const element_type& lhs,
+                                const element_type& rhs) -> bool {
+      return lhs.first < rhs.first;
+    };
+    return band_data_.Empty() ? 0
+                              : *std::max_element(band_data_.begin(),
+                                                  band_data_.end(), compare)
+                                     ->first;
+  }
+
+  /**
+   * Get lowest frequency. Returns zero when empty.
    * @returns The channel frequency of the channel with lowest frequency.
    */
   double LowestFrequency() const {
-    if (band_data_.empty()) return 0.0;
-    double freq = band_data_[0].LowestFrequency();
-    for (size_t i = 0; i != band_data_.size(); ++i)
-      freq = std::min(freq, band_data_[i].LowestFrequency());
-    return freq;
+    double freq = std::numeric_limits<double>::max();
+    for (size_t i = 0; i != band_data_.Size(); ++i) {
+      if (band_data_[i].first)
+        freq = std::min(freq, band_data_[i].second.LowestFrequency());
+    }
+    return freq == std::numeric_limits<double>::max() ? 0.0 : freq;
+  }
+
+  /**
+   * Get smallest wavelength. Returns zero when empty.
+   */
+  double ShortestWavelength() const {
+    double wavelength = std::numeric_limits<double>::max();
+    for (size_t i = 0; i != band_data_.Size(); ++i) {
+      if (band_data_[i].first)
+        wavelength =
+            std::min(wavelength, band_data_[i].second.SmallestWavelength());
+    }
+    return wavelength == std::numeric_limits<double>::max() ? 0.0 : wavelength;
   }
 
   /**
@@ -130,15 +346,26 @@ class MultiBandData {
   double CentreFrequency() const { return (BandStart() + BandEnd()) * 0.5; }
 
   /**
-   * Get highest frequency.
+   * Get highest frequency. Returns zero when empty.
    * @returns The channel frequency of the channel with highest frequency.
    */
   double HighestFrequency() const {
-    if (band_data_.empty()) return 0.0;
-    double freq = band_data_[0].HighestFrequency();
-    for (size_t i = 0; i != band_data_.size(); ++i)
-      freq = std::max(freq, band_data_[i].HighestFrequency());
+    double freq = 0.0;
+    for (const element_type& band : band_data_) {
+      freq = std::max(freq, band.second.HighestFrequency());
+    }
     return freq;
+  }
+
+  /**
+   * Get longest wavelength. Returns zero when empty.
+   */
+  double LongestWavelength() const {
+    double wavelength = 0.0;
+    for (const element_type& band : band_data_) {
+      wavelength = std::max(wavelength, band.second.LongestWavelength());
+    }
+    return wavelength;
   }
 
   /**
@@ -148,28 +375,29 @@ class MultiBandData {
   double Bandwidth() const { return BandEnd() - BandStart(); }
 
   /**
-   * Get the start frequency of the lowest frequency channel.
+   * Get the start frequency of the lowest frequency channel, or zero when
+   * empty.
    * @return Start of covered bandwidth.
    */
   double BandStart() const {
-    if (band_data_.empty()) return 0.0;
-    double freq = std::min(band_data_[0].BandStart(), band_data_[0].BandEnd());
-    for (size_t i = 0; i != band_data_.size(); ++i)
-      freq = std::min(
-          freq, std::min(band_data_[i].BandStart(), band_data_[i].BandEnd()));
-    return freq;
+    double freq = std::numeric_limits<double>::max();
+    for (size_t i = 0; i != band_data_.Size(); ++i) {
+      if (band_data_[i].first)
+        freq = std::min(freq, std::min(band_data_[i].second.BandStart(),
+                                       band_data_[i].second.BandEnd()));
+    }
+    return freq == std::numeric_limits<double>::max() ? 0.0 : freq;
   }
 
   /**
-   * Get the end frequency of the highest frequency channel.
+   * Get the end frequency of the highest frequency channel, or zero when empty.
    * @return End of covered bandwidth.
    */
   double BandEnd() const {
-    if (band_data_.empty()) return 0.0;
-    double freq = std::max(band_data_[0].BandStart(), band_data_[0].BandEnd());
-    for (size_t i = 0; i != band_data_.size(); ++i)
-      freq = std::max(
-          freq, std::max(band_data_[i].BandStart(), band_data_[i].BandEnd()));
+    double freq = 0.0;
+    for (size_t i = 0; i != band_data_.Size(); ++i)
+      freq = std::max(freq, std::max(band_data_[i].second.BandStart(),
+                                     band_data_[i].second.BandEnd()));
     return freq;
   }
 
@@ -180,9 +408,43 @@ class MultiBandData {
    * table that describes the band in a measurement set.
    */
   size_t GetBandIndex(size_t data_desc_id) const {
-    return data_desc_to_band_[data_desc_id];
+    assert(HasDataDescId(data_desc_id));
+    return *band_data_[data_desc_id].first;
   }
 
+  /**
+   * Returns true if this multibanddata has a band associated with the
+   * specified data desc id.
+   */
+  bool HasDataDescId(size_t data_desc_id) const {
+    return data_desc_id < band_data_.Size() &&
+           band_data_[data_desc_id].first.HasValue();
+  }
+
+  size_t MaxBandChannels() const {
+    size_t max_channels = 0;
+    for (const element_type& band : band_data_)
+      max_channels = std::max(max_channels, band.second.ChannelCount());
+    return max_channels;
+  }
+
+  /**
+   * Returns the data desc id of the band with the largest number of channels.
+   * If there are multiple, it will return the first one.
+   */
+  size_t DataDescIdWithMaxChannels() const {
+    size_t max_channel_data_desc_id = 0;
+    size_t max_channels = 0;
+    for (size_t data_desc_id : DataDescIds()) {
+      if (band_data_[data_desc_id].second.ChannelCount() > max_channels) {
+        max_channel_data_desc_id = data_desc_id;
+        max_channels = band_data_[data_desc_id].second.ChannelCount();
+      }
+    }
+    return max_channel_data_desc_id;
+  }
+
+#ifndef DISABLE_CASACORE_IN_BANDDATA
   /**
    * Compose a list of dataDescIds that are used in the measurement set.
    * "Used" here means it is references from the main table.
@@ -194,7 +456,7 @@ class MultiBandData {
     // If there is only one band, we assume it is used so as to avoid
     // scanning through the measurement set
     std::set<size_t> used_data_desc_ids;
-    if (band_data_.size() == 1)
+    if (band_data_.Size() == 1)
       used_data_desc_ids.insert(0);
     else {
       casacore::ScalarColumn<int> dataDescIdCol(
@@ -208,30 +470,80 @@ class MultiBandData {
     }
     return used_data_desc_ids;
   }
+#endif
 
   /**
    * Adds a new band at the end of the list of bands.
-   * The band will be linked to the first available data_desc_id, which
-   * is the number returned by @ref DataDescCount().
+   * The band will be linked to the first available data_desc_id.
    * @returns the data_desc_id of this band.
    */
   size_t AddBand(const BandData& data) {
-    const size_t data_desc_id = data_desc_to_band_.size();
-    const size_t band_id = band_data_.size();
-    data_desc_to_band_.emplace_back(band_id);
-    band_data_.emplace_back(data);
+    const size_t data_desc_id = band_data_.Size();
+    const size_t band_id = band_data_.Empty() ? 0 : HighestBandId() + 1;
+    band_data_.EmplaceBack(band_id, data);
     return data_desc_id;
   }
 
-  iterator begin() { return band_data_.begin(); }
-  const_iterator begin() const { return band_data_.begin(); }
+  /**
+   * Add or replace a band and associate it with a specified data_desc_id.
+   */
+  void SetBand(size_t data_desc_id, const BandData& data) {
+    const size_t band_id = band_data_.Empty() ? 0 : HighestBandId() + 1;
+    band_data_.AlwaysEmplace(data_desc_id, element_type(band_id, data));
+  }
 
-  iterator end() { return band_data_.end(); }
-  const_iterator end() const { return band_data_.end(); }
+  iterator begin() { return iterator(band_data_.begin(), band_data_.end()); }
+  const_iterator begin() const {
+    return const_iterator(band_data_.begin(), band_data_.end());
+  }
+
+  iterator end() { return iterator(band_data_.end(), band_data_.end()); }
+  const_iterator end() const {
+    return const_iterator(band_data_.end(), band_data_.end());
+  }
+
+  /**
+   * Returns a class that can be used to iterate over the DataDescIds in the
+   * MultiBandData. The typical usage is inside a ranged for construct:
+   *
+   *     const MultiBandData bands = ...
+   *     for(size_t data_desc_id : bands.DataDescIds()) {
+   *       // process data_desc_id
+   *     }
+   */
+  DataDescIdRange DataDescIds() const { return DataDescIdRange(band_data_); }
+
+  void Serialize(aocommon::SerialOStream& stream) const {
+    stream.UInt64(band_data_.Size());
+    for (const element_type& item : band_data_) {
+      stream.Bool(item.first.HasValue());
+      if (item.first) {
+        stream.UInt64(*item.first);
+        item.second.Serialize(stream);
+      }
+    }
+  }
+
+  void Unserialize(aocommon::SerialIStream& stream) {
+    band_data_.Clear();
+    const size_t n = stream.UInt64();
+    for (size_t i = 0; i != n; ++i) {
+      element_type& item = band_data_.EmplaceBack();
+      if (stream.Bool()) {
+        item.first = stream.UInt64();
+        item.second.Unserialize(stream);
+      }
+    }
+  }
 
  private:
-  std::vector<size_t> data_desc_to_band_;
-  std::vector<BandData> band_data_;
+  /**
+   * This map is indexed by data_desc_id. Bands that have not
+   * been set are left default constructed. The first value maps
+   * the data_desc_id to the band index.
+   */
+  using element_type = std::pair<aocommon::OptionalNumber<size_t>, BandData>;
+  VectorMap<element_type> band_data_;
 };
 
 }  // namespace aocommon

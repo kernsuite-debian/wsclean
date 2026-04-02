@@ -17,11 +17,11 @@
 #include <boost/geometry/geometries/linestring.hpp>
 #include <boost/geometry/algorithms/is_convex.hpp>
 
-// Even though Pixels are int, let boost perform the intersection
+// Even though PixelPositions are int, let boost perform the intersection
 // calculations based on floats to avoid rounding issues
-BOOST_GEOMETRY_REGISTER_POINT_2D(schaapcommon::facets::Pixel, float,
+BOOST_GEOMETRY_REGISTER_POINT_2D(schaapcommon::facets::PixelPosition, float,
                                  cs::cartesian, x, y)
-BOOST_GEOMETRY_REGISTER_RING(std::vector<schaapcommon::facets::Pixel>)
+BOOST_GEOMETRY_REGISTER_RING(std::vector<schaapcommon::facets::PixelPosition>)
 
 namespace schaapcommon {
 namespace facets {
@@ -34,62 +34,6 @@ void Coord::Unserialize(aocommon::SerialIStream& stream) {
   stream.Double(ra).Double(dec);
 }
 
-void Pixel::Serialize(aocommon::SerialOStream& stream) const {
-  stream.UInt32(x).UInt32(y);
-}
-
-void Pixel::Unserialize(aocommon::SerialIStream& stream) {
-  stream.UInt32(x).UInt32(y);
-}
-
-BoundingBox::BoundingBox(const std::vector<Pixel>& pixels, size_t align,
-                         bool make_square) {
-  if (pixels.empty()) {
-    throw std::invalid_argument("Cannot create boundingbox for 0 pixels");
-  }
-
-  min_ = max_ = pixels.front();
-  for (auto i = pixels.begin() + 1; i != pixels.end(); ++i) {
-    min_.x = std::min(min_.x, i->x);
-    max_.x = std::max(max_.x, i->x);
-    min_.y = std::min(min_.y, i->y);
-    max_.y = std::max(max_.y, i->y);
-  }
-
-  if (make_square) {
-    const size_t width = max_.x - min_.x;
-    const size_t height = max_.y - min_.y;
-    if (width > height) {
-      // Adapt height
-      min_.y -= (width - height) / 2;
-      max_.y = min_.y + width;
-    } else {
-      // Adapt width
-      min_.x -= (height - width) / 2;
-      max_.x = min_.x + height;
-    }
-  }
-
-  if (align > 1) {
-    const size_t width = max_.x - min_.x;
-    const size_t height = max_.y - min_.y;
-    const size_t align_x = width % align ? align - width % align : 0u;
-    const size_t align_y = height % align ? align - height % align : 0u;
-    min_.x -= align_x / 2;
-    min_.y -= align_y / 2;
-    max_.x += (align_x + 1) / 2;
-    max_.y += (align_y + 1) / 2;
-  }
-}
-
-void BoundingBox::Serialize(aocommon::SerialOStream& stream) const {
-  stream.Object(min_).Object(max_);
-}
-
-void BoundingBox::Unserialize(aocommon::SerialIStream& stream) {
-  stream.Object(min_).Object(max_);
-}
-
 std::vector<std::pair<int, int>> Facet::HorizontalIntersections(
     const int y_intersect) const {
   std::vector<std::pair<int, int>> result;
@@ -97,7 +41,7 @@ std::vector<std::pair<int, int>> Facet::HorizontalIntersections(
     return result;
   }
 
-  std::vector<Pixel> poly = pixels_;
+  std::vector<PixelPosition> poly = pixels_;
   boost::geometry::correct(poly);
 
 #ifdef HAVE_BOOST_LT_166
@@ -111,8 +55,8 @@ std::vector<std::pair<int, int>> Facet::HorizontalIntersections(
   int x2 = 0;
   size_t i;
   for (i = 0; i != pixels_.size(); ++i) {
-    const Pixel& p1 = pixels_[i];
-    const Pixel& p2 = pixels_[(i + 1) % pixels_.size()];
+    const PixelPosition& p1 = pixels_[i];
+    const PixelPosition& p2 = pixels_[(i + 1) % pixels_.size()];
     if ((p1.y <= y_intersect && p2.y > y_intersect) ||
         (p2.y <= y_intersect && p1.y > y_intersect)) {
       int x;
@@ -139,11 +83,14 @@ std::vector<std::pair<int, int>> Facet::HorizontalIntersections(
   assert(i != pixels_.size());
   if (x1 != x2) result.push_back(std::minmax(x1, x2));
 #else
-  using Line = boost::geometry::model::linestring<schaapcommon::facets::Pixel>;
+  using Line =
+      boost::geometry::model::linestring<schaapcommon::facets::PixelPosition>;
 
   Line l;
-  l.push_back(schaapcommon::facets::Pixel(trimmed_box_.Min().x, y_intersect));
-  l.push_back(schaapcommon::facets::Pixel(trimmed_box_.Max().x, y_intersect));
+  l.push_back(
+      schaapcommon::facets::PixelPosition(trimmed_box_.Min().x, y_intersect));
+  l.push_back(
+      schaapcommon::facets::PixelPosition(trimmed_box_.Max().x, y_intersect));
   std::vector<Line> intersections;
   boost::geometry::intersection(l, poly, intersections);
 
@@ -154,17 +101,18 @@ std::vector<std::pair<int, int>> Facet::HorizontalIntersections(
   return result;
 }
 
-Pixel Facet::Centroid() const {
+PixelPosition Facet::Centroid() const {
   using point_f =
       boost::geometry::model::point<float, 2, boost::geometry::cs::cartesian>;
   boost::geometry::model::polygon<point_f> poly;
 
-  point_f x;
-  for (const Pixel& pixel : pixels_) {
+  for (const PixelPosition& pixel : pixels_) {
     boost::geometry::append(poly, point_f(pixel.x, pixel.y));
   }
+
+  point_f x{};
   boost::geometry::centroid(poly, x);
-  return Pixel(x.get<0>(), x.get<1>());
+  return {int(x.get<0>()), int(x.get<1>())};
 }
 
 namespace {
@@ -186,17 +134,17 @@ BoundingBox CalculateUntrimmedBox(const Facet::InitializationData& data,
       static_cast<size_t>(std::ceil(trimmed_box.Height() * data.padding));
 
   // Calculate padding. Divide by two since the padding occurs on both sides.
-  const Pixel pad((width - trimmed_box.Width()) / 2,
-                  (height - trimmed_box.Height()) / 2);
+  const PixelPosition pad((width - trimmed_box.Width()) / 2,
+                          (height - trimmed_box.Height()) / 2);
 
   // Create the padded, squared and aligned bounding box for the facet.
   return BoundingBox({trimmed_box.Min() - pad, trimmed_box.Max() + pad},
                      data.align, data.make_square);
 }
 
-Pixel RaDecToXY(const Facet::InitializationData& data,
-                const Coord& coordinate) {
-  Pixel pixel;
+PixelPosition RaDecToXY(const Facet::InitializationData& data,
+                        const Coord& coordinate) {
+  PixelPosition pixel;
   double l;
   double m;
   aocommon::ImageCoordinates::RaDecToLM(coordinate.ra, coordinate.dec,
@@ -210,7 +158,8 @@ Pixel RaDecToXY(const Facet::InitializationData& data,
   return pixel;
 }
 
-Coord XYToRaDec(const Facet::InitializationData& data, const Pixel& pixel) {
+Coord XYToRaDec(const Facet::InitializationData& data,
+                const PixelPosition& pixel) {
   Coord coordinates;
   double l;
   double m;
@@ -253,21 +202,29 @@ Facet::Facet(const InitializationData& data, std::vector<Coord> coordinates,
   }
 
   if (need_clip) {
-    std::vector<Pixel> image_box{Pixel(0, 0), Pixel(0, data.image_height),
-                                 Pixel(data.image_width, data.image_height),
-                                 Pixel(data.image_width, 0), Pixel(0, 0)};
+    std::vector<PixelPosition> image_box{
+        PixelPosition(0, 0), PixelPosition(0, data.image_height),
+        PixelPosition(data.image_width, data.image_height),
+        PixelPosition(data.image_width, 0), PixelPosition(0, 0)};
     pixels_ = PolygonIntersection(pixels_, image_box);
   }
 
   if (!pixels_.empty()) {
     // Calculate bounding box for the pixels only, and set min_y_ and max_y_.
-    BoundingBox pixel_box(pixels_);
+    const BoundingBox pixel_box(pixels_);
     min_y_ = pixel_box.Min().y;
     max_y_ = pixel_box.Max().y;
 
     // Calculate the trimmed_box_.
-    trimmed_box_ = BoundingBox({pixel_box.Min(), pixel_box.Max()}, data.align,
-                               data.make_square);
+    const std::vector<PixelPosition> boundary_positions{pixel_box.Min(),
+                                                        pixel_box.Max()};
+    trimmed_box_ = BoundingBox(boundary_positions, data.align, data.make_square,
+                               data.feather_size, data.image_width,
+                               data.image_height, false);
+
+    convolution_box_ = BoundingBox(boundary_positions, data.align,
+                                   data.make_square, data.feather_size,
+                                   data.image_width, data.image_height, true);
 
     untrimmed_box_ = CalculateUntrimmedBox(data, trimmed_box_);
 
@@ -298,22 +255,24 @@ Facet::Facet(const InitializationData& data, const BoundingBox& box)
     trimmed_box_ =
         BoundingBox({box.Min(), box.Max()}, data.align, data.make_square);
   }
+  convolution_box_ = trimmed_box_;
   coords_.reserve(pixels_.size());
-  for (const Pixel& pixel : pixels_) {
+  for (const PixelPosition& pixel : pixels_) {
     coords_.push_back(XYToRaDec(data, pixel));
   }
 }
 
-std::vector<Pixel> Facet::PolygonIntersection(std::vector<Pixel> poly1,
-                                              std::vector<Pixel> poly2) {
+std::vector<PixelPosition> Facet::PolygonIntersection(
+    std::vector<PixelPosition> poly1, std::vector<PixelPosition> poly2) {
   // Make polygons clockwise and append closing point when needed.
   // This is the reason why poly1 and poly2 are passed by value.
   boost::geometry::correct(poly1);
   boost::geometry::correct(poly2);
 
-  std::vector<std::vector<Pixel>> poly_results;
-  boost::geometry::intersection<std::vector<Pixel>, std::vector<Pixel>>(
-      poly1, poly2, poly_results);
+  std::vector<std::vector<PixelPosition>> poly_results;
+  boost::geometry::intersection<std::vector<PixelPosition>,
+                                std::vector<PixelPosition>>(poly1, poly2,
+                                                            poly_results);
   if (poly_results.size() == 1) {
     // Return intersection points, except for closing point.
     poly_results.front().resize(poly_results.front().size() - 1);
@@ -327,28 +286,20 @@ std::vector<Pixel> Facet::PolygonIntersection(std::vector<Pixel> poly1,
   }
 }
 
-bool Facet::Contains(const Pixel& pixel) const {
-  std::vector<Pixel> polygon = pixels_;
-  boost::geometry::correct(polygon);
+bool Facet::Contains(const PixelPosition& pixel) const {
+  // This function previously used the boost::geometry::covered_by() function,
+  // but this function caused rounding issues, which could cause two adjacent
+  // facets to both return false for a point on their bounding edge.
+  const std::vector<std::pair<int, int>> intersections =
+      HorizontalIntersections(pixel.y);
+  if (intersections.empty()) return false;
 
-  bool inClosedPolygon = boost::geometry::covered_by(pixel, polygon);
-
-  if (!inClosedPolygon) {
-    return false;
-  } else {
-    // Pixel is in the closed polygon, but we should exclude it from
-    // zero-length corners and edges that are "owned" by another facet
-    const std::vector<std::pair<int, int>> intersections =
-        HorizontalIntersections(pixel.y);
-    if (intersections.empty()) return false;
-
-    for (const auto& isect : intersections) {
-      if (isect.second == pixel.x) {
-        return false;
-      }
+  for (const auto& isect : intersections) {
+    if (isect.first <= pixel.x && isect.second > pixel.x) {
+      return true;
     }
-    return true;
   }
+  return false;
 }
 
 void Facet::Serialize(aocommon::SerialOStream& stream) const {
@@ -359,7 +310,8 @@ void Facet::Serialize(aocommon::SerialOStream& stream) const {
       .Object(dir_)
       .String(direction_label_)
       .Object(trimmed_box_)
-      .Object(untrimmed_box_);
+      .Object(untrimmed_box_)
+      .Object(convolution_box_);
 }
 
 void Facet::Unserialize(aocommon::SerialIStream& stream) {
@@ -370,7 +322,8 @@ void Facet::Unserialize(aocommon::SerialIStream& stream) {
       .Object(dir_)
       .String(direction_label_)
       .Object(trimmed_box_)
-      .Object(untrimmed_box_);
+      .Object(untrimmed_box_)
+      .Object(convolution_box_);
 }
 
 }  // namespace facets

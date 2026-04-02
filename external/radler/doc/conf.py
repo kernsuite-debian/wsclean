@@ -12,7 +12,6 @@
 #
 import os
 import sys
-
 from datetime import date
 
 # Make sure that it refers to the shared object file from current build
@@ -45,7 +44,6 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "breathe",
-    "myst_parser",
 ]
 
 # Disable typehints in signatures - doens't seem to take any effect

@@ -109,7 +109,7 @@ void ImageSet::LoadAndAverage(bool use_residual_image) {
 
   Image scratch(Width(), Height());
 
-  aocommon::UVector<double> averaged_weights(images_.size(), 0.0);
+  std::vector<double> averaged_weights(images_.size(), 0.0);
   size_t image_index = 0;
   for (const std::vector<size_t>& group : work_table_.DeconvolutionGroups()) {
     const size_t deconvolution_channel_start_index = image_index;
@@ -123,8 +123,12 @@ void ImageSet::LoadAndAverage(bool use_residual_image) {
         LoadImage(use_residual_image ? *entry_ptr->residual_accessor
                                      : *entry_ptr->model_accessor,
                   scratch);
-        images_[image_index].AddWithFactor(scratch, entry_ptr->image_weight);
-        averaged_weights[image_index] += entry_ptr->image_weight;
+        // If the weight is zero, the image may contain NaNs, so in that case do
+        // not include the image.
+        if (entry_ptr->image_weight != 0.0) {
+          images_[image_index].AddWithFactor(scratch, entry_ptr->image_weight);
+          averaged_weights[image_index] += entry_ptr->image_weight;
+        }
         ++image_index;
       }
     }
@@ -135,8 +139,7 @@ void ImageSet::LoadAndAverage(bool use_residual_image) {
   }
 }
 
-[[nodiscard]] std::vector<std::vector<aocommon::Image>>
-ImageSet::LoadAndAveragePsfs() const {
+std::vector<std::vector<aocommon::Image>> ImageSet::LoadAndAveragePsfs() const {
   std::vector<std::vector<aocommon::Image>> result;
 
   // The PSF accessor vectors in each group should have equal shapes:
@@ -204,7 +207,7 @@ ImageSet::LoadAndAveragePsfs() const {
 }
 
 void ImageSet::InterpolateAndStoreModel(
-    const schaapcommon::fitters::SpectralFitter& fitter, size_t thread_count) {
+    const schaapcommon::fitters::SpectralFitter& fitter) {
   if (NDeconvolutionChannels() == NOriginalChannels()) {
     size_t image_index = 0;
     for (const WorkTableEntry& e : work_table_) {
@@ -212,60 +215,74 @@ void ImageSet::InterpolateAndStoreModel(
       ++image_index;
     }
   } else {
-    Logger::Info << "Interpolating from " << NDeconvolutionChannels() << " to "
-                 << NOriginalChannels() << " channels...\n";
+    const WorkTable::Group& first_group = work_table_.OriginalGroups().front();
+    const size_t n_polarizations = first_group.size();
+    for (size_t polarization_index = 0; polarization_index != n_polarizations;
+         ++polarization_index) {
+      Logger::Info << "Interpolating "
+                   << aocommon::Polarization::TypeToFullString(
+                          first_group[polarization_index]->polarization)
+                   << " from " << NDeconvolutionChannels() << " to "
+                   << NOriginalChannels() << " channels...\n";
 
-    // TODO should use spectralimagefitter to do the interpolation of images;
-    // here we should just unpack the data structure
+      const WorkTable::Group same_polarization_group =
+          work_table_.GetOriginalSamePolarizationGroup(
+              first_group[polarization_index]->polarization);
 
-    // The following loop will make an 'image' with at each pixel
-    // the terms of the fit. By doing this first, it is not necessary
-    // to have all channel images in memory at the same time.
-    // TODO: this assumes that polarizations are not joined!
-    size_t n_terms = fitter.NTerms();
-    aocommon::UVector<float> terms_image(Width() * Height() * n_terms);
-    aocommon::StaticFor<size_t> loop(thread_count);
-    loop.Run(0, Height(), [&](size_t y_start, size_t y_end) {
-      aocommon::UVector<float> spectral_pixel(NDeconvolutionChannels());
-      std::vector<float> terms_pixel;
-      for (size_t y = y_start; y != y_end; ++y) {
-        size_t px = y * Width();
-        for (size_t x = 0; x != Width(); ++x) {
-          bool is_zero = true;
-          for (size_t s = 0; s != images_.size(); ++s) {
-            float value = images_[s][px];
-            spectral_pixel[s] = value;
-            is_zero = is_zero && (value == 0.0);
-          }
-          float* terms_ptr = &terms_image[px * n_terms];
-          // Skip fitting if it is zero; most of model images will be zero, so
-          // this can save a lot of time.
-          if (is_zero) {
-            std::fill_n(terms_ptr, n_terms, 0.0);
-          } else {
-            fitter.Fit(terms_pixel, spectral_pixel.data(), x, y);
-            std::copy_n(terms_pixel.cbegin(), n_terms, terms_ptr);
-          }
-          ++px;
-        }
-      }
-    });
+      // TODO should use spectralimagefitter to do the interpolation of images;
+      // here we should just unpack the data structure
 
-    // Now that we know the fit for each pixel, evaluate the function for each
-    // pixel of each output channel.
-    Image scratch(Width(), Height());
-    for (const WorkTableEntry& e : work_table_) {
-      double freq = e.CentralFrequency();
-      loop.Run(0, Width() * Height(), [&](size_t px_start, size_t px_end) {
+      // The following loop will make an 'image' with at each pixel
+      // the terms of the fit. By doing this first, it is not necessary
+      // to have all channel images in memory at the same time.
+      const size_t n_terms = fitter.NTerms();
+      aocommon::UVector<float> terms_image(Width() * Height() * n_terms);
+      aocommon::StaticFor<size_t> loop;
+      loop.Run(0, Height(), [&](size_t y_start, size_t y_end) {
+        aocommon::UVector<float> spectral_pixel(NDeconvolutionChannels());
         std::vector<float> terms_pixel;
-        for (size_t px = px_start; px != px_end; ++px) {
-          const float* terms_ptr = &terms_image[px * n_terms];
-          terms_pixel.assign(terms_ptr, terms_ptr + n_terms);
-          scratch[px] = fitter.Evaluate(terms_pixel, freq);
+        for (size_t y = y_start; y != y_end; ++y) {
+          size_t px = y * Width();
+          for (size_t x = 0; x != Width(); ++x) {
+            bool is_zero = true;
+            for (size_t channel = 0; channel != NDeconvolutionChannels();
+                 ++channel) {
+              const size_t image_index =
+                  channel * n_polarizations + polarization_index;
+              float value = images_[image_index][px];
+              spectral_pixel[channel] = value;
+              is_zero = is_zero && (value == 0.0);
+            }
+            float* terms_ptr = &terms_image[px * n_terms];
+            // Skip fitting if it is zero; large parts of model images will be
+            // zero, so this can save a lot of time.
+            if (is_zero) {
+              std::fill_n(terms_ptr, n_terms, 0.0);
+            } else {
+              fitter.Fit(terms_pixel, spectral_pixel.data(), x, y);
+              std::copy_n(terms_pixel.cbegin(), n_terms, terms_ptr);
+            }
+            ++px;
+          }
         }
       });
 
-      StoreImage(*e.model_accessor, scratch);
+      // Now that we know the fit for each pixel, evaluate the function for each
+      // pixel of each output channel.
+      Image scratch(Width(), Height());
+      for (const WorkTableEntry* entry : same_polarization_group) {
+        double freq = entry->CentralFrequency();
+        loop.Run(0, Width() * Height(), [&](size_t px_start, size_t px_end) {
+          std::vector<float> terms_pixel;
+          for (size_t px = px_start; px != px_end; ++px) {
+            const float* terms_ptr = &terms_image[px * n_terms];
+            terms_pixel.assign(terms_ptr, terms_ptr + n_terms);
+            scratch[px] = fitter.Evaluate(terms_pixel, freq);
+          }
+        });
+
+        StoreImage(*entry->model_accessor, scratch);
+      }
     }
   }
 }

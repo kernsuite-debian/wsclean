@@ -8,13 +8,14 @@
 #include <vector>
 
 #include "h5parm.h"
+#include "h5cache.h"
+#include "soltab.h"
 
 using schaapcommon::h5parm::AxisInfo;
+using schaapcommon::h5parm::H5Cache;
 using schaapcommon::h5parm::H5Parm;
 using schaapcommon::h5parm::SolTab;
-
-using std::string;
-using std::vector;
+using schaapcommon::h5parm::TimesAndFrequencies;
 
 BOOST_AUTO_TEST_SUITE(h5parm)
 
@@ -23,6 +24,11 @@ namespace {
 const size_t kNumAntennas = 3;
 const size_t kNumFrequencies = 4;
 const size_t kNumTimes = 7;
+const size_t kNumDirections = 4;
+const size_t kNumPolarizations = 2;
+const size_t kNumValues = kNumAntennas * kNumFrequencies * kNumTimes *
+                          kNumDirections * kNumPolarizations;
+const size_t kNumWeights = kNumValues;
 
 void CheckAxes(SolTab& soltab, size_t ntimes) {
   BOOST_CHECK_EQUAL(soltab.NumAxes(), size_t{3});
@@ -39,9 +45,9 @@ void CheckAxes(SolTab& soltab, size_t ntimes) {
 
 void InitializeH5(H5Parm& h5parm) {
   // Add some metadata
-  vector<string> antNames;
-  vector<std::array<double, 3>> antPositions;
-  for (unsigned int i = 0; i < 5; ++i) {
+  std::vector<std::string> antNames;
+  std::vector<std::array<double, 3>> antPositions;
+  for (size_t i = 0; i < 5; ++i) {
     std::stringstream antNameStr;
     antNameStr << "Antenna" << i;
     antNames.push_back(antNameStr.str());
@@ -52,34 +58,58 @@ void InitializeH5(H5Parm& h5parm) {
                     {std::make_pair(0.0, 0.0), std::make_pair(0.0, 1.0),
                      std::make_pair(1.0, 1.0), std::make_pair(1.0, 0.0)});
 
-  vector<AxisInfo> axes;
+  std::vector<AxisInfo> axes;
   axes.push_back(AxisInfo{"ant", 3});
   axes.push_back(AxisInfo{"time", kNumTimes});
   axes.push_back(AxisInfo{"bla", 1});
   h5parm.CreateSolTab("mysol", "mytype", axes);
 
-  vector<AxisInfo> axes_freq;
+  std::vector<AxisInfo> axes_freq;
   axes_freq.push_back(AxisInfo{"ant", kNumAntennas});
   axes_freq.push_back(AxisInfo{"freq", kNumFrequencies});
   h5parm.CreateSolTab("mysolwithfreq", "mytype", axes_freq);
 
-  vector<AxisInfo> axes_time_first;
+  std::vector<AxisInfo> axes_time_first;
   axes_time_first.push_back(AxisInfo{"ant", kNumAntennas});
   axes_time_first.push_back(AxisInfo{"time", kNumTimes});
   axes_time_first.push_back(AxisInfo{"freq", kNumFrequencies});
   h5parm.CreateSolTab("timefreq", "mytype", axes_time_first);
 
-  vector<AxisInfo> axes_freq_first;
+  std::vector<AxisInfo> axes_freq_first;
   axes_freq_first.push_back(AxisInfo{"ant", kNumAntennas});
   axes_freq_first.push_back(AxisInfo{"freq", kNumFrequencies});
   axes_freq_first.push_back(AxisInfo{"time", kNumTimes});
   h5parm.CreateSolTab("freqtime", "mytype", axes_freq_first);
+
+  std::vector<AxisInfo> axes_complete_set;
+  axes_complete_set.push_back(AxisInfo{"ant", kNumAntennas});
+  axes_complete_set.push_back(AxisInfo{"freq", kNumFrequencies});
+  axes_complete_set.push_back(AxisInfo{"time", kNumTimes});
+  axes_complete_set.push_back(AxisInfo{"dir", kNumDirections});
+  axes_complete_set.push_back(AxisInfo{"pol", kNumPolarizations});
+  h5parm.CreateSolTab("completeset", "mytype", axes_complete_set);
+
+  std::vector<AxisInfo> axes_canonical_set;
+  axes_canonical_set.push_back(AxisInfo{"time", kNumTimes});
+  axes_canonical_set.push_back(AxisInfo{"freq", kNumFrequencies});
+  axes_canonical_set.push_back(AxisInfo{"ant", kNumAntennas});
+  axes_canonical_set.push_back(AxisInfo{"dir", kNumDirections});
+  axes_canonical_set.push_back(AxisInfo{"pol", kNumPolarizations});
+  h5parm.CreateSolTab("canonical", "mytype", axes_canonical_set);
+
+  std::vector<AxisInfo> axes_non_canonical_set;
+  axes_non_canonical_set.push_back(AxisInfo{"pol", kNumPolarizations});
+  axes_non_canonical_set.push_back(AxisInfo{"time", kNumTimes});
+  axes_non_canonical_set.push_back(AxisInfo{"dir", kNumDirections});
+  axes_non_canonical_set.push_back(AxisInfo{"ant", kNumAntennas});
+  axes_non_canonical_set.push_back(AxisInfo{"freq", kNumFrequencies});
+  h5parm.CreateSolTab("noncanonical", "mytype", axes_non_canonical_set);
 }
 
 void SetSolTabMeta(SolTab& soltab, bool set_freq_meta, bool set_time_meta) {
   // Add metadata for stations
-  const std::vector<string> someAntNames = {"Antenna1", "Antenna12",
-                                            "Antenna123"};
+  const std::vector<std::string> someAntNames = {"Antenna1", "Antenna12",
+                                                 "Antenna123"};
   soltab.SetAntennas(someAntNames);
 
   if (set_freq_meta) {
@@ -98,12 +128,38 @@ void SetSolTabMeta(SolTab& soltab, bool set_freq_meta, bool set_time_meta) {
   }
 }
 
+void SetCompleteDataMeta(SolTab& soltab) {
+  // Add metadata for antennas
+  const std::vector<std::string> some_antenna_names = {"Tile11", "Tile18",
+                                                       "Tile27"};
+  soltab.SetAntennas(some_antenna_names);
+
+  // Add metadata for frequencies
+  std::vector<double> frequencies(kNumFrequencies);
+  std::iota(frequencies.begin(), frequencies.end(), 130.0e6);
+  soltab.SetFreqs(frequencies);
+
+  // Add metadata for times
+  std::vector<double> times(kNumTimes);
+  std::iota(times.begin(), times.end(), 57800.0);
+  soltab.SetTimes(times);
+
+  // Add metadata for directions
+  const std::vector<std::string> some_direction_names = {
+      "direction_00", "direction_01", "direction_02", "direction_03"};
+  soltab.SetSources(some_direction_names);
+
+  // Add metadata for polarizations
+  const std::vector<std::string> some_polarization_names = {"X", "Y"};
+  soltab.SetPolarizations(some_polarization_names);
+}
+
 void FillData(H5Parm& h5parm) {
   SolTab soltab = h5parm.GetSolTab("mysol");
 
   // Add some data
-  vector<double> vals(kNumAntennas * kNumTimes);
-  vector<double> weights(kNumAntennas * kNumTimes);
+  std::vector<double> vals(kNumAntennas * kNumTimes);
+  std::vector<double> weights(kNumAntennas * kNumTimes);
   for (size_t ant = 0; ant < kNumAntennas; ++ant) {
     for (size_t time = 0; time < kNumTimes; ++time) {
       vals[ant * kNumTimes + time] = 10 * ant + time;
@@ -131,8 +187,8 @@ void FillDataTimeFirst(H5Parm& h5parm) {
   SolTab soltab = h5parm.GetSolTab("timefreq");
 
   // Add some data
-  vector<double> vals(kNumAntennas * kNumTimes * kNumFrequencies);
-  vector<double> weights(kNumAntennas * kNumTimes * kNumFrequencies, 0);
+  std::vector<double> vals(kNumAntennas * kNumTimes * kNumFrequencies);
+  std::vector<double> weights(kNumAntennas * kNumTimes * kNumFrequencies, 0);
   for (size_t ant = 0; ant < kNumAntennas; ++ant) {
     for (size_t time = 0; time < kNumTimes; ++time) {
       for (size_t freq = 0; freq < kNumFrequencies; ++freq) {
@@ -151,8 +207,8 @@ void FillDataFreqFirst(H5Parm& h5parm) {
   SolTab soltab = h5parm.GetSolTab("freqtime");
 
   // Add some data
-  vector<double> vals(kNumAntennas * kNumTimes * kNumFrequencies);
-  vector<double> weights(kNumAntennas * kNumTimes * kNumFrequencies, 0);
+  std::vector<double> vals(kNumAntennas * kNumTimes * kNumFrequencies);
+  std::vector<double> weights(kNumAntennas * kNumTimes * kNumFrequencies, 0);
   for (size_t ant = 0; ant < kNumAntennas; ++ant) {
     for (size_t freq = 0; freq < kNumFrequencies; ++freq) {
       for (size_t time = 0; time < kNumTimes; ++time) {
@@ -167,6 +223,107 @@ void FillDataFreqFirst(H5Parm& h5parm) {
   SetSolTabMeta(soltab, true, true);
 }
 
+void FillDataCompleteSet(H5Parm& h5parm) {
+  SolTab soltab = h5parm.GetSolTab("completeset");
+
+  // Create some data
+  std::vector<double> values(kNumValues, 1);
+  std::vector<double> weights(kNumWeights, 1);
+
+  // Add some data
+  soltab.SetValues(values, weights, "CREATE with SchaapCommon-test");
+  SetCompleteDataMeta(soltab);
+}
+
+void FillDataCanonicalSet(H5Parm& h5parm) {
+  SolTab soltab = h5parm.GetSolTab("canonical");
+
+  // Create 5-dimensional data. Each value encodes the index information.
+  // For instance: The value 52143 was generated for indices:
+  // time         -> 5
+  // frequency    -> 2
+  // antenna      -> 1
+  // direction    -> 4
+  // polarization -> 3
+  // This encoding allows to verify that we recover the correct values
+  // independent of the order in which they are stored.
+  // In this case it has the canonical order: [time, freq, ant, dir, pol].
+  xt::xtensor<double, 5> original_values;
+  const std::array<size_t, 5> shape = {kNumTimes, kNumFrequencies, kNumAntennas,
+                                       kNumDirections, kNumPolarizations};
+  original_values.resize(shape);
+
+  for (size_t time = 0; time < kNumTimes; ++time) {
+    for (size_t frequency = 0; frequency < kNumFrequencies; ++frequency) {
+      for (size_t antenna = 0; antenna < kNumAntennas; ++antenna) {
+        for (size_t direction = 0; direction < kNumDirections; ++direction) {
+          for (size_t polarization = 0; polarization < kNumPolarizations;
+               ++polarization) {
+            original_values(time, frequency, antenna, direction, polarization) =
+                time * 10000 + frequency * 1000 + antenna * 100 +
+                direction * 10 + polarization;
+          }
+        }
+      }
+    }
+  }
+
+  std::vector<double> values(kNumValues, 1);
+  std::copy(original_values.begin(), original_values.end(), values.begin());
+
+  std::vector<double> weights(kNumWeights, 1);
+
+  // Add some data
+  soltab.SetValues(values, weights, "CREATE with SchaapCommon-test");
+  SetCompleteDataMeta(soltab);
+}
+
+void FillDataNonCanonicalSet(H5Parm& h5parm) {
+  SolTab soltab = h5parm.GetSolTab("noncanonical");
+
+  // Create 5-dimensional data. Each value encodes the index information.
+  // For instance: The value 52143 was generated for indices:
+  // time         -> 5
+  // frequency    -> 2
+  // antenna      -> 1
+  // direction    -> 4
+  // polarization -> 3
+  // This encoding allows to verify that we recover the correct values
+  // independent of the order in which they are stored.
+  // In this case it was done on purpose to be different from the
+  // canonical order.
+  xt::xtensor<double, 5> original_values;
+  const std::array<size_t, 5> shape = {kNumPolarizations, kNumTimes,
+                                       kNumDirections, kNumAntennas,
+                                       kNumFrequencies};
+  original_values.resize(shape);
+
+  for (size_t polarization = 0; polarization < kNumPolarizations;
+       ++polarization) {
+    for (size_t time = 0; time < kNumTimes; ++time) {
+      for (size_t direction = 0; direction < kNumDirections; ++direction) {
+        for (size_t antenna = 0; antenna < kNumAntennas; ++antenna) {
+          for (size_t frequency = 0; frequency < kNumFrequencies; ++frequency) {
+            original_values(polarization, time, direction, antenna, frequency) =
+                time * 10000 + frequency * 1000 + antenna * 100 +
+                direction * 10 + polarization;
+          }
+        }
+      }
+    }
+  }
+
+  // Dump the 5-dimensional array into a 1-dimensiona array.
+  // Soltab keep the information about axis order.
+  std::vector<double> values(kNumValues, 1);
+  std::copy(original_values.begin(), original_values.end(), values.begin());
+  std::vector<double> weights(kNumWeights, 1);
+
+  // Add the data into the soltab.
+  soltab.SetValues(values, weights, "CREATE with SchaapCommon-test");
+  SetCompleteDataMeta(soltab);
+}
+
 struct H5Fixture {
   H5Fixture() {
     H5Parm h5parm("tH5Parm_tmp.h5", true);
@@ -175,6 +332,9 @@ struct H5Fixture {
     FillDataWithFreqAxis(h5parm);
     FillDataTimeFirst(h5parm);
     FillDataFreqFirst(h5parm);
+    FillDataCompleteSet(h5parm);
+    FillDataCanonicalSet(h5parm);
+    FillDataNonCanonicalSet(h5parm);
   }
 
   ~H5Fixture() { remove("tH5Parm_tmp.h5"); }
@@ -194,7 +354,7 @@ BOOST_AUTO_TEST_CASE(create) {
   InitializeH5(h5parm);
 
   // Check that the soltab exists
-  BOOST_CHECK_EQUAL(h5parm.NumSolTabs(), 4);
+  BOOST_CHECK_EQUAL(h5parm.NumSolTabs(), 7);
   BOOST_CHECK(h5parm.HasSolTab("mysol"));
 
   // Check the axes
@@ -212,7 +372,7 @@ BOOST_FIXTURE_TEST_CASE(new_soltab, H5Fixture) {
 BOOST_FIXTURE_TEST_CASE(existing_soltab, H5Fixture) {
   H5Parm h5parm("tH5Parm_tmp.h5", false, false, "sol000");
   BOOST_CHECK_EQUAL(h5parm.GetSolSetName(), "sol000");
-  BOOST_CHECK_EQUAL(h5parm.NumSolTabs(), 4u);
+  BOOST_CHECK_EQUAL(h5parm.NumSolTabs(), 7u);
   BOOST_CHECK(h5parm.HasSolTab("mysol"));
   BOOST_CHECK(!h5parm.HasSolTab("nonexistingsol"));
 }
@@ -234,8 +394,8 @@ BOOST_FIXTURE_TEST_CASE(axes, H5Fixture) {
 
   double starttime = 57878.49999;
   hsize_t starttimeindex = soltab.GetTimeIndex(starttime);
-  vector<double> val = soltab.GetValues("Antenna12", starttimeindex, kNumTimes,
-                                        1, 0, 4, 0, 4, 0);
+  std::vector<double> val = soltab.GetValues("Antenna12", starttimeindex,
+                                             kNumTimes, 1, 0, 4, 0, 4, 0);
   BOOST_CHECK_CLOSE(val[0], 10., 1e-8);
   BOOST_CHECK_CLOSE(val[1], 11., 1e-8);
   BOOST_CHECK_CLOSE(val[2], 12., 1e-8);
@@ -244,7 +404,7 @@ BOOST_FIXTURE_TEST_CASE(axes, H5Fixture) {
   starttime = 57880.5;
   starttimeindex = soltab.GetTimeIndex(starttime);
   BOOST_CHECK_EQUAL(starttimeindex, hsize_t{1});
-  vector<double> val2 =
+  std::vector<double> val2 =
       soltab.GetValues("Antenna123", starttimeindex, 2, 2, 0, 4, 0, 4, 0);
 
   BOOST_CHECK_CLOSE(val2[0], 21., 1e-8);
@@ -262,13 +422,13 @@ BOOST_FIXTURE_TEST_CASE(grid_interpolation, H5Fixture) {
   H5Parm h5parm("tH5Parm_tmp.h5", false, false, "sol000");
   SolTab& soltab = h5parm.GetSolTab("mysol");
 
-  const vector<double> freqs{130e6, 131e6};
+  const std::vector<double> freqs{130e6, 131e6};
 
-  const vector<double> times1{57878.5, 57880.5, 57882.5, 57884.5,
-                              57886.5, 57888.5, 57890.5};
+  const std::vector<double> times1{57878.5, 57880.5, 57882.5, 57884.5,
+                                   57886.5, 57888.5, 57890.5};
 
-  vector<double> newgridvals =
-      soltab.GetValuesOrWeights("val", "Antenna1", times1, freqs, 0, 0, true);
+  std::vector<double> newgridvals =
+      soltab.GetValues("Antenna1", times1, freqs, 0, 0, true);
   BOOST_REQUIRE_EQUAL(newgridvals.size(), times1.size() * freqs.size());
   size_t idx = 0;
   for (size_t time = 0; time < times1.size(); ++time) {
@@ -278,12 +438,12 @@ BOOST_FIXTURE_TEST_CASE(grid_interpolation, H5Fixture) {
     }
   }
 
-  vector<double> times2;
+  std::vector<double> times2;
   for (size_t time = 0; time < 3 * times1.size() + 2; ++time) {
     times2.push_back(57878.5 + 2.0 * time / 3.);
   }
-  newgridvals =
-      soltab.GetValuesOrWeights("val", "Antenna1", times2, freqs, 0, 0, true);
+
+  newgridvals = soltab.GetValues("Antenna1", times2, freqs, 0, 0, true);
   BOOST_REQUIRE_EQUAL(newgridvals.size(), times2.size() * freqs.size());
   idx = 0;
   for (size_t time = 0; time < times2.size(); ++time) {
@@ -299,16 +459,16 @@ BOOST_FIXTURE_TEST_CASE(interpolate_single_time, H5Fixture) {
   H5Parm h5parm("tH5Parm_tmp.h5", false, false, "sol000");
   SolTab& soltab = h5parm.GetSolTab("mysol");
 
-  const vector<double> freqs{130e6, 131e6};
-  const vector<double> times{57000, 57878.7, 57880.3, 57890.3, 58000};
-  const vector<double> expected_nearest{10, 10, 11, 16, 16};
-  const vector<double> expected_bilinear{10.0, 10.1, 10.9, 15.9, 16.0};
+  const std::vector<double> freqs{130e6, 131e6};
+  const std::vector<double> times{57000, 57878.7, 57880.3, 57890.3, 58000};
+  const std::vector<double> expected_nearest{10, 10, 11, 16, 16};
+  const std::vector<double> expected_bilinear{10.0, 10.1, 10.9, 15.9, 16.0};
 
   for (size_t time = 0; time < times.size(); ++time) {
-    const vector<double> nearest_vals = soltab.GetValuesOrWeights(
-        "val", "Antenna12", {times[time]}, freqs, 0, 0, true);
-    const vector<double> bilinear_vals = soltab.GetValuesOrWeights(
-        "val", "Antenna12", {times[time]}, freqs, 0, 0, false);
+    const std::vector<double> nearest_vals =
+        soltab.GetValues("Antenna12", {times[time]}, freqs, 0, 0, true);
+    const std::vector<double> bilinear_vals =
+        soltab.GetValues("Antenna12", {times[time]}, freqs, 0, 0, false);
 
     BOOST_REQUIRE_EQUAL(nearest_vals.size(), 1 * freqs.size());
     BOOST_REQUIRE_EQUAL(bilinear_vals.size(), 1 * freqs.size());
@@ -345,18 +505,174 @@ BOOST_FIXTURE_TEST_CASE(axis_ordering, H5Fixture) {
   SolTab soltab_tf = h5parm.GetSolTab("timefreq");
   SolTab soltab_ft = h5parm.GetSolTab("freqtime");
 
-  const vector<double> freqs{130e6, 135e6, 131e6};
-  const vector<double> times{57000, 57878.7, 57880.3, 57890.3, 58000};
+  const std::vector<double> freqs{130e6, 135e6, 131e6};
+  const std::vector<double> times{57000, 57878.7, 57880.3, 57890.3, 58000};
 
-  const vector<double> nearest_tf = soltab_tf.GetValuesOrWeights(
+  const std::vector<double> nearest_tf = soltab_tf.GetValuesOrWeights(
       "val", "Antenna12", times, freqs, 0, 0, true);
-  const vector<double> nearest_ft = soltab_ft.GetValuesOrWeights(
+  const std::vector<double> nearest_ft = soltab_ft.GetValuesOrWeights(
       "val", "Antenna12", times, freqs, 0, 0, true);
 
   // GetValuesOrWeights should make sure that frequency is the fastest changing
   // index, even when in the underlying h5 array time was changing fastest
   BOOST_CHECK_EQUAL_COLLECTIONS(nearest_tf.begin(), nearest_tf.end(),
                                 nearest_ft.begin(), nearest_ft.end());
+}
+
+BOOST_FIXTURE_TEST_CASE(times_freqs_generation, H5Fixture) {
+  H5Parm h5parm("tH5Parm_tmp.h5", false, false, "sol000");
+
+  SolTab soltab = h5parm.GetSolTab("timefreq");
+
+  const std::vector<double> freqs{130.0e6, 135.0e6, 131.0e6};
+  const std::vector<double> times{57000.0, 57878.7, 57880.3, 57890.3, 58000.0};
+
+  TimesAndFrequencies times_and_frequencies =
+      soltab.GetTimesAndFrequencies(times, freqs, 0, 0, true);
+
+  BOOST_CHECK_EQUAL(times_and_frequencies.time_axis.size(), 7);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[0], 57878.5, 1.0e-8);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[1], 57880.5, 1.0e-8);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[2], 57882.5, 1.0e-8);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[3], 57884.5, 1.0e-8);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[4], 57886.5, 1.0e-8);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[5], 57888.5, 1.0e-8);
+  BOOST_CHECK_CLOSE(times_and_frequencies.time_axis[6], 57890.5, 1.0e-8);
+  BOOST_CHECK_EQUAL(times_and_frequencies.start_time_index, 0);
+  BOOST_CHECK_EQUAL(times_and_frequencies.num_times, 7);
+
+  BOOST_CHECK_EQUAL(times_and_frequencies.freq_axis.size(), 2);
+  BOOST_CHECK_CLOSE(times_and_frequencies.freq_axis[0], 1.3e+08, 1.0e-12);
+  BOOST_CHECK_CLOSE(times_and_frequencies.freq_axis[1], 1.31e+08, 1.0e-12);
+  BOOST_CHECK_EQUAL(times_and_frequencies.start_freq_index, 0);
+  BOOST_CHECK_EQUAL(times_and_frequencies.num_freqs, 2);
+}
+
+/**
+ * It is not possible to replace an arbitrary soltab by H5Cache.
+ * A soltab to be cacheable must have at least these axes:
+ * ant, time, freq, dir, and pol, and their sizes multiplied
+ * must be the size of the val and weight datasets. Therefore,
+ * caching "completeset" is possible, but other soltab in the
+ * H5 file are not.
+ */
+
+BOOST_FIXTURE_TEST_CASE(parameters_with_cache, H5Fixture) {
+  std::vector<std::string> tables_in_cache = {"completeset"};
+  H5Parm h5parm("tH5Parm_tmp.h5", tables_in_cache);
+
+  SolTab& soltab = h5parm.GetSolTab("completeset");
+  BOOST_CHECK(dynamic_cast<H5Cache*>(&soltab));
+}
+
+BOOST_FIXTURE_TEST_CASE(parameters_without_cache, H5Fixture) {
+  std::vector<std::string> tables_in_cache = {"completeset"};
+  H5Parm h5parm("tH5Parm_tmp.h5", tables_in_cache);
+
+  SolTab& soltab = h5parm.GetSolTab("freqtime");
+  BOOST_CHECK(dynamic_cast<H5Cache*>(&soltab) == nullptr);
+}
+
+BOOST_FIXTURE_TEST_CASE(caching_not_possible, H5Fixture) {
+  std::vector<std::string> tables_in_cache = {"freqtime"};
+  BOOST_CHECK_THROW(H5Parm h5parm("tH5Parm_tmp.h5", tables_in_cache),
+                    std::runtime_error);
+}
+
+BOOST_FIXTURE_TEST_CASE(table_does_not_exist, H5Fixture) {
+  std::vector<std::string> tables_in_cache = {"doesnotexist"};
+  BOOST_CHECK_THROW(H5Parm h5parm("tH5Parm_tmp.h5", tables_in_cache),
+                    std::runtime_error);
+}
+
+/**
+ * Tests to verify the data integrity.
+ * H5Cache is capable to ingest all H5 parameters stored
+ * in any order in a file. The information must be preserved
+ * no matter the order in which it is stored.
+ */
+
+BOOST_FIXTURE_TEST_CASE(canonical_order_cache, H5Fixture) {
+  std::vector<std::string> tables_in_cache = {"canonical"};
+  H5Parm h5parm("tH5Parm_tmp.h5", tables_in_cache);
+
+  SolTab& soltab = h5parm.GetSolTab("canonical");
+  BOOST_CHECK(dynamic_cast<H5Cache*>(&soltab));
+
+  std::string antenna_name = "Tile11";
+
+  std::vector<double> times(kNumTimes);
+  std::iota(times.begin(), times.end(), 57800.0);
+
+  std::vector<double> frequencies(kNumFrequencies);
+  std::iota(frequencies.begin(), frequencies.end(), 130.0e6);
+
+  size_t antenna = 0;
+  size_t direction = 3;
+  size_t polarization = 1;
+
+  std::vector<double> sub_array = soltab.GetValues(
+      antenna_name, times, frequencies, polarization, direction, true);
+
+  xt::xtensor<double, 2> values;
+  const std::array<size_t, 2> shape = {kNumTimes, kNumFrequencies};
+  values.resize(shape);
+  std::copy(sub_array.begin(), sub_array.end(), values.begin());
+
+  // Recovering the data originally stored in the H5 file.
+  // We verify that indices matches the ones encoded in each value
+  // of the array. On success, this means that data integrity is
+  // preserved.
+  for (size_t time = 0; time < kNumTimes; ++time) {
+    for (size_t frequency = 0; frequency < kNumFrequencies; ++frequency) {
+      const double expected = time * 10000 + frequency * 1000 + antenna * 100 +
+                              direction * 10 + polarization;
+      const double actual = values(time, frequency);
+      BOOST_CHECK_CLOSE(expected, actual, 1.0e-8);
+    }
+  }
+}
+
+BOOST_FIXTURE_TEST_CASE(non_canonical_order_cache, H5Fixture) {
+  std::vector<std::string> tables_in_cache = {"noncanonical"};
+  H5Parm h5parm("tH5Parm_tmp.h5", tables_in_cache);
+
+  SolTab& soltab = h5parm.GetSolTab("noncanonical");
+  BOOST_CHECK(dynamic_cast<H5Cache*>(&soltab));
+
+  std::string antenna_name = "Tile11";
+
+  std::vector<double> times(kNumTimes);
+  std::iota(times.begin(), times.end(), 57800.0);
+
+  std::vector<double> frequencies(kNumFrequencies);
+  std::iota(frequencies.begin(), frequencies.end(), 130.0e6);
+
+  size_t antenna = 0;
+  size_t direction = 3;
+  size_t polarization = 1;
+
+  std::vector<double> sub_array = soltab.GetValues(
+      antenna_name, times, frequencies, polarization, direction, true);
+
+  xt::xtensor<double, 2> values;
+  const std::array<size_t, 2> shape = {kNumTimes, kNumFrequencies};
+  values.resize(shape);
+  std::copy(sub_array.begin(), sub_array.end(), values.begin());
+
+  // Recovering the data originally stored in the H5 file.
+  // We verify that indices matches the ones encoded in each value
+  // of the array. On success, this means that data integrity is
+  // preserved not matter it was stored with a different order
+  // from the canonical one.
+  for (size_t time = 0; time < kNumTimes; ++time) {
+    for (size_t frequency = 0; frequency < kNumFrequencies; ++frequency) {
+      const double expected = time * 10000 + frequency * 1000 + antenna * 100 +
+                              direction * 10 + polarization;
+      const double actual = values(time, frequency);
+      BOOST_CHECK_CLOSE(expected, actual, 1.0e-8);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

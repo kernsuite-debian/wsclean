@@ -1,36 +1,47 @@
 add_executable(
   unittest
   test.cpp
-  testbaselinedependentaveraging.cpp
-  testcommandline.cpp
-  testfitsdateobstime.cpp
-  testcachedimageset.cpp
-  testparsetreader.cpp
-  testprimarybeamimageset.cpp
-  testserialization.cpp
+  tbaselinedependentaveraging.cpp
+  tfitsdateobstime.cpp
+  tserialization.cpp
+  gridding/taveragecorrection.cpp
   gridding/tvisibilitymodifier.cpp
   idg/taveragebeam.cpp
   io/tcachedimageset.cpp
+  io/tparsetreader.cpp
+  main/tcommandline.cpp
+  main/tmshelper.cpp
   main/tsettings.cpp
+  math/timageoperations.cpp
   math/trenderer.cpp
   math/ttophatconvolution.cpp
   model/tbbsmodel.cpp
   msproviders/tnoisemsrowprovider.cpp
-  msproviders/tbdamsrowproviderdata.cpp
   msproviders/tbdamsrowprovider.cpp
+  msproviders/tbdamsrowproviderdata.cpp
+  msproviders/tinmemoryprovider.cpp
   msproviders/tmsrowproviderbase.cpp
-  structures/testimagingtable.cpp
+  scheduling/tgriddingtaskfactory.cpp
+  structures/timagingtable.cpp
   structures/tfacetutil.cpp
+  structures/tmsselection.cpp
   structures/toutputchannelinfo.cpp
+  structures/tprimarybeam.cpp
   structures/tprimarybeamimageset.cpp
   structures/tresources.cpp
-  system/tmappedfile.cpp
-  ${WSCLEANFILES})
+  system/tmappedfile.cpp)
 
-add_definitions(
-  -DFACET_DEFINITION_FILE_2FACETS="${CMAKE_CURRENT_SOURCE_DIR}/data/ds9_2facets.reg"
-  -DFACET_DEFINITION_FILE_4FACETS="${CMAKE_CURRENT_SOURCE_DIR}/data/ds9_4facets.reg"
+target_compile_definitions(
+  unittest
+  PRIVATE
+    FACET_DEFINITION_FILE_2FACETS="${CMAKE_CURRENT_SOURCE_DIR}/data/ds9_2facets.reg"
+    FACET_DEFINITION_FILE_4FACETS="${CMAKE_CURRENT_SOURCE_DIR}/data/ds9_4facets.reg"
 )
+
+target_link_libraries(
+  unittest
+  PRIVATE wsclean-lib ${CASACORE_LIBRARIES} ${Boost_FILESYSTEM_LIBRARY}
+          ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY})
 
 add_custom_target(
   download_mocks
@@ -39,6 +50,10 @@ add_custom_target(
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 set(WSCLEAN_DATA_URL https://support.astron.nl/software/ci_data/wsclean)
+
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+  cmake_policy(SET CMP0135 "NEW")
+endif()
 
 ExternalProject_Add(
   jvla_test_ms
@@ -89,10 +104,15 @@ ExternalProject_Add(
   BUILD_COMMAND ""
   INSTALL_COMMAND "")
 
-set(TEST_LIBRARIES pybind11::embed ${ALL_LIBRARIES}
-                   ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY})
-
-target_link_libraries(unittest PRIVATE ${TEST_LIBRARIES})
+ExternalProject_Add(
+  lofar_3c196_ms
+  URL ${WSCLEAN_DATA_URL}/LOFAR_3C196.ms.tar.bz2
+  URL_HASH
+    SHA256=f834f4eefb2ceffc09194791744c53ebc5154e947a5437a8ea42d259ccdd5fc3
+  SOURCE_DIR ${CMAKE_BINARY_DIR}/test_data/LOFAR_3C196.ms
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND ""
+  INSTALL_COMMAND "")
 
 add_custom_target(
   unitchecks
@@ -110,7 +130,12 @@ add_custom_target(check DEPENDS unitchecks;integrationchecks)
 add_custom_target(
   coverage
   DEPENDS check
-  COMMAND gcovr -r .. -e '.*/tests/.*' -e '.*/CompilerIdCXX/.*')
+  COMMAND
+    gcovr --merge-mode-functions=separate -r ${CMAKE_SOURCE_DIR} -e
+    '.*/tests/.*' -e '.*/external/.*' -e '.*/CompilerIdCXX/.*'
+    ${CMAKE_BINARY_DIR})
 
 # Collect all tests that should run on das5 in a single target
-add_custom_target(nightlychecks DEPENDS integrationchecks;facetchecks)
+add_custom_target(
+  nightlychecks
+  DEPENDS integrationchecks;facetchecks;gridderchecks;subpixelrendererchecks)

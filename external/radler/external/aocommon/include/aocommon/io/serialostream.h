@@ -9,7 +9,35 @@
 #include <vector>
 
 namespace aocommon {
+namespace details {
 
+/**
+ * Determines if a type is of type complex<T>, where T can be anything.
+ * Use by @ref SerialOStream::Vector().
+ */
+template <typename T>
+struct is_complex_t : public std::false_type {};
+template <typename T>
+struct is_complex_t<std::complex<T>> : public std::true_type {};
+}  // namespace details
+
+/**
+ * An output stream that is used for serialization of objects, particularly with
+ * the aim to send objects over a network as binary data. All streamed
+ * data is stored in a memory buffer. This buffer can then retrieved for
+ * sending, and upon reception objects can be unserialized using the
+ * @ref SerialIStream class.
+ *
+ * This class is (purposely) not a std::stream class, as its behaviour and
+ * implementation is quite different.
+ *
+ * The interface of this class allows serializing the basic C++ types to
+ * binary form. It is purposely verbose about the type and its size, instead
+ * of relying on function overloading, as to prevent serializing e.g. size_t
+ * to 32 bit on one machine and 64 bit on another. The interface between this
+ * class and @ref SerialIStream are similar, with the aim to make it possible to
+ * implement Serialize and Unserialize functions that look very similar.
+ */
 class SerialOStream {
  public:
   SerialOStream() {}
@@ -78,6 +106,7 @@ class SerialOStream {
    */
   template <typename T>
   SerialOStream& Vector(const std::vector<T>& values) {
+    static_assert(std::is_trivial_v<T> || details::is_complex_t<T>());
     uint64_t size = values.size();
     UInt64(size);
     size_t n = values.size() * sizeof(T);

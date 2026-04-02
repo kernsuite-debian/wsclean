@@ -16,7 +16,8 @@ namespace schaapcommon {
 namespace facets {
 
 // This operator allows using BOOST_CHECK_EQUAL on Pixel objects.
-inline std::ostream& operator<<(std::ostream& stream, const Pixel& pixel) {
+inline std::ostream& operator<<(std::ostream& stream,
+                                const PixelPosition& pixel) {
   stream << "Pixel(" << pixel.x << ", " << pixel.y << ")";
   return stream;
 }

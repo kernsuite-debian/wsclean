@@ -1,14 +1,33 @@
 #ifndef AOCOMMON_LOGGER_H_
 #define AOCOMMON_LOGGER_H_
 
-#include <sstream>
+#include <sys/time.h>
+#include <sys/resource.h>
+
 #include <iostream>
-
 #include <mutex>
+#include <sstream>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 namespace aocommon {
+
+enum class LogVerbosityLevel { kQuiet, kNormal, kVerbose };
+
+inline LogVerbosityLevel StringToLogVerbosityLevel(
+    std::string verbosity_string) {
+  boost::algorithm::to_upper(verbosity_string);
+  if (verbosity_string == "NORMAL")
+    return LogVerbosityLevel::kNormal;
+  else if (verbosity_string == "QUIET")
+    return LogVerbosityLevel::kQuiet;
+  else if (verbosity_string == "VERBOSE")
+    return LogVerbosityLevel::kVerbose;
+  else
+    throw std::runtime_error(
+        "Invalid log verbosity level: expected 'normal', 'quiet' or 'verbose'");
+}
 
 class Logger {
  public:
@@ -20,8 +39,6 @@ class Logger {
     kInfoLevel = 1,
     kDebugLevel = 0
   };
-
-  enum VerbosityLevel { kQuietVerbosity, kNormalVerbosity, kVerboseVerbosity };
 
   template <LoggerLevel Level>
   class LogWriter {
@@ -73,22 +90,25 @@ class Logger {
 
     void OutputLinePart(const std::string& str, bool ends_with_cr) {
       if ((int)cout_level_ <= (int)Level && !str.empty()) {
-        if (at_new_line_ && log_time_) OutputTime(output_);
+        if (at_new_line_) {
+          if (log_time_) OutputTime(output_);
+          if (log_memory_) OutputMemory(output_);
+        }
         output_ << str;
         at_new_line_ = ends_with_cr;
       }
     }
   };
 
-  static void SetVerbosity(VerbosityLevel verbosity_level) {
+  static void SetVerbosity(LogVerbosityLevel verbosity_level) {
     switch (verbosity_level) {
-      case kQuietVerbosity:
+      case LogVerbosityLevel::kQuiet:
         cout_level_ = kErrorLevel;
         break;
-      case kNormalVerbosity:
+      case LogVerbosityLevel::kNormal:
         cout_level_ = kInfoLevel;
         break;
-      case kVerboseVerbosity:
+      case LogVerbosityLevel::kVerbose:
         cout_level_ = kDebugLevel;
         break;
     }
@@ -98,7 +118,15 @@ class Logger {
 
   static void SetLogTime(bool log_time) { log_time_ = log_time; }
 
+  /**
+   * Adds a number in front of every line logged that specifies the
+   * amount of GBs in use by the current process.
+   */
+  static void SetLogMemory(bool log_memory) { log_memory_ = log_memory; }
+
   static bool LogTime() { return log_time_; }
+
+  static bool LogMemory() { return log_memory_; }
 
   static inline LogWriter<kDebugLevel> Debug{std::cout};
   static inline LogWriter<kInfoLevel> Info{std::cout};
@@ -115,9 +143,16 @@ class Logger {
     output << str << ' ';
   }
 
+  static void OutputMemory(std::ostream& output) {
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    output << '[' << usage.ru_maxrss / 1000000ul << " GB] ";
+  }
+
   static inline LoggerLevel cout_level_ = LoggerLevel::kInfoLevel;
 
   static inline bool log_time_ = false;
+  static inline bool log_memory_ = false;
 };
 
 class LogReceiver {

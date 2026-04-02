@@ -4,11 +4,12 @@
 #ifndef SCHAAPCOMMON_H5PARM_H5PARM_H_
 #define SCHAAPCOMMON_H5PARM_H5PARM_H_
 
-#include "soltab.h"
-
 #include <array>
+#include <memory>
 #include <utility>
 #include <vector>
+
+#include "soltab.h"
 
 namespace schaapcommon {
 namespace h5parm {
@@ -29,7 +30,18 @@ class H5Parm : private H5::H5File {
                   bool force_new_sol_set = false,
                   const std::string& sol_set_name = "");
 
+  /// Open existing H5 file and put the tables named in the second
+  /// argument in the internal cache for fast access.
+  explicit H5Parm(const std::string& filename,
+                  const std::vector<std::string>& tables_in_cache);
+
   H5Parm();
+
+  // Since sol_tabs_ contains std::unique_ptr, H5Parm is not copyable.
+  H5Parm(const H5Parm&) = delete;
+  H5Parm(H5Parm&&) = default;
+  H5Parm& operator=(const H5Parm&) = delete;
+  H5Parm& operator=(H5Parm&&) = default;
 
   ~H5Parm() override;
 
@@ -90,7 +102,8 @@ class H5Parm : private H5::H5File {
 
   std::vector<source_t> ReadSourceTable(const H5::Group& sol_set) const;
 
-  std::map<std::string, SolTab> sol_tabs_;
+  std::map<std::string, std::unique_ptr<SolTab>> sol_tabs_;
+
   H5::Group sol_set_;
 };
 }  // namespace h5parm

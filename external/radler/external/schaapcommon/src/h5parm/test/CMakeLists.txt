@@ -3,5 +3,11 @@
 
 include(${SCHAAPCOMMON_SOURCE_DIR}/cmake/unittest.cmake)
 
-add_unittest(h5parm runtests.cc th5parm.cc tgridinterpolate.cc
-             tjonesparameters.cc tsoltab.cc)
+add_unittest(
+  h5parm
+  runtests.cc
+  th5parm.cc
+  th5cache.cc
+  tgridinterpolate.cc
+  tjonesparameters.cc
+  tsoltab.cc)

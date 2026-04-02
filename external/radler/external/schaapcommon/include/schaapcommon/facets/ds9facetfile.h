@@ -106,6 +106,11 @@ class DS9FacetFile {
           direction_label = ParseDirectionLabel(Type(), Token());
         } else if (t == "point" && !coordinates.empty()) {
           direction = ReadPoint();
+          const std::string direction_label_point =
+              ParseDirectionLabel(Type(), Token());
+          if (direction_label_point != "") {
+            direction_label = direction_label_point;
+          }
         }
       }
     }
@@ -233,7 +238,7 @@ class DS9FacetFile {
     }
     const double ra = vals[0] * (M_PI / 180.0);
     const double dec = vals[1] * (M_PI / 180.0);
-    return Coord(ra, dec);
+    return {ra, dec};
   }
 
   std::vector<double> ReadNumList() {

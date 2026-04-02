@@ -6,6 +6,8 @@
 
 #include "../io/cachedimageaccessor.h"
 
+namespace wsclean {
+
 ImagingTableEntry::ImagingTableEntry()
     : index(0),
       lowestFrequency(0.0),
@@ -22,7 +24,7 @@ ImagingTableEntry::ImagingTableEntry()
       centreShiftY(0),
       outputChannelIndex(0),
       outputIntervalIndex(0),
-      msData(),
+      part_index_per_ms(),
       squaredDeconvolutionIndex(0),
       joinedGroupIndex(0),
       imageCount(0),
@@ -66,3 +68,5 @@ ImagingTableEntry::CreateDeconvolutionEntry(
 
   return entry;
 }
+
+}  // namespace wsclean

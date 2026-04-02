@@ -8,6 +8,8 @@
 #include <set>
 #include <string>
 
+namespace wsclean {
+
 class SynchronizedMS {
  public:
   SynchronizedMS() {}
@@ -44,25 +46,24 @@ class SynchronizedMS {
 
     MSLock(const MSLock&) = delete;
 
-    MSLock(MSLock&& other) {
+    MSLock(MSLock&& other) noexcept
+        : _filename(std::move(other._filename)), _ms(std::move(other._ms)) {
       // the other must already have access, so the ms can be directly claimed.
       // (unless the other was an empty object, in which case the
       //  copy will also be an empty object)
-      _filename = std::move(other._filename);
-      _ms = std::move(other._ms);
       other._filename = std::string();
-      other._ms.reset();
     }
 
     ~MSLock() { release(); }
 
     MSLock& operator=(const MSLock&) = delete;
 
-    MSLock& operator=(MSLock&& rhs) {
+    MSLock& operator=(MSLock&& rhs) noexcept {
       release();
 
       _filename = std::move(rhs._filename);
       _ms = std::move(rhs._ms);
+      rhs._filename = std::string();
       return *this;
     }
 
@@ -90,5 +91,7 @@ class SynchronizedMS {
 
   std::shared_ptr<MSLock> _lock;
 };
+
+}  // namespace wsclean
 
 #endif

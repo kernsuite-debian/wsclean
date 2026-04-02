@@ -189,14 +189,10 @@ class IuwtDeconvolutionAlgorithm {
   float absolute_threshold_;
   float threshold_sigma_level_;
   float tolerance_;
-  double psf_major_;
-  double psf_minor_;
-  double psf_pa_;
   aocommon::UVector<float> rmses_;
   std::vector<ScaleResponse> psf_response_;
   bool allow_negative_components_;
   ImageSet* dirty_set_;
-  aocommon::StaticFor<size_t>* static_for_;
 };
 }  // namespace radler::algorithms
 #endif  // RADLER_ALGORITHMS_IUWT_DECONVOLUTION_ALGORITHM_H_

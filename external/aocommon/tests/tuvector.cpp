@@ -1,8 +1,8 @@
-#include <iostream>
-
 #include <aocommon/uvector.h>
 
+#include <complex>
 #include <fstream>
+#include <iostream>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -144,13 +144,13 @@ void test() {
   BOOST_CHECK(vec.at(0) == 3);
   BOOST_CHECK(vec.at(1) == 7);
   try {
-    vec.at(2);
+    [[maybe_unused]] int value = vec.at(2);
     BOOST_CHECK(false);
   } catch (...) {
     BOOST_CHECK(true);
   }
   try {
-    vec.at(-1);
+    [[maybe_unused]] int value = vec.at(-1);
     BOOST_CHECK(false);
   } catch (...) {
     BOOST_CHECK(true);
@@ -405,9 +405,8 @@ class FailingAllocator {
   FailingAllocator() {}
   FailingAllocator(bool fail) { _failAllocation = fail; }
   void SetFailAllocation(bool fail) { _failAllocation = fail; }
-  bool operator==(const FailingAllocator<Tp>&) { return true; }
-  pointer allocate(size_type n,
-                   std::allocator<void>::const_pointer hint = nullptr) {
+  bool operator==(const FailingAllocator<Tp>&) const { return true; }
+  pointer allocate(size_type n, const void* hint = nullptr) {
     if (_failAllocation) throw std::bad_alloc();
     return static_cast<pointer>(malloc(n * sizeof(Tp)));
   }
@@ -506,16 +505,11 @@ class IdAllocater {
   IdAllocater(size_t id) : _id(id) {}
   bool operator==(const Myself& rhs) const { return rhs._id == _id; }
   bool operator!=(const Myself& rhs) const { return rhs._id != _id; }
-  Myself& operator=(const IdAllocater<Tp>& rhs) {
-    _id = rhs._id;
-    return *this;
-  }
   Myself select_on_container_copy_construction() const {
     return IdAllocater(_id + 10);
   }
   size_t Id() const { return _id; }
-  pointer allocate(size_type n,
-                   std::allocator<void>::const_pointer hint = nullptr) {
+  pointer allocate(size_type n, const void* hint = nullptr) {
     char* mem = static_cast<char*>(malloc(n * sizeof(Tp) + sizeof(_id)));
     *reinterpret_cast<size_t*>(mem) = _id;
     return reinterpret_cast<pointer>(mem + sizeof(_id));
@@ -667,6 +661,16 @@ BOOST_AUTO_TEST_CASE(uvector_allocator) {
 }
 BOOST_AUTO_TEST_CASE(uvector_extensions) {
   testExtensions<aocommon::UVector<int>>();
+}
+
+// Test that resizing an UVector with a value compiles and works. See issue #4.
+BOOST_AUTO_TEST_CASE(resize_complex) {
+  const std::complex<float> kValue(1.0, 2.0);
+  aocommon::UVector<std::complex<float>> vector;
+  vector.resize(42, kValue);
+  for (const std::complex<float>& v : vector) {
+    BOOST_CHECK_EQUAL(v, kValue);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

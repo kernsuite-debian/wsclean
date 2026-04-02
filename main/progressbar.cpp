@@ -6,13 +6,14 @@
 
 using aocommon::Logger;
 
+namespace wsclean {
+
 ProgressBar::ProgressBar(const std::string& taskDescription)
     : _taskDescription(taskDescription), _displayedDots(-1) {}
 
 ProgressBar::~ProgressBar() { SetProgress(1, 1); }
 
-ProgressBar& ProgressBar::operator=(ProgressBar&& rhs) {
-  SetProgress(1, 1);
+ProgressBar& ProgressBar::operator=(ProgressBar&& rhs) noexcept {
   _displayedDots = rhs._displayedDots;
   _taskDescription = std::move(rhs._taskDescription);
   rhs._displayedDots = 50;
@@ -44,3 +45,5 @@ void ProgressBar::SetProgress(size_t taskIndex, size_t taskCount) {
     Logger::Info.Flush();
   }
 }
+
+}  // namespace wsclean

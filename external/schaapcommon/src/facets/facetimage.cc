@@ -36,8 +36,8 @@ void FacetImage::SetFacet(const Facet& facet, bool trimmed) {
 }
 
 FacetImage& FacetImage::operator*=(float factor) {
-  for (size_t term = 0; term != data_.size(); ++term) {
-    for (auto& val : data_[term]) val *= factor;
+  for (std::vector<float>& term : data_) {
+    for (float& val : term) val *= factor;
   }
   return *this;
 }

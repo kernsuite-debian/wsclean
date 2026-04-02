@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <fstream>
 
+namespace wsclean {
+
 class BBSModel {
  public:
   /**
@@ -91,7 +93,7 @@ class BBSModel {
     Headers h;
     int index = 0;
     double default_reference_frequency = 0.0;
-    for (auto s : tok) {
+    for (const auto& s : tok) {
       std::string key =
           boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(s));
       std::string defaultVal;
@@ -149,8 +151,8 @@ class BBSModel {
       double stokesI = 0.0;
       index = 0;
 
-      BBSLine bbsLine(line);
       if (!line.empty() && line[0] != '#') {
+        BBSLine bbsLine(line);
         while (bbsLine.MoveToNext()) {
           std::string val = bbsLine.Value();
           if (index == h.nameInd)
@@ -197,7 +199,7 @@ class BBSModel {
           } else if (index == h.spectrInd) {
             boost::char_separator<char> freqsep("[,] ");
             boost::tokenizer<boost::char_separator<char>> freqtok(val, freqsep);
-            for (auto fval : freqtok)
+            for (const auto& fval : freqtok)
               frequencyTerms.push_back(atof(fval.c_str()));
           } else if (index == h.majAxisInd)
             component.SetMajorAxis(atof(val.c_str()) *
@@ -266,7 +268,10 @@ class BBSModel {
     }
 
     std::string Value() const {
-      if (_endIndex > 0)
+      if (_endIndex == _line.size())
+        return boost::algorithm::trim_copy(
+            _line.substr(_startIndex, _endIndex - _startIndex));
+      else if (_endIndex > 0)
         return boost::algorithm::trim_copy(
             _line.substr(_startIndex, _endIndex - _startIndex - 1));
       else
@@ -288,5 +293,7 @@ class BBSModel {
         minAxisInd = -1, orientationInd = -1, logSIInd = -1;
   };
 };
+
+}  // namespace wsclean
 
 #endif

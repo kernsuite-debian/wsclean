@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "soltab.h"
-#include "gridinterpolate.h"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +14,8 @@
 #include <iomanip>
 
 #include <hdf5.h>
+
+#include "gridinterpolate.h"
 
 // using namespace std;
 namespace schaapcommon {
@@ -38,6 +39,51 @@ std::vector<std::string> Tokenize(const std::string& str,
 }
 }  // namespace
 
+std::vector<double> SelectAxisValues(std::vector<double>&& axis,
+                                     double requested_start,
+                                     double requested_end, bool nearest,
+                                     size_t& start_index) {
+  assert(!axis.empty());
+  assert(std::is_sorted(axis.cbegin(), axis.cend()));
+  assert(requested_start <= requested_end);
+  //  ReadAxes() already checked that the time axis is sorted.
+  std::vector<double>::const_iterator lower =
+      std::lower_bound(axis.cbegin(), axis.cend(), requested_start);
+  std::vector<double>::const_iterator upper;
+  if (nearest) {
+    upper = std::upper_bound(lower, axis.cend(), requested_end);
+    // move upper to nearest element
+    if (upper > axis.cbegin() && upper != axis.cend()) {
+      if (requested_end - *(upper - 1) < *upper - requested_end) {
+        --upper;
+      }
+    }
+    // move lower to the nearest element
+    if (lower > axis.cbegin()) {
+      if (lower == axis.cend() ||
+          requested_start - *(lower - 1) < *lower - requested_start) {
+        --lower;
+      }
+    }
+  } else {
+    upper = std::lower_bound(lower, axis.cend(), requested_end);
+    // lower may be larger than the requested value; if this case move lower
+    // one value back.
+    if (lower > axis.cbegin() &&
+        (lower == axis.cend() || *lower > requested_start)) {
+      --lower;
+    }
+  }
+  // upper must point to the element after the element that is nearest/bounded:
+  if (upper != axis.cend()) {
+    ++upper;
+  }
+  start_index = lower - axis.cbegin();
+  axis.assign(lower, upper);
+  assert(!axis.empty());
+  return std::move(axis);
+}
+
 SolTab::SolTab(H5::Group group, const std::string& type,
                const std::vector<AxisInfo>& axes)
     : H5::Group(group), type_(type), axes_(axes) {
@@ -53,6 +99,10 @@ SolTab::SolTab(H5::Group& group) : H5::Group(group) {
     throw std::runtime_error("H5 attribute TITLE not found in " + GetName());
   }
   H5::Attribute typeattr = openAttribute("TITLE");
+  if (typeattr.getDataType().isVariableStr()) {
+    throw std::runtime_error(
+        "H5Parm attribute TITLE is a variable string, which is not supported");
+  }
   hsize_t typenamelen = typeattr.getDataType().getSize();
   std::vector<char> type_chars(typenamelen + 1, '\0');
   typeattr.read(typeattr.getDataType(), type_chars.data());
@@ -70,7 +120,7 @@ void SolTab::AddVersionStamp(H5::Group& node) {
   attr.write(H5::StrType(H5::PredType::C_S1, 3), "1.0");
 }
 
-AxisInfo SolTab::GetAxis(unsigned int i) const { return axes_[i]; }
+AxisInfo SolTab::GetAxis(size_t i) const { return axes_[i]; }
 
 AxisInfo SolTab::GetAxis(const std::string& axis_name) const {
   for (const AxisInfo& axis_info : axes_) {
@@ -104,7 +154,7 @@ void SolTab::SetValues(const std::vector<double>& vals,
   size_t expectedsize = 1;
   std::string axesstr = axes_.front().name;
   std::vector<hsize_t> dims(axes_.size());
-  for (unsigned int i = 0; i < axes_.size(); ++i) {
+  for (size_t i = 0; i < axes_.size(); ++i) {
     dims[i] = axes_[i].size;
     expectedsize *= dims[i];
     if (i > 0) {
@@ -191,19 +241,19 @@ void SolTab::SetValues(const std::vector<double>& vals,
   attr.write(H5::StrType(H5::PredType::C_S1, axesstr.size()), axesstr);
 }
 
-void SolTab::SetComplexValues(const std::vector<std::complex<double>>& vals,
+void SolTab::SetComplexValues(const std::vector<std::complex<double>>& values,
                               const std::vector<double>& weights,
                               bool to_amplitudes, const std::string& history) {
-  // Convert values to real numbers by taking amplitude or argument
-  std::vector<double> realvals(vals.size());
+  // Convert values to real numbers by taking amplitude or argument.
+  std::vector<double> real_values(values.size());
 
-  if (to_amplitudes) {
-    std::transform(vals.begin(), vals.end(), realvals.begin(), TakeAbs);
-  } else {  // Phase only
-    std::transform(vals.begin(), vals.end(), realvals.begin(), TakeArg);
-  }
+  std::transform(
+      values.begin(), values.end(), real_values.begin(),
+      to_amplitudes
+          ? [](std::complex<double> value) { return std::abs(value); }
+          : [](std::complex<double> value) { return std::arg(value); });
 
-  SetValues(realvals, weights, history);
+  SetValues(real_values, weights, history);
 }
 
 void SolTab::ReadAxes() {
@@ -227,7 +277,7 @@ void SolTab::ReadAxes() {
   axesattr.read(axesattr.getDataType(), axes_chars.data());
   std::vector<std::string> axesnames = Tokenize(axes_chars.data(), ",");
 
-  unsigned int ndims = axesnames.size();
+  const size_t ndims = axesnames.size();
 
   // Get number of dimensions and size of all dimensions
   H5::DataSpace ds = val.getSpace();
@@ -241,9 +291,8 @@ void SolTab::ReadAxes() {
   std::vector<hsize_t> dims_out(ndims, 0);
   ds.getSimpleExtentDims(dims_out.data());
 
-  for (unsigned int i = 0; i < axesnames.size(); ++i) {
-    AxisInfo a{axesnames[i], static_cast<unsigned int>(dims_out[i])};
-    axes_.push_back(a);
+  for (size_t i = 0; i < axesnames.size(); ++i) {
+    axes_.push_back(AxisInfo{axesnames[i], dims_out[i]});
   }
 
   if (HasAxis("time")) {
@@ -268,76 +317,36 @@ std::string SolTab::GetName() const {
   return name.data() + 1;
 }
 
+std::vector<double> SolTab::GetValues(const std::string& antenna_name,
+                                      const std::vector<double>& times,
+                                      const std::vector<double>& frequencies,
+                                      size_t polarization, size_t direction,
+                                      bool nearest) const {
+  std::vector<double> values =
+      GetValuesOrWeights("val", antenna_name, times, frequencies, polarization,
+                         direction, nearest);
+
+  const std::vector<double> weights =
+      GetValuesOrWeights("weight", antenna_name, times, frequencies,
+                         polarization, direction, nearest);
+
+  ApplyFlags(values, weights);
+
+  return values;
+}
+
 std::vector<double> SolTab::GetValuesOrWeights(
-    const std::string& val_or_weight, const std::string& ant_name,
-    const std::vector<double>& times, const std::vector<double>& freqs,
-    unsigned int pol, unsigned int dir, bool nearest) const {
-  std::vector<double> res(times.size() * freqs.size());
+    const std::string& val_or_weight, const std::string& antenna_name,
+    const std::vector<double>& times, const std::vector<double>& frequencies,
+    size_t polarization, size_t direction, bool nearest) const {
+  TimesAndFrequencies times_and_frequencies = GetTimesAndFrequencies(
+      times, frequencies, polarization, direction, nearest);
 
-  unsigned int start_time_slot = 0;
-  unsigned int num_time_h5 = 1;
-
-  assert(!times.empty());
-  assert(!freqs.empty());
-  unsigned int freq_start = 0;
-  unsigned int num_freq_h5 = 1;
-
-  std::vector<double> freq_axis_h5(1, 0.);
-  std::vector<double> time_axis_h5(1, 0.);
-  if (HasAxis("time")) {
-    time_axis_h5 = GetRealAxis("time");
-    if (times.size() > 1) {
-      num_time_h5 = time_axis_h5.size();
-    } else {
-      // When only one time is requested, find the nearest H5 time indices
-      // and only read H5 data for those indices.
-
-      // ReadAxes() already checked that the "time" axis is sorted.
-      const auto lower = std::lower_bound(time_axis_h5.begin(),
-                                          time_axis_h5.end(), times.front());
-      if (lower == time_axis_h5.begin()) {
-        // start_time_slot remains 0
-        time_axis_h5.resize(1);  // Keep the first item only.
-      } else if (lower == time_axis_h5.end()) {
-        start_time_slot = time_axis_h5.size() - 1;
-        time_axis_h5 = {time_axis_h5.back()};
-      } else {
-        // The time lies between *(lower-1) and *lower.
-        start_time_slot = std::distance(time_axis_h5.begin(), lower) - 1;
-        if (nearest) {
-          // Only use the nearest entry.
-          if (times.front() - *(lower - 1) > *lower - times.front()) {
-            ++start_time_slot;
-          }
-          time_axis_h5 = {time_axis_h5[start_time_slot]};
-        } else {
-          // Only load the two entries around the entry.
-          num_time_h5 = 2;
-          time_axis_h5 = {*(lower - 1), *lower};
-        }
-      }
-    }
-  }
-  if (HasAxis("freq")) {
-    std::vector<double> full_freq_axis_h5 = GetRealAxis("freq");
-    freq_start = GetFreqIndex(freqs.front());
-    num_freq_h5 = GetFreqIndex(freqs.back()) - freq_start + 1;
-    freq_axis_h5 = std::vector<double>(
-        full_freq_axis_h5.begin() + freq_start,
-        full_freq_axis_h5.begin() + freq_start + num_freq_h5);
-  }
-  if (HasAxis("pol")) {
-    unsigned int num_pol_h5 = GetAxis("pol").size;
-    if (pol > num_pol_h5 - 1) {
-      throw std::runtime_error("Polarization " + std::to_string(pol) +
-                               " requested from H5Parm, but only " +
-                               std::to_string(num_pol_h5) +
-                               " polarizations are in there.");
-    }
-  }
-  const std::vector<double> h5values =
-      GetValuesOrWeights(val_or_weight, ant_name, start_time_slot, num_time_h5,
-                         1, freq_start, num_freq_h5, 1, pol, dir);
+  const std::vector<double> sub_array = GetSubArray(
+      val_or_weight, antenna_name, times_and_frequencies.start_time_index,
+      times_and_frequencies.num_times, 1,
+      times_and_frequencies.start_freq_index, times_and_frequencies.num_freqs,
+      1, polarization, direction);
 
   MemoryLayout mem_layout = MemoryLayout::kRowMajor;
   // If the frequency index is lower than the time index, time will be the
@@ -347,16 +356,70 @@ std::vector<double> SolTab::GetValuesOrWeights(
       GetAxisIndex("freq") < GetAxisIndex("time")) {
     mem_layout = MemoryLayout::kColumnMajor;
   }
-  return GridNearestNeighbor(time_axis_h5, freq_axis_h5, times, freqs, h5values,
-                             mem_layout, nearest);
+
+  return GridNearestNeighbor(times_and_frequencies.time_axis,
+                             times_and_frequencies.freq_axis, times,
+                             frequencies, sub_array, mem_layout, nearest);
 }
 
-std::vector<double> SolTab::GetValuesOrWeights(
-    const std::string& val_or_weight, const std::string& ant_name,
-    unsigned int starttimeslot, unsigned int ntime, unsigned int timestep,
-    unsigned int startfreq, unsigned int nfreq, unsigned int freqstep,
-    unsigned int pol, unsigned int dir) const {
-  std::vector<double> res(ntime * nfreq);
+void SolTab::ApplyFlags(std::vector<double>& values,
+                        const std::vector<double>& weights) {
+  assert(values.size() == weights.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (weights[i] == 0.0) {
+      values[i] = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+}
+
+TimesAndFrequencies SolTab::GetTimesAndFrequencies(
+    const std::vector<double>& times, const std::vector<double>& frequencies,
+    size_t pol, size_t dir, bool nearest) const {
+  assert(!times.empty());
+  assert(!frequencies.empty());
+
+  TimesAndFrequencies tf;
+  tf.time_axis = {0.0};
+  tf.start_time_index = 0;
+  tf.freq_axis = {0.0};
+  tf.start_freq_index = 0;
+  tf.num_freqs = 1;
+
+  if (HasAxis("time")) {
+    tf.time_axis = SelectAxisValues(GetRealAxis("time"), times.front(),
+                                    times.back(), nearest, tf.start_time_index);
+  }
+  tf.num_times = tf.time_axis.size();
+  if (HasAxis("freq")) {
+    std::vector<double> full_freq_axis_h5 = GetRealAxis("freq");
+    tf.start_freq_index = GetFreqIndex(frequencies.front());
+    tf.num_freqs = GetFreqIndex(frequencies.back()) - tf.start_freq_index + 1;
+    tf.freq_axis = std::vector<double>(
+        full_freq_axis_h5.begin() + tf.start_freq_index,
+        full_freq_axis_h5.begin() + tf.start_freq_index + tf.num_freqs);
+  }
+  if (HasAxis("pol")) {
+    const size_t num_pol_h5 = GetAxis("pol").size;
+    if (pol > num_pol_h5 - 1) {
+      throw std::runtime_error("Polarization " + std::to_string(pol) +
+                               " requested from H5Parm, but only " +
+                               std::to_string(num_pol_h5) +
+                               " polarizations are in there.");
+    }
+  }
+
+  return tf;
+}
+
+std::tuple<int, int, int, int, int> SolTab::GetSubArray(
+    const std::string& val_or_weight, const size_t start_antenna_index,
+    const size_t n_antennas, const size_t antenna_step,
+    const size_t start_time_index, const size_t n_times, const size_t time_step,
+    const size_t start_freq_index, const size_t n_freqs, const size_t freq_step,
+    const size_t start_polarization_index, const size_t n_polarizations,
+    const size_t polarization_step, const size_t start_direction_index,
+    const size_t n_directions, const size_t direction_step,
+    std::vector<double>& buffer) const {
   H5::DataSet val = openDataSet(val_or_weight);
 
   // Set offsets and strides
@@ -372,33 +435,63 @@ std::vector<double> SolTab::GetValuesOrWeights(
   for (const AxisInfo& axis_info : axes_) {
     hsize_t stride = 1;
     hsize_t count = 1;
-    hsize_t memdim = 1;
     hsize_t offset = 0;
     if (axis_info.name == "time") {
-      offset = starttimeslot;
-      stride = timestep;
-      count = ntime;
-      memdim = ntime;
+      offset = start_time_index;
+      stride = time_step;
+      count = n_times;
     } else if (axis_info.name == "freq") {
-      offset = startfreq;
-      stride = freqstep;
-      count = nfreq;
-      memdim = nfreq;
+      offset = start_freq_index;
+      stride = freq_step;
+      count = n_freqs;
     } else if (axis_info.name == "ant") {
-      offset = GetAntIndex(ant_name);
+      offset = start_antenna_index;
+      stride = antenna_step;
+      count = n_antennas;
     } else if (axis_info.name == "dir") {
-      offset = dir;
+      offset = start_direction_index;
+      stride = direction_step;
+      count = n_directions;
     } else if (axis_info.name == "pol") {
-      offset = pol;
+      offset = start_polarization_index;
+      stride = polarization_step;
+      count = n_polarizations;
     } else if (axis_info.size != 1) {
       throw std::runtime_error("Axis \"" + axis_info.name +
                                "\" in H5Parm is not understood");
     }
-    memdims.push_back(memdim);
+    memdims.push_back(count);
     offsets.push_back(offset);
     counts.push_back(count);
     strides.push_back(stride);
   }
+
+  size_t antenna_stride = 0;
+  size_t time_stride = 0;
+  size_t freq_stride = 0;
+  size_t polarization_stride = 0;
+  size_t direction_stride = 0;
+  size_t stride = 1;
+  for (auto axis_info = axes_.rbegin(); axis_info != axes_.rend();
+       ++axis_info) {
+    if (axis_info->name == "time") {
+      time_stride = stride;
+      stride *= n_times;
+    } else if (axis_info->name == "freq") {
+      freq_stride = stride;
+      stride *= n_freqs;
+    } else if (axis_info->name == "ant") {
+      antenna_stride = stride;
+      stride *= n_antennas;
+    } else if (axis_info->name == "dir") {
+      direction_stride = stride;
+      stride *= n_directions;
+    } else if (axis_info->name == "pol") {
+      polarization_stride = stride;
+      stride *= n_polarizations;
+    }
+  }
+  buffer.resize(stride);
 
   H5::DataSpace dataspace = val.getSpace();
 
@@ -407,13 +500,70 @@ std::vector<double> SolTab::GetValuesOrWeights(
 
   // Setup memory dataspace
   H5::DataSpace memspace(axes_.size(), memdims.data());
+
   try {
-    val.read(res.data(), H5::PredType::NATIVE_DOUBLE, memspace, dataspace);
+    val.read(buffer.data(), H5::PredType::NATIVE_DOUBLE, memspace, dataspace);
   } catch (H5::DataSetIException& e) {
     e.printErrorStack();
     throw std::runtime_error("Could not read data");
   }
+  return {antenna_stride, time_stride, freq_stride, polarization_stride,
+          direction_stride};
+}
+
+std::vector<double> SolTab::GetSubArray(
+    const std::string& val_or_weight, const std::string& antenna_name,
+    const size_t start_time_index, const size_t n_times, const size_t time_step,
+    const size_t start_freq_index, const size_t n_freqs, const size_t freq_step,
+    const size_t polarization, const size_t direction) const {
+  std::vector<double> res(n_times * n_freqs);
+
+  // A SolTab does not necessarily have an "ant" table.
+  // In that case just leave antenna_index at 0.
+  // If the "ant" table exists but "antenna_name" is invalid, GetAntIndex
+  // throws an exception.
+  const size_t antenna_index = HasAxis("ant") ? GetAntIndex(antenna_name) : 0;
+
+  GetSubArray(val_or_weight, antenna_index, 1, 1, start_time_index, n_times,
+              time_step, start_freq_index, n_freqs, freq_step, polarization, 1,
+              1, direction, 1, 1, res);
+
   return res;
+}
+
+std::vector<double> SolTab::GetCompleteArray(
+    const std::string& value_or_weight, const size_t n_axes,
+    const std::array<size_t, 5>& size_axis) const {
+  std::vector<hsize_t> memory_dimensions;
+  std::vector<hsize_t> offsets;
+  std::vector<hsize_t> counts;
+  std::vector<hsize_t> strides;
+  size_t result_size = 1;
+
+  for (size_t i = 0; i < n_axes; i++) {
+    memory_dimensions.push_back(size_axis[i]);
+    offsets.push_back(0);
+    counts.push_back(size_axis[i]);
+    strides.push_back(1);
+    result_size *= size_axis[i];
+  }
+
+  std::vector<double> result(result_size);
+  H5::DataSet val = openDataSet(value_or_weight);
+  H5::DataSpace dataspace = val.getSpace();
+  dataspace.selectHyperslab(H5S_SELECT_SET, counts.data(), offsets.data(),
+                            strides.data());
+  // Setup memory dataspace
+  H5::DataSpace memory_space(n_axes, memory_dimensions.data());
+  try {
+    val.read(result.data(), H5::PredType::NATIVE_DOUBLE, memory_space,
+             dataspace);
+  } catch (H5::DataSetIException& e) {
+    e.printErrorStack();
+    throw std::runtime_error("Could not read data");
+  }
+
+  return result;
 }
 
 void SolTab::SetAntennas(const std::vector<std::string>& sol_antennas) {
@@ -447,6 +597,10 @@ void SolTab::SetAntennas(const std::vector<std::string>& sol_antennas) {
   ant_map_.clear();
   for (size_t i = 0; i < sol_antennas.size(); ++i) {
     ant_map_[sol_antennas[i]] = i;
+  }
+
+  if (!HasAxis("ant")) {
+    axes_.push_back(AxisInfo{"ant", sol_antennas.size()});
   }
 }
 
@@ -644,9 +798,12 @@ const std::vector<std::string>& SolTab::GetStringAxis(
   } else if (axis_name == "ant") {
     FillCache(ant_list_, ant_map_, "ant");
     return ant_list_;
+  } else if (axis_name == "pol") {
+    FillCache(pol_list_, pol_map_, "pol");
+    return pol_list_;
   } else {
     throw std::runtime_error(
-        "Only string axes 'ant' and 'dir' supported for now.");
+        "Only string axes 'ant', 'dir' and 'pol' supported for now.");
   }
 }
 

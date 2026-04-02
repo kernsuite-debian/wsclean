@@ -6,6 +6,7 @@
 
 #include "facet.h"
 
+#include <aocommon/image.h>
 #include <aocommon/uvector.h>
 
 namespace schaapcommon {
@@ -18,7 +19,7 @@ namespace facets {
 class FacetImage {
  public:
   /**
-   * @brief Construct a new Facet Image object.
+   * @brief Construct a new FacetImage object.
    *
    * @param image_width Width of the main image, in pixels.
    * @param image_height Height of the main image, in pixels.
@@ -44,20 +45,14 @@ class FacetImage {
 
   /**
    * @brief Get the Facet object previously set in SetFacet()
-   *
-   * @return const Facet&
    */
   const std::optional<Facet>& GetFacet() const { return facet_; }
 
-  /**
-   * @return The width of the facet.
-   */
   size_t Width() const { return box_.Width(); }
-
-  /**
-   * @return The height of the facet.
-   */
   size_t Height() const { return box_.Height(); }
+
+  size_t FullImageWidth() const { return image_width_; }
+  size_t FullImageHeight() const { return image_height_; }
 
   /**
    * @return The number of pixels that this facet is displaced in X direction,
@@ -71,16 +66,10 @@ class FacetImage {
    */
   int OffsetY() const { return box_.Min().y; }
 
-  /**
-   * @return The facet image data for the given spectral frequency term.
-   */
   const float* Data(size_t spectral_term) const {
     return data_[spectral_term].data();
   }
 
-  /**
-   * @return The facet image data for the given spectral frequency term.
-   */
   float* Data(size_t spectral_term) { return data_[spectral_term].data(); }
 
   /**
@@ -89,7 +78,7 @@ class FacetImage {
   FacetImage& operator*=(float factor);
 
   /**
-   * @brief Fill the facet buffer with image data.
+   * Fill the facet buffer with image data.
    *
    * @param images Vector of images.
    *        The outer vector length should match the number of spectral terms.
@@ -101,7 +90,7 @@ class FacetImage {
   void CopyToFacet(const std::vector<aocommon::UVector<float>>& images);
 
   /**
-   * @brief Fill the facet buffer with the image data given as a buffer
+   * Fill the facet buffer with the image data given as a buffer.
    *
    * @param images Vector of buffered images.
    *        The vector length should match the number of spectral terms.
@@ -112,15 +101,39 @@ class FacetImage {
   void CopyToFacet(const std::vector<const float*>& images);
 
   /**
-   * @brief Add data from the facet buffer to main images.
-   *
+   * Add data from the facet buffer to main images.
    * @param images Vector of images.
    *        The vector length should match the number of spectral terms.
    *        The width and height of each image should match the values passed
    *        to the constructor.
-   * @throw std::runtime_error if SetFacet was not called.
    */
   void AddToImage(const std::vector<float*>& images) const;
+
+  /**
+   * Returns an image that contains a value of 1 inside the facet
+   * and a value of 0 outside the facet. The image will have the
+   * size of the bounding box of the facet, and can be used in a call
+   * to AddWithMask().
+   */
+  aocommon::Image MakeMask() const;
+
+  /**
+   * Add this facet to the provided full image and weight image,
+   * using a specified weight mask. In case the facet extends beyond
+   * the right (high x) or bottom (high y) edges, the facet image is
+   * trimmed on this side to fall inside the full image. This
+   * situation might arise because of the alignment requirements.
+   * @param[in,out] image  Full image to which the data from this facet will be
+   * added.
+   * @param[in,out] weight Weight image (same size as the full image) that will
+   * be updated.
+   * @param[in] mask Image with values >= 0 that are used as weights for the
+   * facet. This can typically be created with @ref MakeMask(), after
+   * modifications (e.g. feathering).
+   * @param Spectral index term.
+   */
+  void AddWithMask(float* image, float* weight, const aocommon::Image& mask,
+                   size_t term) const;
 
   /**
    * @brief Multiply the image values enclosed by the facet with scalar valued
@@ -140,8 +153,6 @@ class FacetImage {
    * @brief Pre-calculate the horizontal intersections (xmin, xmax)
    * of for each y-coordinate row in the facet bounding box with the
    * main image.
-   *
-   * @param facet Facet
    */
   void SetHorizontalIntersections(const Facet& facet);
 

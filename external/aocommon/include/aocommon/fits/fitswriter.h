@@ -316,6 +316,24 @@ class FitsWriter : public FitsBase {
     hour = int(fmod(round(mjd * 24.0), 24.0));
   }
 
+  static void ModifiedJulianDateToYMD(double mjd, int& year, int& month,
+                                      int& day) {
+    const double jd = mjd + 2400000.5;
+    const int z = jd + 0.5;
+    const int w = (z - 1867216.25) / 36524.25;
+    const int x = w / 4;
+    const int a = z + 1 + w - x;
+    const int b = a + 1524;
+    const int c = (b - 122.1) / 365.25;
+    const int d = 365.25 * c;
+    int e = (b - d) / 30.6001;
+    const int f = 30.6001 * e;
+    day = b - d - f;
+    while (e - 1 > 12) e -= 12;
+    month = e - 1;
+    year = c - 4715 - ((e - 1) > 2 ? 1 : 0);
+  }
+
   void AddExtraDimension(enum DimensionType type, size_t size) {
     _extraDimensions.emplace_back(Dimension{type, size});
   }
@@ -349,22 +367,6 @@ class FitsWriter : public FitsBase {
   std::map<std::string, std::string> _extraStringKeywords;
   std::map<std::string, double> _extraNumKeywords;
   double _timeDirectionStart, _timeDirectionInc;
-
-  void julianDateToYMD(double jd, int& year, int& month, int& day) const {
-    int z = jd + 0.5;
-    int w = (z - 1867216.25) / 36524.25;
-    int x = w / 4;
-    int a = z + 1 + w - x;
-    int b = a + 1524;
-    int c = (b - 122.1) / 365.25;
-    int d = 365.25 * c;
-    int e = (b - d) / 30.6001;
-    int f = 30.6001 * e;
-    day = b - d - f;
-    while (e - 1 > 12) e -= 12;
-    month = e - 1;
-    year = c - 4715 - ((e - 1) > 2 ? 1 : 0);
-  }
 
   void writeHeaders(fitsfile*& fptr, const std::string& filename) const {
     if (_extraDimensions.empty()) {
@@ -661,7 +663,7 @@ class FitsWriter : public FitsBase {
     checkStatus(status, filename);
 
     int year, month, day, hour, min, sec, deciSec;
-    julianDateToYMD(_dateObs + 2400000.5, year, month, day);
+    ModifiedJulianDateToYMD(_dateObs, year, month, day);
     MJDToHMS(_dateObs, hour, min, sec, deciSec);
     char dateStr[40];
     std::sprintf(dateStr, "%d-%02d-%02dT%02d:%02d:%02d.%01d", year, month, day,

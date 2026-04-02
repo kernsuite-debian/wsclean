@@ -43,6 +43,29 @@ class PolynomialFitter {
   std::vector<std::array<NumT, 3>> data_points_;
 };
 
+/**
+ * Convert logarithmic polynomial coefficients to those of a (normal) polynomial
+ * of a given order.
+ * @param [in,out] terms The size of this vector determines on input the number
+ * of coefficients fitted. On output, it contains the calculated fit polynomial
+ * terms.
+ */
+void PowerLawToPolynomialCoefficients(std::vector<float>& terms,
+                                      const std::vector<float>& pl_terms,
+                                      float pl_reference_frequency_hz,
+                                      float polynomial_reference_frequency_hz,
+                                      float min_frequency_hz,
+                                      float max_frequency_hz);
+
+/**
+ * Shift (normal) polynomial to a different reference frequency.
+ * @param [in,out] terms The coefficients of the input polynomial. On output, it
+ * contains the calculated fit polynomial terms.
+ */
+void ShiftPolynomialReferenceFrequency(std::vector<float>& terms,
+                                       float input_reference_frequency_hz,
+                                       float output_reference_frequency_hz);
+
 }  // namespace fitters
 }  // namespace schaapcommon
 

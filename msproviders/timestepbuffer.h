@@ -5,6 +5,8 @@
 
 #include <aocommon/uvector.h>
 
+namespace wsclean {
+
 class TimestepBufferReader;
 
 /**
@@ -18,63 +20,82 @@ class TimestepBuffer final : public MSProvider {
   friend class TimestepBufferReader;
 
  public:
-  TimestepBuffer(MSProvider* msProvider, bool readModel)
-      : _msProvider(msProvider), _readModel(readModel) {
-    _msProvider->ResetWritePosition();
+  TimestepBuffer(MSProvider* ms_provider, bool read_model)
+      : ms_provider_(ms_provider), read_model_(read_model) {
+    ms_provider_->ResetWritePosition();
   }
 
   virtual ~TimestepBuffer(){};
 
-  SynchronizedMS MS() override { return _msProvider->MS(); }
+  std::unique_ptr<MSReader> MakeReader() final;
 
-  std::unique_ptr<MSReader> MakeReader() final override;
+  void NextOutputRow() final { ms_provider_->NextOutputRow(); }
 
-  const std::string& DataColumnName() override {
-    return _msProvider->DataColumnName();
-  }
-
-  void NextOutputRow() override { _msProvider->NextOutputRow(); }
-
-  void ResetWritePosition() override { _msProvider->ResetWritePosition(); }
+  void ResetWritePosition() final { ms_provider_->ResetWritePosition(); }
 
   virtual void WriteModel(const std::complex<float>* buffer,
-                          bool addToMS) override {
-    _msProvider->WriteModel(buffer, addToMS);
+                          bool addToMS) final {
+    ms_provider_->WriteModel(buffer, addToMS);
   }
 
-  void ReopenRW() override { _msProvider->ReopenRW(); }
+  void ReopenRW() final { ms_provider_->ReopenRW(); }
 
-  double StartTime() override { return _msProvider->StartTime(); }
+  double StartTime() final { return ms_provider_->StartTime(); }
 
-  size_t DataDescId() override { return _msProvider->DataDescId(); }
-
-  void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow) override {
-    _msProvider->MakeIdToMSRowMapping(idToMSRow);
+  aocommon::PolarizationEnum Polarization() final {
+    return ms_provider_->Polarization();
   }
 
-  aocommon::PolarizationEnum Polarization() override {
-    return _msProvider->Polarization();
+  bool IsRegular() const final { return ms_provider_->IsRegular(); }
+
+  bool HasFrequencyBda() const override {
+    return ms_provider_->HasFrequencyBda();
   }
 
-  size_t NChannels() override { return _msProvider->NChannels(); }
+  size_t NMaxChannels() final { return ms_provider_->NMaxChannels(); }
 
-  size_t NAntennas() override { return _msProvider->NAntennas(); }
+  size_t NAntennas() final { return ms_provider_->NAntennas(); }
 
-  size_t NPolarizations() override { return _msProvider->NPolarizations(); }
+  size_t NPolarizations() final { return ms_provider_->NPolarizations(); }
 
-  const aocommon::BandData& Band() override { return _msProvider->Band(); }
+  size_t NRows() final { return ms_provider_->NRows(); }
+
+  double Interval() final { return ms_provider_->Interval(); }
+
+  ObservationInfo GetObservationInfo() final {
+    return ms_provider_->GetObservationInfo();
+  }
+
+  std::vector<std::string> GetAntennaNames() final {
+    return ms_provider_->GetAntennaNames();
+  }
+
+  const aocommon::MultiBandData& SelectedBands() final {
+    return ms_provider_->SelectedBands();
+  }
+
+  std::optional<SynchronizedMS> MsIfAvailable() final {
+    return ms_provider_->MsIfAvailable();
+  }
+
+  std::string PartDescription() const final {
+    return ms_provider_->PartDescription();
+  }
 
  private:
   struct RowData {
-    std::vector<std::complex<float>> data, model;
+    std::vector<std::complex<float>> data;
+    std::vector<std::complex<float>> model;
     std::vector<float> weights;
-    MSProvider::MetaData metaData;
-    size_t rowId;
+    MSProvider::MetaData metadata;
+    size_t row_id;
   };
 
-  MSProvider* _msProvider;
+  MSProvider* ms_provider_;
 
-  bool _readModel;
+  bool read_model_;
 };
+
+}  // namespace wsclean
 
 #endif

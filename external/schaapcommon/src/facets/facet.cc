@@ -106,12 +106,13 @@ PixelPosition Facet::Centroid() const {
       boost::geometry::model::point<float, 2, boost::geometry::cs::cartesian>;
   boost::geometry::model::polygon<point_f> poly;
 
-  point_f x;
   for (const PixelPosition& pixel : pixels_) {
     boost::geometry::append(poly, point_f(pixel.x, pixel.y));
   }
+
+  point_f x{};
   boost::geometry::centroid(poly, x);
-  return PixelPosition(x.get<0>(), x.get<1>());
+  return {int(x.get<0>()), int(x.get<1>())};
 }
 
 namespace {
@@ -286,27 +287,19 @@ std::vector<PixelPosition> Facet::PolygonIntersection(
 }
 
 bool Facet::Contains(const PixelPosition& pixel) const {
-  std::vector<PixelPosition> polygon = pixels_;
-  boost::geometry::correct(polygon);
+  // This function previously used the boost::geometry::covered_by() function,
+  // but this function caused rounding issues, which could cause two adjacent
+  // facets to both return false for a point on their bounding edge.
+  const std::vector<std::pair<int, int>> intersections =
+      HorizontalIntersections(pixel.y);
+  if (intersections.empty()) return false;
 
-  bool inClosedPolygon = boost::geometry::covered_by(pixel, polygon);
-
-  if (!inClosedPolygon) {
-    return false;
-  } else {
-    // Pixel is in the closed polygon, but we should exclude it from
-    // zero-length corners and edges that are "owned" by another facet
-    const std::vector<std::pair<int, int>> intersections =
-        HorizontalIntersections(pixel.y);
-    if (intersections.empty()) return false;
-
-    for (const auto& isect : intersections) {
-      if (isect.second == pixel.x) {
-        return false;
-      }
+  for (const auto& isect : intersections) {
+    if (isect.first <= pixel.x && isect.second > pixel.x) {
+      return true;
     }
-    return true;
   }
+  return false;
 }
 
 void Facet::Serialize(aocommon::SerialOStream& stream) const {

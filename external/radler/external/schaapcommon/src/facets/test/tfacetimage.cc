@@ -14,7 +14,7 @@ using schaapcommon::facets::BoundingBox;
 using schaapcommon::facets::Coord;
 using schaapcommon::facets::Facet;
 using schaapcommon::facets::FacetImage;
-using schaapcommon::facets::Pixel;
+using schaapcommon::facets::PixelPosition;
 
 namespace utf = boost::unit_test;
 
@@ -43,12 +43,12 @@ Facet CreateSquareFacet(size_t size) {
                                        {radecZero, -radecSize}};
 
   const Facet facet(data, std::move(coordinates));
-  const std::vector<Pixel>& pixels = facet.GetPixels();
+  const std::vector<PixelPosition>& pixels = facet.GetPixels();
   BOOST_REQUIRE_EQUAL(pixels.size(), 4u);
-  BOOST_CHECK_EQUAL(pixels[0], Pixel(0, 0));
-  BOOST_CHECK_EQUAL(pixels[1], Pixel(size, 0));
-  BOOST_CHECK_EQUAL(pixels[2], Pixel(size, size));
-  BOOST_CHECK_EQUAL(pixels[3], Pixel(0, size));
+  BOOST_CHECK_EQUAL(pixels[0], PixelPosition(0, 0));
+  BOOST_CHECK_EQUAL(pixels[1], PixelPosition(size, 0));
+  BOOST_CHECK_EQUAL(pixels[2], PixelPosition(size, size));
+  BOOST_CHECK_EQUAL(pixels[3], PixelPosition(0, size));
 
   return facet;
 }
@@ -93,6 +93,33 @@ void FillFacetData(float* data, const Facet& facet, float value) {
   }
 }
 
+std::string MaskToString(const aocommon::Image& mask) {
+  std::ostringstream str;
+  const float* iterator = mask.Data();
+  for (size_t y = 0; y != mask.Height(); ++y) {
+    for (size_t x = 0; x != mask.Width(); ++x) {
+      BOOST_CHECK(*iterator == 0.0 || *iterator == 1.0);
+      str << (*iterator == 0.0 ? ' ' : 'X');
+      ++iterator;
+    }
+    str << '\n';
+  }
+  return str.str();
+}
+
+FacetImage MakeTriangleFacetImage() {
+  Facet::InitializationData data(0.004, 0.004, 50, 50);
+  data.padding = kPadding;
+  data.align = 1;
+  data.make_square = false;
+
+  std::vector<Coord> coordinates{{-0.08, 0.08}, {-0.05, 0.07}, {-0.06, 0.04}};
+  const Facet facet(data, std::move(coordinates));
+  FacetImage facet_image(data.image_width, data.image_height, 1);
+  facet_image.SetFacet(facet, false);
+  return facet_image;
+}
+
 }  // namespace
 
 BOOST_AUTO_TEST_CASE(constructor) {
@@ -101,33 +128,19 @@ BOOST_AUTO_TEST_CASE(constructor) {
   BOOST_CHECK_EQUAL(fi.Height(), 0);
   BOOST_CHECK_EQUAL(fi.OffsetX(), 0);
   BOOST_CHECK_EQUAL(fi.OffsetY(), 0);
-
-  // When SetFacet was not called, CopyToFacet should throw.
-  std::vector<aocommon::UVector<float>> input_images;
-  for (std::size_t i = 0; i < kNTerms; ++i) {
-    input_images.emplace_back(kImageSize * kImageSize);
-  }
-  BOOST_CHECK_THROW(fi.CopyToFacet(input_images), std::runtime_error);
-
-  // When SetFacet was not called, AddToImage should throw.
-  std::vector<float*> output_images(kNTerms);
-  BOOST_CHECK_THROW(fi.AddToImage(output_images), std::runtime_error);
-
-  BOOST_CHECK_THROW(FacetImage(0, kImageSize, kNTerms), std::invalid_argument);
-  BOOST_CHECK_THROW(FacetImage(kImageSize, 0, kNTerms), std::invalid_argument);
-  BOOST_CHECK_THROW(FacetImage(kImageSize, kImageSize, 0),
-                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(set_facet) {
   const Facet facet = CreateSquareFacet(40);
-  BOOST_CHECK_EQUAL(facet.GetTrimmedBoundingBox().Min(), Pixel(0, 0));
-  BOOST_CHECK_EQUAL(facet.GetTrimmedBoundingBox().Max(), Pixel(40, 40));
+  BOOST_CHECK_EQUAL(facet.GetTrimmedBoundingBox().Min(), PixelPosition(0, 0));
+  BOOST_CHECK_EQUAL(facet.GetTrimmedBoundingBox().Max(), PixelPosition(40, 40));
 
   // Padding increases the facet to -5...45.
   // Alignment rounds -5 down to -6 and 45 up to 46, yielding (46 -- 6) % 4 = 0
-  BOOST_CHECK_EQUAL(facet.GetUntrimmedBoundingBox().Min(), Pixel(-6, -6));
-  BOOST_CHECK_EQUAL(facet.GetUntrimmedBoundingBox().Max(), Pixel(46, 46));
+  BOOST_CHECK_EQUAL(facet.GetUntrimmedBoundingBox().Min(),
+                    PixelPosition(-6, -6));
+  BOOST_CHECK_EQUAL(facet.GetUntrimmedBoundingBox().Max(),
+                    PixelPosition(46, 46));
 
   FacetImage fi(kImageSize, kImageSize, kNTerms);
   // Facet is uninitialized upon construction
@@ -139,13 +152,14 @@ BOOST_AUTO_TEST_CASE(set_facet) {
   BOOST_CHECK(fi.GetFacet());
 
   // Repeat checks above on facet returned by FacetImage::GetFacet()
-  BOOST_CHECK_EQUAL(fi.GetFacet()->GetTrimmedBoundingBox().Min(), Pixel(0, 0));
+  BOOST_CHECK_EQUAL(fi.GetFacet()->GetTrimmedBoundingBox().Min(),
+                    PixelPosition(0, 0));
   BOOST_CHECK_EQUAL(fi.GetFacet()->GetTrimmedBoundingBox().Max(),
-                    Pixel(40, 40));
+                    PixelPosition(40, 40));
   BOOST_CHECK_EQUAL(fi.GetFacet()->GetUntrimmedBoundingBox().Min(),
-                    Pixel(-6, -6));
+                    PixelPosition(-6, -6));
   BOOST_CHECK_EQUAL(fi.GetFacet()->GetUntrimmedBoundingBox().Max(),
-                    Pixel(46, 46));
+                    PixelPosition(46, 46));
 
   // Check image dimensions derived from facet
   BOOST_CHECK_EQUAL(fi.Width(), 40);
@@ -235,7 +249,7 @@ BOOST_AUTO_TEST_CASE(multiply) {
   }
 }
 
-BOOST_AUTO_TEST_CASE(add_facet_to_image) {
+BOOST_AUTO_TEST_CASE(add_to_image) {
   // Properties of the main image:
   Facet::InitializationData data(0.002, 0.002, kImageSize * 2, kImageSize);
   data.padding = kPadding;
@@ -307,6 +321,70 @@ BOOST_AUTO_TEST_CASE(add_facet_to_image) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(make_mask) {
+  FacetImage facet_image = MakeTriangleFacetImage();
+  FillFacetData(facet_image.Data(0), *facet_image.GetFacet(), 1);
+  const aocommon::Image image = facet_image.MakeMask();
+  BOOST_CHECK_EQUAL(image.Width(), 10);
+  BOOST_CHECK_EQUAL(image.Height(), 12);
+  const std::string reference =
+      "          \n"
+      "          \n"
+      "   X      \n"
+      "   XX     \n"
+      "  XXX     \n"
+      "  XXXX    \n"
+      " XXXXX    \n"
+      " XXXXXX   \n"
+      " XXXXXX   \n"
+      "   XXXXX  \n"
+      "      XX  \n"
+      "          \n";
+  BOOST_CHECK_EQUAL(MaskToString(image), reference);
+}
+
+BOOST_AUTO_TEST_CASE(add_with_mask) {
+  FacetImage facet_image = MakeTriangleFacetImage();
+  std::fill_n(facet_image.Data(0), facet_image.Width() * facet_image.Height(),
+              4.0f);
+
+  const size_t full_width = facet_image.FullImageWidth();
+  const size_t full_height = facet_image.FullImageHeight();
+  aocommon::Image full_image(full_width, full_height, 3.0f);
+  aocommon::Image weight_image(full_width, full_height, 10.0f);
+  aocommon::Image mask = facet_image.MakeMask();
+  mask *= 0.5;
+  mask[0] = 1.0;  // Make one weight outside bounding box different to test this
+                  // works too
+  facet_image.AddWithMask(full_image.Data(), weight_image.Data(), mask, 0);
+  const size_t offset =
+      facet_image.OffsetX() + facet_image.OffsetY() * full_width;
+  size_t image_modifications = 0;
+  for (size_t y = 0; y != facet_image.Height(); ++y) {
+    for (size_t x = 0; x != facet_image.Width(); ++x) {
+      if (x == 0 && y == 0) {
+        BOOST_CHECK_CLOSE_FRACTION(full_image[offset], 7.0f, 1e-6);
+        BOOST_CHECK_CLOSE_FRACTION(weight_image[offset], 11.0f, 1e-6);
+      } else {
+        bool image_changed =
+            std::fabs(full_image[offset + x + y * full_width] - 3.0f) > 1e-6;
+        bool weight_changed =
+            std::fabs(weight_image[offset + x + y * full_width] - 10.0f) > 1e-6;
+        BOOST_CHECK(image_changed == weight_changed);
+        if (image_changed) {
+          ++image_modifications;
+          BOOST_CHECK_CLOSE_FRACTION(full_image[offset + x + y * full_width],
+                                     5.0f, 1e-6);
+          BOOST_CHECK_CLOSE_FRACTION(weight_image[offset + x + y * full_width],
+                                     10.5f, 1e-6);
+        }
+      }
+    }
+  }
+  // Facet contains 34 pixels (see nr of Xes in the make_mask test)
+  BOOST_CHECK_EQUAL(image_modifications, 34);
+}
+
 BOOST_AUTO_TEST_CASE(multiply_image_inside_facet) {
   // Properties of the main image:
   Facet::InitializationData data(0.002, 0.002, kImageSize * 2, kImageSize);
@@ -337,9 +415,6 @@ BOOST_AUTO_TEST_CASE(multiply_image_inside_facet) {
   }
 
   FacetImage facet_image(data.image_width, data.image_height, kNTerms);
-
-  BOOST_CHECK_THROW(facet_image.MultiplyImageInsideFacet(output_ptrs, 1.0f),
-                    std::runtime_error);
 
   facet_image.SetFacet(facet1, false);
   BOOST_CHECK_NO_THROW(facet_image.MultiplyImageInsideFacet(output_ptrs, 2.0f));

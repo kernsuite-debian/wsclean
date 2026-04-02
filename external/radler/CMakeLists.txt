@@ -1,18 +1,22 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.18)
 include(ExternalProject)
 
 # When Radler is compiled as an ExternalProject inside another project, set this
 # option to On. See, e.g., the wsclean CMake file for an example.
 option(COMPILE_AS_EXTERNAL_PROJECT OFF)
-option(PORTABLE "Generate portable code" OFF)
+option(PORTABLE "Build portable binaries (with slightly decreased performance)"
+       OFF)
 option(BUILD_PYTHON_BINDINGS "Build python bindings" OFF)
 option(BUILD_DOCUMENTATION "Build documentation" OFF)
 option(BUILD_DOCSTRINGS "Build docstrings (implies BUILD_DOCUMENTATION)" OFF)
 
-set(RADLER_VERSION 0.0.0)
-project(radler VERSION ${RADLER_VERSION})
+set(RADLER_VERSION 0.1.0) # Keep in sync with `pyproject.toml` file
+project(
+  radler
+  VERSION ${RADLER_VERSION}
+  LANGUAGES CXX)
 if(RADLER_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
   set(RADLER_VERSION_MAJOR "${CMAKE_MATCH_1}")
   set(RADLER_VERSION_MINOR "${CMAKE_MATCH_2}")
@@ -29,7 +33,7 @@ if(POLICY CMP0115)
   cmake_policy(SET CMP0115 NEW)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options(
@@ -47,18 +51,9 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_compile_options(-DNDEBUG)
 endif()
 
-include(CheckCXXCompilerFlag)
-if(PORTABLE)
-  if(DEFINED TARGET_CPU)
-    message(WARNING "You have selected to build PORTABLE binaries. "
-                    "TARGET_CPU settings will be ignored.")
-    unset(TARGET_CPU CACHE)
-  endif()
-endif()
-
 if(NOT COMPILE_AS_EXTERNAL_PROJECT)
   # Include submodules
-  set(ExternalSubmoduleDirectories aocommon pybind11 schaapcommon)
+  set(ExternalSubmoduleDirectories aocommon schaapcommon)
   foreach(ExternalSubmodule ${ExternalSubmoduleDirectories})
     if(NOT EXISTS ${CMAKE_SOURCE_DIR}/external/${ExternalSubmodule})
       message(
@@ -93,6 +88,9 @@ if(NOT COMPILE_AS_EXTERNAL_PROJECT)
   endif()
 endif()
 
+# User may optionally set `TARGET_CPU` if `PORTABLE=OFF`
+include(external/aocommon/CMake/SetTargetCPU.cmake)
+
 if(COMPILE_AS_EXTERNAL_PROJECT)
   message(
     STATUS "Radler is compiled as an external project within another project.")
@@ -108,25 +106,16 @@ if(COMPILE_AS_EXTERNAL_PROJECT)
         "SCHAAPCOMMON_SOURCE_DIR not specified. Please add -DSCHAAPCOMMON_SOURCE_DIR to the CMAKE_ARGS."
     )
   endif()
-  if(NOT DEFINED PYBIND11_SOURCE_DIR)
-    message(
-      FATAL_ERROR
-        "PYBIND11_SOURCE_DIR not specified. Please add -DPYBIND11_SOURCE_DIR to the CMAKE_ARGS."
-    )
-  endif()
 else()
   set(AOCOMMON_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/external/aocommon/include)
   set(SCHAAPCOMMON_SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/schaapcommon)
-  set(PYBIND11_SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/pybind11)
 endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
-# Boost date_time is needed in aocommon
-find_package(
-  Boost
-  COMPONENTS date_time
-  REQUIRED)
+# Boost date_time is needed in aocommon. date_time is header-only since Boost
+# version 1.73. (Using "COMPONENTS date_time" no longer works from Boost 1.89.)
+find_package(Boost 1.73 REQUIRED)
 
 # Threads
 find_package(Threads REQUIRED)
@@ -144,7 +133,7 @@ endif()
 # Find and include HDF5
 find_package(
   HDF5
-  COMPONENTS C CXX
+  COMPONENTS CXX
   REQUIRED)
 add_definitions(${HDF5_DEFINITIONS} -DH5_USE_110_API)
 
@@ -155,20 +144,30 @@ find_package(Casacore REQUIRED COMPONENTS fits casa ms tables measures)
 # CFitsio
 find_package(CFITSIO REQUIRED)
 
-# Python3
-find_package(PythonInterp REQUIRED) # Call before finding PythonLibs!
-find_package(PythonLibs 3 REQUIRED)
-message(STATUS "Using python version ${PYTHON_VERSION_STRING}")
+# Python
+if(DEFINED ENV{CIBUILDWHEEL})
+  find_package(
+    Python
+    COMPONENTS Interpreter Development.Module
+    REQUIRED)
+else()
+  find_package(
+    Python
+    COMPONENTS Interpreter Development
+    REQUIRED)
+endif()
+message(STATUS "Using python version ${Python_VERSION}")
 
+find_package(pybind11 CONFIG REQUIRED HINTS ${Python_SITELIB})
+
+set(SCHAAPCOMMON_MODULES fitters math)
 if(COMPILE_AS_EXTERNAL_PROJECT)
   add_subdirectory(${SCHAAPCOMMON_SOURCE_DIR}
                    ${PROJECT_BINARY_DIR}/schaapcommon)
-  add_subdirectory(${PYBIND11_SOURCE_DIR} ${PROJECT_BINARY_DIR}/pybind11)
 else()
   add_subdirectory(${SCHAAPCOMMON_SOURCE_DIR})
-  add_subdirectory(${PYBIND11_SOURCE_DIR})
 endif()
-target_include_directories(schaapcommon SYSTEM PUBLIC ${AOCOMMON_INCLUDE_DIR})
+target_include_directories(schaapcommon PUBLIC ${AOCOMMON_INCLUDE_DIR})
 
 # When building the python bindings, set the rpath to the install directory, so
 # that importing the python module doesn't require to set the LD_LIBRARY_PATH
@@ -203,9 +202,8 @@ set(RADLER_TARGET_INCLUDE_DIRS
     ${pybind11_INCLUDE_DIRS}
     ${SCHAAPCOMMON_SOURCE_DIR}/include)
 
-set(RADLER_TARGET_LIBS
-    ${Boost_DATE_TIME_LIBRARY} ${CMAKE_THREAD_LIBS_INIT} ${CASACORE_LIBRARIES}
-    ${CFITSIO_LIBRARY} pybind11::embed schaapcommon)
+set(RADLER_TARGET_LIBS ${CMAKE_THREAD_LIBS_INIT} ${CASACORE_LIBRARIES}
+                       ${CFITSIO_LIBRARY} pybind11::embed schaapcommon)
 
 # Source directories
 add_subdirectory(cpp)
@@ -217,10 +215,7 @@ endif()
 # Compile tests
 if(NOT ${COMPILE_AS_EXTERNAL_PROJECT} AND ${BUILD_TESTING})
   include(CTest)
-  find_package(
-    Boost
-    COMPONENTS unit_test_framework
-    REQUIRED)
+  find_package(Boost REQUIRED COMPONENTS unit_test_framework)
 
   # Set up a test_data directory in the cpp/test directory.
   set(TEST_DATA_DIR ${CMAKE_BINARY_DIR}/cpp/test/test_data)

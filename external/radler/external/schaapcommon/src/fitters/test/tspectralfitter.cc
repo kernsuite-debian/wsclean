@@ -87,4 +87,42 @@ BOOST_AUTO_TEST_CASE(set_forced_terms) {
                     std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(forced_fit) {
+  const size_t kNTerms = 2;
+  SpectralFitter fitter(SpectralFittingMode::kForcedTerms, kNTerms,
+                        {100e6, 110e6}, {1.0, 1.0});
+  const size_t kWidth = 10;
+  const size_t kHeight = 20;
+  std::vector<aocommon::Image> spectral_terms(kNTerms - 1);
+  spectral_terms[0] = aocommon::Image(kWidth, kHeight, 1.0);
+  fitter.SetForcedTerms(std::move(spectral_terms));
+  const std::array<float, 2> values = {7.0, 7.0};
+  std::vector<float> fitted_terms(2);
+  // Fit the last pixel of the image
+  fitter.Fit(fitted_terms, values.data(), kWidth - 1, kHeight - 1);
+  BOOST_CHECK_CLOSE_FRACTION(fitted_terms[0], 7.0, 1e-6);
+  BOOST_CHECK_CLOSE_FRACTION(fitted_terms[1], 1.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(forced_fit_and_evaluate) {
+  const size_t kNTerms = 2;
+  SpectralFitter fitter(SpectralFittingMode::kForcedTerms, kNTerms,
+                        {100e6, 110e6}, {1.0, 1.0});
+  const size_t kWidth = 5;
+  const size_t kHeight = 5;
+  std::vector<aocommon::Image> spectral_terms(kNTerms - 1);
+  spectral_terms[0] = aocommon::Image(kWidth, kHeight, 1.0);
+  // Set the term at position (0, 0) to 0
+  spectral_terms[0][0] = 0.0;
+  fitter.SetForcedTerms(std::move(spectral_terms));
+  std::array<float, 2> values = {40.0, 44.0};
+  std::vector<float> fitted_terms(2);
+  // Fit and evaluate a pixel at position (0, 0)
+  fitter.FitAndEvaluate(values.data(), 0, 0, fitted_terms);
+  BOOST_CHECK_CLOSE_FRACTION(fitted_terms[0], 42.0, 1e-6);
+  BOOST_CHECK_CLOSE_FRACTION(fitted_terms[1], 0.0, 1e-6);
+  BOOST_CHECK_CLOSE_FRACTION(values[0], 42.0, 1e-6);
+  BOOST_CHECK_CLOSE_FRACTION(values[1], 42.0, 1e-6);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

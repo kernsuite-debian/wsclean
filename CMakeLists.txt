@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.23)
 
-project(wsclean)
+project(wsclean LANGUAGES CXX)
 
 include(ExternalProject)
 include(CMakeVersionInfo.txt)
@@ -15,7 +15,8 @@ add_compile_options(
   -Wvla
   -Wpointer-arith
   -Wextra
-  -Wno-unused-parameter)
+  -Wno-unused-parameter
+  -Wno-psabi)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   message(STATUS "Debug build selected: setting linking flag --no-undefined")
@@ -24,36 +25,24 @@ else()
   add_compile_options(-DNDEBUG)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(PORTABLE "Generate portable code" OFF)
+option(PORTABLE "Build portable binaries (with slightly decreased performance)"
+       OFF)
 option(BUILD_PACKAGES "Build Debian packages" OFF)
+option(ENABLE_WTOWERS
+       "Enable compiling w-towers gridder (requires ska-sdp-func library)" OFF)
 
-include(CheckCXXCompilerFlag)
-if(PORTABLE)
-  if(DEFINED TARGET_CPU)
-    message(WARNING "You have selected to build PORTABLE binaries. "
-                    "TARGET_CPU settings will be ignored.")
-    unset(TARGET_CPU CACHE)
-  endif()
-else()
-  if(DEFINED TARGET_CPU)
-    add_compile_options(-march=${TARGET_CPU})
-    set(RADLER_TARGET_CPU "-DTARGET_CPU=${TARGET_CPU}")
-  else()
-    check_cxx_compiler_flag("-march=native" COMPILER_HAS_MARCH_NATIVE)
-    if(COMPILER_HAS_MARCH_NATIVE)
-      add_compile_options(-march=native)
-    else()
-      message(
-        WARNING "The compiler doesn't support -march=native for your CPU.")
-    endif()
-  endif()
-endif()
+set(RADLER_CXX_FLAGS
+    " "
+    CACHE STRING "Extra C++ flags used for compiling Radler")
 
-set(ExternalSubmoduleDirectories aocommon pybind11 radler schaapcommon)
+set(ExternalSubmoduleDirectories aocommon radler schaapcommon)
+
+find_package(pybind11 CONFIG REQUIRED)
+
 foreach(ExternalSubmodule ${ExternalSubmoduleDirectories})
   if(NOT EXISTS ${CMAKE_SOURCE_DIR}/external/${ExternalSubmodule})
     message(
@@ -87,26 +76,58 @@ if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
   endif()
 endif()
 
-# Include aocommon
+# User may optionally set `TARGET_CPU` if `PORTABLE=OFF`
+include(external/aocommon/CMake/SetTargetCPU.cmake)
+
+# Include aocommon.
 include_directories("${CMAKE_SOURCE_DIR}/external/aocommon/include/")
 
 # Schaapcommon
+set(SCHAAPCOMMON_MODULES ducc0 facets fitters h5parm math reordering)
 add_subdirectory("${CMAKE_SOURCE_DIR}/external/schaapcommon")
 include_directories("${CMAKE_SOURCE_DIR}/external/schaapcommon/include")
-
-include_directories(external/wgridder)
+include_directories("${CMAKE_SOURCE_DIR}/external/schaapcommon/external")
 
 # Casacore has a separate CMake file in this directory
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/CMake)
 
+# W-towers requires ska-sdp-func
+if(ENABLE_WTOWERS)
+  find_package(SKA_SDP_FUNC NAMES ska-sdp-func)
+  if(SKA_SDP_FUNC_FOUND)
+    if(EXISTS
+       "${SKA_SDP_FUNC_INCLUDE_DIR}/ska-sdp-func/grid_data/sdp_grid_wstack_wtower.h"
+    )
+      message(
+        STATUS
+          "Enabling w-towers gridder; Using ska-sdp-func library found in ${SKA_SDP_FUNC_INCLUDE_DIR}"
+      )
+      add_definitions(-DBUILD_WTOWERS)
+      include_directories(BEFORE SYSTEM ${SKA_SDP_FUNC_INCLUDE_DIR})
+    else()
+      message(
+        FATAL_ERROR
+          "Can't enable w-towers gridder: unsuitable ska-sdp-func library found in ${SKA_SDP_FUNC_INCLUDE_DIR}"
+      )
+    endif()
+  else(SKA_SDP_FUNC_FOUND)
+    message(
+      FATAL_ERROR
+        "Can't enable w-towers gridder: ska-sdp-func library not found.")
+  endif(SKA_SDP_FUNC_FOUND)
+else(ENABLE_WTOWERS)
+  message(STATUS "Disabling w-towers gridder.")
+endif(ENABLE_WTOWERS)
+
 find_package(
   HDF5
-  COMPONENTS C CXX
+  COMPONENTS CXX
   REQUIRED)
 add_definitions(${HDF5_DEFINITIONS})
 
 set(CASACORE_MAKE_REQUIRED_EXTERNALS_OPTIONAL TRUE)
-find_package(Casacore REQUIRED COMPONENTS casa ms tables measures fits)
+find_package(Casacore 3.6 REQUIRED COMPONENTS casa ms tables measures fits)
+
 find_package(CFITSIO REQUIRED)
 # Chgcentre uses a lapack function. EveryBeam provides lapack, but because
 # EveryBeam is not required, chgcentre will fail to link when EveryBeam is not
@@ -122,20 +143,21 @@ find_path(
   NAMES fftw3.h
   HINTS ENV FFTW3_INCLUDE)
 
-find_package(PythonLibs 3 REQUIRED)
-find_package(PythonInterp REQUIRED)
-message(STATUS "Using python version ${PYTHON_VERSION_STRING}")
-
-# Include pybind11
-add_subdirectory("${CMAKE_SOURCE_DIR}/external/pybind11")
-include_directories(SYSTEM ${pybind11_INCLUDE_DIRS})
+find_package(
+  Python3
+  COMPONENTS Interpreter Development
+  REQUIRED)
 
 #Prevent accidentally finding old BoostConfig.cmake file from casapy
 set(Boost_NO_BOOST_CMAKE ON)
-find_package(
-  Boost
-  COMPONENTS date_time filesystem system program_options
-  REQUIRED)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
+  # Disable warning; both old and new policies are fine
+  cmake_policy(SET CMP0167 NEW)
+endif()
+#For providing compatibility with Boost 1.89+, the Boost COMPONENTS do not
+#include date_time and system, which were removed in Boost 1.89. They have been
+#header-only since Boost 1.73 / 1.69, so the minimum Boost version is 1.73.
+find_package(Boost 1.73 REQUIRED COMPONENTS filesystem program_options)
 find_package(Threads REQUIRED)
 find_library(DL_LIB dl REQUIRED)
 
@@ -163,7 +185,8 @@ if(MPI_FOUND)
   endif()
   add_definitions(-DHAVE_MPI)
   include_directories(SYSTEM ${MPI_INCLUDE_PATH})
-  set(MPI_CPP_FILES scheduling/mpischeduler.cpp distributed/mpibig.cpp)
+  set(MPI_CPP_FILES scheduling/mpischeduler.cpp
+                    scheduling/mpiworkerscheduler.cpp distributed/mpibig.cpp)
 else(MPI_FOUND)
   message(
     WARNING
@@ -175,12 +198,11 @@ endif(MPI_FOUND)
 
 find_package(EveryBeam NO_MODULE QUIET)
 if(${EVERYBEAM_FOUND})
-  if(${EVERYBEAM_VERSION} VERSION_LESS "0.5.2" OR ${EVERYBEAM_VERSION}
-                                                  VERSION_GREATER_EQUAL "0.6.0")
-    message(STATUS "EveryBeam version is incompatible")
+  if(${EVERYBEAM_VERSION} VERSION_LESS "0.7.4" OR ${EVERYBEAM_VERSION}
+                                                  VERSION_GREATER_EQUAL "0.9.0")
     message(
       FATAL_ERROR
-        "WSClean needs EveryBeam version 0.5.x with x>=2 - but found version ${EVERYBEAM_VERSION}"
+        "EveryBeam version ${EVERYBEAM_VERSION} was found, but it is not compatible with this version of WSClean. This WSClean version requires EveryBeam version 0.7.x (x >= 4) or 0.8"
     )
   else()
     include_directories(${EVERYBEAM_INCLUDE_DIRS})
@@ -205,7 +227,8 @@ if(IDGAPI_FOUND)
         "WSClean needs IDG version 0.8.x - with x >= 1 - but found version ${IDGAPI_VERSION}"
     )
   else()
-    set(IDG_FILES idg/idgmsgridder.cpp)
+    set(IDG_FILES idg/idgcommon.cpp idg/idgmsgridder.cpp
+                  idg/facetidgmsgridder.cpp)
     include_directories(${IDGAPI_INCLUDE_DIRS})
     add_definitions(-DHAVE_IDG)
     message(STATUS "Image domain gridder libraries found.")
@@ -225,7 +248,7 @@ include_directories(SYSTEM ${CFITSIO_INCLUDE_DIR})
 include_directories(SYSTEM ${FFTW3_INCLUDE_DIR})
 include_directories(SYSTEM ${GSL_INCLUDE_DIR})
 include_directories(SYSTEM ${HDF5_INCLUDE_DIRS})
-include_directories(SYSTEM ${PYTHON_INCLUDE_DIRS})
+include_directories(SYSTEM ${Python3_INCLUDE_DIRS})
 
 include(CheckCXXSourceCompiles)
 
@@ -235,36 +258,39 @@ add_definitions(-DHAVE_GSL)
 # Radler
 set(RADLER_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/external/radler)
 set(RADLER_LIB
-    ${RADLER_INSTALL_PREFIX}/lib/libradler${CMAKE_SHARED_LIBRARY_SUFFIX})
+    ${RADLER_INSTALL_PREFIX}/lib/libradler${CMAKE_STATIC_LIBRARY_SUFFIX})
+
+# By default, CMake incorrectly forwards a prefix path with multiple items.
+# Using an alternate LIST_SEPARATOR works around this behavior. See
+# https://stackoverflow.com/questions/45414507/pass-a-list-of-prefix-paths-to-externalproject-add-in-cmake-args
+# Use ':', since the CMAKE_PREFIX_PATH environment variable already uses it.
+string(REPLACE ";" ":" ALT_CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
 ExternalProject_Add(
   radler-module
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/radler
   BINARY_DIR ${CMAKE_BINARY_DIR}/external/radler/build
   BUILD_ALWAYS TRUE
   BUILD_BYPRODUCTS ${RADLER_LIB}
+  LIST_SEPARATOR :
   CMAKE_ARGS
     -DCOMPILE_AS_EXTERNAL_PROJECT=On
     -DPORTABLE=${PORTABLE}
-    -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}
+    -DTARGET_CPU=${TARGET_CPU}
     -DCMAKE_INCLUDE_PATH=${CMAKE_INCLUDE_PATH}
     -DCMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}
-    -DCFITSIO_ROOT_DIR=${CFITSIO_ROOT_DIR}
     # The casacore root is set to the location where casacore was found.
     # Note that CASACORE_ROOT_DIR isn't set/updated by the find script, so we
     # shouldn't set Radler's CASACORE_ROOT_DIR to WSClean's one.
     -DCASACORE_ROOT_DIR=${CASACORE_INCLUDE_DIR}/..
-    -DHDF5_DIR=${HDF5_DIR}
     -DAOCOMMON_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/external/aocommon/include/
     -DSCHAAPCOMMON_SOURCE_DIR=${CMAKE_SOURCE_DIR}/external/schaapcommon/
-    -DPYBIND11_SOURCE_DIR=${CMAKE_SOURCE_DIR}/external/pybind11
     -DBUILD_TESTING=OFF
-    -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
+    -DCMAKE_PREFIX_PATH=${ALT_CMAKE_PREFIX_PATH}:$ENV{CMAKE_PREFIX_PATH}
     -DCMAKE_INSTALL_PREFIX=${RADLER_INSTALL_PREFIX}
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    ${RADLER_TARGET_CPU})
+    -DCMAKE_CXX_FLAGS=${RADLER_CXX_FLAGS})
 
-set(RADLER_INCLUDE_DIR ${RADLER_INSTALL_PREFIX}/include)
-include_directories(${RADLER_INCLUDE_DIR})
+include_directories(${RADLER_INSTALL_PREFIX}/include)
 
 # The following section will set the "rpath" correctly, so that
 # LD_LIBRARY_PATH doesn't have to be set.
@@ -308,74 +334,87 @@ endif()
 
 add_library(
   wsclean-object OBJECT
+  # These wgridder files are given first because they take a long time to compile. In multi-threaded compilation,
+  # this has the advantage that it allows better parallelization.
+  # Instantiation is split over multiple files to help make it more parallel and reduce memory requirements
+  wgridder/wgriddingmsgridder.cpp
+  wgridder/wgridder_float.cpp
+  wgridder/wgridder_double.cpp
   main/commandline.cpp
+  main/imageweightinitializer.cpp
+  main/mshelper.cpp
   main/progressbar.cpp
+  main/settings.cpp
   main/stopwatch.cpp
   main/wsclean.cpp
-  main/settings.cpp
+  gridding/averagecorrection.cpp
   gridding/directmsgridder.cpp
-  gridding/msgridderbase.cpp
+  gridding/h5solutiondata.cpp
+  gridding/msgridder.cpp
+  gridding/msgridderdata.cpp
+  gridding/msgriddermanager.cpp
+  gridding/msprovidercollection.cpp
   gridding/visibilitymodifier.cpp
   gridding/wsmsgridder.cpp
   gridding/wstackinggridder.cpp
   idg/averagebeam.cpp
-  interface/wscleaninterface.cpp
   io/componentlistwriter.cpp
   io/facetreader.cpp
   io/parsetreader.cpp
   io/wscfitswriter.cpp
   math/imageoperations.cpp
   math/renderer.cpp
+  math/subpixelrenderer.cpp
+  math/fourierdomainrenderer.cpp
   math/tophatconvolution.cpp
   model/model.cpp
-  msproviders/averagingmsrowprovider.cpp
-  msproviders/mscolumns.cpp
-  msproviders/bdamsrowprovider.cpp
   msproviders/contiguousms.cpp
+  msproviders/inmemoryprovider.cpp
   msproviders/msdatadescription.cpp
-  msproviders/directmsrowprovider.cpp
   msproviders/msprovider.cpp
-  msproviders/msrowprovider.cpp
-  msproviders/msrowproviderbase.cpp
-  msproviders/noisemsrowprovider.cpp
-  msproviders/partitionedms.cpp
-  msproviders/timestepbuffer.cpp
+  msproviders/operations.cpp
+  msproviders/reorderedmsprovider.cpp
   msproviders/synchronizedms.cpp
+  msproviders/timestepbuffer.cpp
   msproviders/msreaders/contiguousmsreader.cpp
-  msproviders/msreaders/partitionedmsreader.cpp
+  msproviders/msreaders/reorderedmsreader.cpp
   msproviders/msreaders/timestepbufferreader.cpp
-  msproviders/msweightcolumn.cpp
+  msproviders/rowproviders/averagingmsrowprovider.cpp
+  msproviders/rowproviders/bdamsrowprovider.cpp
+  msproviders/rowproviders/directmsrowprovider.cpp
+  msproviders/rowproviders/mscolumns.cpp
+  msproviders/rowproviders/msrowprovider.cpp
+  msproviders/rowproviders/msrowproviderbase.cpp
+  msproviders/rowproviders/msweightcolumn.cpp
+  msproviders/rowproviders/noisemsrowprovider.cpp
+  scheduling/griddingtask.cpp
+  scheduling/griddingtaskfactory.cpp
   scheduling/griddingtaskmanager.cpp
   scheduling/griddingresult.cpp
-  scheduling/griddingtask.cpp
   scheduling/metadatacache.cpp
   scheduling/threadedscheduler.cpp
   structures/facetutil.cpp
   structures/imageweights.cpp
   structures/imagingtable.cpp
   structures/imagingtableentry.cpp
+  structures/inmemoryreordering.cpp
   structures/msselection.cpp
   structures/observationinfo.cpp
   structures/primarybeam.cpp
   structures/resources.cpp
   system/pythonfilepath.cpp
-  wgridder/wgriddingmsgridder.cpp
-  wgridder/wgriddinggridder_simple.cpp
-  external/wgridder/ducc0/math/gridding_kernel.cc
-  external/wgridder/ducc0/math/gl_integrator.cc
-  external/wgridder/ducc0/infra/threading.cc
-  external/wgridder/ducc0/infra/mav.cc
-  external/wgridder/ducc0/wgridder/wgridder.cc
   ${IDG_FILES}
-  ${MPI_CPP_FILES})
+  ${MPI_CPP_FILES}
+  $<$<BOOL:${ENABLE_WTOWERS}>:wtowers/wtowersmsgridder.cpp>)
 
 # A number of files perform the 'core' high-performance floating point
 # operations. In these files, NaNs are avoided and thus -ffast-math is
 # allowed. Note that visibilities can be NaN hence this can not be turned
 # on for all files.
 set_source_files_properties(
-  wsclean/wstackinggridder.cpp wgridder/wgriddinggridder_simple.cpp
-  PROPERTIES COMPILE_FLAGS -ffast-math)
+  wsclean/directmsgridder.cpp wsclean/wstackinggridder.cpp
+  wgridder/wgridder_float.cpp wgridder/wgridder_double.cpp
+  gridding/msgriddermanager.cpp PROPERTIES COMPILE_FLAGS "-ffast-math")
 
 # Add radler-module dependency to wsclean-object to ensure all
 # wsclean targets can link against ${RADLER_LIB}
@@ -383,18 +422,18 @@ add_dependencies(wsclean-object radler-module)
 
 set_property(TARGET wsclean-object PROPERTY POSITION_INDEPENDENT_CODE 1)
 
-set(WSCLEANFILES $<TARGET_OBJECTS:wsclean-object>)
+target_link_libraries(
+  wsclean-object PRIVATE schaapcommon
+                         $<$<BOOL:${ENABLE_WTOWERS}>:${SKA_SDP_FUNC_LIBRARY}>)
 
-set(ALL_LIBRARIES
+set(EXTERNAL_LIBRARIES
     ${CASACORE_LIBRARIES}
     ${FFTW3_LIB}
     ${FFTW3_THREADS_LIB}
     ${FFTW3F_LIB}
     ${FFTW3F_THREADS_LIB}
-    ${Boost_DATE_TIME_LIBRARY}
-    ${Boost_FILESYSTEM_LIBRARY}
-    ${Boost_PROGRAM_OPTIONS_LIBRARY}
-    ${Boost_SYSTEM_LIBRARY}
+    Boost::filesystem
+    Boost::program_options
     ${CFITSIO_LIBRARY}
     ${GSL_LIB}
     ${GSL_CBLAS_LIB}
@@ -403,23 +442,62 @@ set(ALL_LIBRARIES
     ${HDF5_LIBRARIES}
     ${MPI_LIBRARIES}
     ${EVERYBEAM_LIB}
-    schaapcommon)
+    schaapcommon
+    pybind11::embed)
 
 # Perform the BLAS check from aocommon
 include("${CMAKE_CURRENT_LIST_DIR}/external/aocommon/CMake/CheckBLAS.cmake")
-check_blas(LIBRARIES ${ALL_LIBRARIES})
+check_blas(LIBRARIES ${EXTERNAL_LIBRARIES})
 # Radler lib cannot be checked on BLAS consistenty as it doesn't exist
-# at cmake time.
-list(APPEND ALL_LIBRARIES ${RADLER_LIB})
+# at cmake time. It needs to be first in the link order because Radler
+# itself also depends on some of the libraries in the EXTERNAL_LIBRARIES list.
+list(PREPEND EXTERNAL_LIBRARIES ${RADLER_LIB})
 
-add_library(wsclean-lib STATIC ${WSCLEANFILES})
-target_link_libraries(wsclean-lib PRIVATE pybind11::embed ${ALL_LIBRARIES})
+add_library(wsclean-lib STATIC)
+target_link_libraries(wsclean-lib PRIVATE ${EXTERNAL_LIBRARIES} wsclean-object)
 set_target_properties(wsclean-lib PROPERTIES OUTPUT_NAME wsclean)
-set_target_properties(wsclean-lib PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
 
-add_library(wsclean-shared SHARED ${WSCLEANFILES})
-target_link_libraries(wsclean-shared PRIVATE pybind11::embed ${ALL_LIBRARIES})
-set_target_properties(wsclean-shared PROPERTIES SOVERSION ${WSCLEAN_VERSION_SO})
+add_library(wsclean-shared SHARED interface/wsclean.cpp)
+target_link_libraries(wsclean-shared PRIVATE ${EXTERNAL_LIBRARIES}
+                                             wsclean-object)
+set_target_properties(wsclean-shared PROPERTIES OUTPUT_NAME wsclean)
+# Define the headers. Because we use aocommon, we also have to install some files
+# from aocommon. Only dependent aocommon files are installed.
+target_sources(
+  wsclean-shared
+  INTERFACE FILE_SET
+            wsclean_headers
+            TYPE
+            HEADERS
+            BASE_DIRS
+            "${CMAKE_CURRENT_SOURCE_DIR}/interface"
+            FILES
+            interface/wsclean.h
+            interface/inmemoryms.h)
+target_sources(
+  wsclean-shared
+  INTERFACE FILE_SET
+            aocommon_headers
+            TYPE
+            HEADERS
+            BASE_DIRS
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/aocommon/include"
+            FILES
+            external/aocommon/include/aocommon/banddata.h
+            external/aocommon/include/aocommon/constants.h
+            external/aocommon/include/aocommon/multibanddata.h
+            external/aocommon/include/aocommon/optionalnumber.h
+            external/aocommon/include/aocommon/polarization.h
+            external/aocommon/include/aocommon/uvector.h
+            external/aocommon/include/aocommon/vectormap.h
+            external/aocommon/include/aocommon/io/serialistream.h
+            external/aocommon/include/aocommon/io/serialostream.h)
+
+# Make schaapcommon a PUBLIC dependency, since some WSClean headers use
+# schaapcommon headers. An application/test linking to wsclean-lib or
+# wsclean-shared thus needs schaapcommon as well.
+target_link_libraries(wsclean-lib PUBLIC schaapcommon)
+target_link_libraries(wsclean-shared PUBLIC schaapcommon)
 
 add_executable(wsclean main/main.cpp)
 target_link_libraries(wsclean wsclean-lib)
@@ -429,26 +507,24 @@ if(MPI_FOUND)
   target_link_libraries(wsclean-mp wsclean-lib)
 endif(MPI_FOUND)
 
-add_executable(chgcentre chgcentre/main.cpp chgcentre/progressbar.cpp)
+add_executable(chgcentre chgcentre/main.cpp main/progressbar.cpp)
 target_link_libraries(chgcentre ${CASACORE_LIBRARIES} ${GSL_LIB}
                       ${GSL_CBLAS_LIB} ${MPI_LIBRARIES} ${LAPACK_LIBRARIES})
-
-add_executable(wsuvbinning EXCLUDE_FROM_ALL gridding/examples/wsuvbinning.cpp)
-target_link_libraries(wsuvbinning PRIVATE wsclean-lib ${ALL_LIBRARIES})
 
 add_executable(
   wspredictionexample EXCLUDE_FROM_ALL gridding/examples/wspredictionexample.cpp
                                        gridding/wstackinggridder.cpp)
-target_link_libraries(wspredictionexample ${ALL_LIBRARIES})
+target_link_libraries(wspredictionexample ${EXTERNAL_LIBRARIES})
 
 install(TARGETS wsclean DESTINATION bin)
-install(TARGETS wsclean-lib DESTINATION lib)
+install(
+  TARGETS wsclean-shared
+  LIBRARY DESTINATION lib
+          FILE_SET wsclean_headers
+          DESTINATION include/wsclean
+          FILE_SET aocommon_headers
+          DESTINATION include)
 install(TARGETS chgcentre DESTINATION bin)
-install(FILES interface/wscleaninterface.h DESTINATION include)
-# Installing the radler library to ${CMAKE_INSTALL_FULL_LIBDIR}
-# ensures that users do not manually have to set the LD_LIBRARY_PATH
-install(FILES ${RADLER_LIB} DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR})
-
 if(MPI_FOUND)
   install(TARGETS wsclean-mp DESTINATION bin)
 endif(MPI_FOUND)

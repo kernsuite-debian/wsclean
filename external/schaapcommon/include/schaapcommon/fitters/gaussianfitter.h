@@ -6,107 +6,57 @@
 
 #include <cstring>
 
+#include "../math/ellipse.h"
+
 namespace schaapcommon {
 namespace fitters {
-class GaussianFitter {
- public:
-  void Fit2DGaussianCentred(const float* image, size_t width, size_t height,
-                            double beam_est, double& beam_major,
-                            double& beam_minor, double& beam_pa,
-                            double box_scale_factor = 10.0,
-                            bool verbose = false);
 
-  void Fit2DCircularGaussianCentred(const float* image, size_t width,
-                                    size_t height, double& beam_size,
-                                    double box_scale_factor = 10.0);
+/**
+ * Deconvolve two Gaussian kernels. The result convolved with @p smallest
+ * results again in @p largest. If @p smallest is larger than @p largest,
+ * an ellipse is returned with all parameters set to NaN.
+ *
+ * As the output axes are returned with the same units as the input axes,
+ * the input may be both in FWHM or both in sigma.
+ */
+math::Ellipse DeconvolveGaussian(const math::Ellipse& largest,
+                                 const math::Ellipse& smallest);
 
-  void Fit2DGaussianFull(const float* image, size_t width, size_t height,
-                         double& val, double& pos_x, double& pos_y,
-                         double& beam_major, double& beam_minor,
-                         double& beam_pa, double* floor_level = nullptr);
+/**
+ * Fit Gaussian parameters to the shape in the center of the image.
+ * @param beam_est provides the initial value for the beam's size. It must be
+ * somewhat close and must be non-zero for the algorithm to converge (quickly).
+ */
+math::Ellipse Fit2DGaussianCentred(const float* image, bool skip_negatives,
+                                   size_t width, size_t height, double beam_est,
+                                   double box_scale_factor, bool verbose);
 
-  const float* Image() const { return image_; }
-  size_t Width() const { return width_; }
-  size_t Height() const { return height_; }
-  size_t ScaleFactor() const { return scale_factor_; }
-  double XInit() const { return x_init_; };
-  double YInit() const { return y_init_; };
-  double PosConstrained() const { return pos_constrained_; };
+/**
+ * Fits a circular (one parameter) Gaussian to the shape in the centre of the
+ * image.
+ * @param [in,out] beam_size on input, the initial value for beam size. On
+ * output, the fit result.
+ */
+void Fit2DCircularGaussianCentred(const float* image, size_t width,
+                                  size_t height, double& beam_size,
+                                  double box_scale_factor = 10.0);
 
- private:
-  void Fit2DGaussianCentredInBox(const float* image, size_t width,
-                                 size_t height, double beam_est,
-                                 double& beam_major, double& beam_minor,
-                                 double& beam_pa, size_t box_width,
-                                 size_t box_height, bool verbose);
+/**
+ * Fit all Gaussian parameters to a shape in an image. Parameters
+ * @p pos_x, @p pos_y and @p beam_major are input and output function
+ * parameters: on input they provide initial values for the fitting,
+ * and on output they provide the result. Parameters @p val,
+ * @p beam_minor, @p beam_pa and @p floor_level are only used for outputting
+ * the result.
+ * @param [out] val amplitude of Gaussian.
+ * @param [in,out] floor_level If not nullptr, will be used to store the floor
+ * level parameter. If nullptr, this value is not fitted and assumed to be zero.
+ */
+void Fit2DGaussianFull(const float* image, size_t width, size_t height,
+                       double& val, double& pos_x, double& pos_y,
+                       double& beam_major, double& beam_minor, double& beam_pa,
+                       double* floor_level = nullptr);
 
-  void Fit2DCircularGaussianCentredInBox(const float* image, size_t width,
-                                         size_t height, double& beam_size,
-                                         size_t box_width, size_t box_height);
-
-  /**
-   * This function performs a single fit of a Gaussian. The position of the
-   * Gaussian is constrained to be in the centre of the image. The Gaussian is
-   * fitted such that the squared residuals (data - model) are minimal.
-   *
-   * This function is typically used to find the beam-shape of the point-spread
-   * function. The beam estimate is used as initial value for the minor and
-   * major shape.
-   */
-  void SingleFit2DGaussianCentred(const float* image, size_t width,
-                                  size_t height, double beam_est,
-                                  double& beam_major, double& beam_minor,
-                                  double& beam_pa, bool verbose);
-
-  void SingleFit2DCircularGaussianCentred(const float* image, size_t width,
-                                          size_t height, double& beam_size);
-
-  void Fit2DGaussianWithAmplitudeInBox(const float* image, size_t width,
-                                       size_t height, double& val,
-                                       double& pos_x, double& pos_y,
-                                       double& beam_major, double& beam_minor,
-                                       double& beam_pa, double* floor_level,
-                                       size_t x_start, size_t x_end,
-                                       size_t y_start, size_t y_end);
-
-  /**
-   * Fits the position, size and amplitude of a Gaussian. If floor_level is not
-   * a nullptr, the floor (background level, or zero level) is fitted too.
-   */
-  void Fit2DGaussianWithAmplitude(const float* image, size_t width,
-                                  size_t height, double& val, double& pos_x,
-                                  double& pos_y, double& beam_major,
-                                  double& beam_minor, double& beam_pa,
-                                  double* floor_level);
-
-  /**
-   * Like SingleFit2DGaussianCentred(), but includes Gaussian centre X and Y
-   * position and amplitude in the fitted parameters.
-   *
-   * This function can typically be used for source fitting.
-   */
-  void Fit2DGaussianWithAmplitude(double& val, double& pos_x, double& pos_y,
-                                  double& beam_major, double& beam_minor,
-                                  double& beam_pa);
-
-  /**
-   * Like Fit2DGaussianWithAmplitude(), but includes floor_level as fitted
-   * parameter. Floor is the background/zero level on which the Gaussian
-   * resides.
-   */
-  void Fit2DGaussianWithAmplitudeWithFloor(double& val, double& pos_x,
-                                           double& pos_y, double& beam_major,
-                                           double& beam_minor, double& beam_pa,
-                                           double& floor_level);
-
-  const float* image_ = nullptr;
-  size_t width_ = 0;
-  size_t height_ = 0;
-  size_t scale_factor_ = 0;
-  double x_init_ = 0.0;
-  double y_init_ = 0.0;
-  double pos_constrained_ = 0.0;
-};
 }  // namespace fitters
 }  // namespace schaapcommon
 #endif

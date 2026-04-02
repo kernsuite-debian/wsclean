@@ -101,11 +101,11 @@ class FitsReader : public FitsBase {
     for (int i = 0; i != naxis; ++i) firstPixel[i] = 1;
     if (naxis > 2) firstPixel[2] = index + 1;
 
-    if (sizeof(NumType) == 8)
+    if constexpr (sizeof(NumType) == 8)
       fits_read_pix(_fitsPtr, TDOUBLE, &firstPixel[0],
                     _meta.imgWidth * _meta.imgHeight, nullptr, image, nullptr,
                     &status);
-    else if (sizeof(NumType) == 4)
+    else if constexpr (sizeof(NumType) == 4)
       fits_read_pix(_fitsPtr, TFLOAT, &firstPixel[0],
                     _meta.imgWidth * _meta.imgHeight, nullptr, image, nullptr,
                     &status);
