@@ -1,0 +1,17 @@
+diff --git a/external/schaapcommon/CMakeLists.txt b/external/schaapcommon/CMakeLists.txt
+index 45cc1c0..96c8e3a 100644
+--- a/external/schaapcommon/CMakeLists.txt
++++ b/external/schaapcommon/CMakeLists.txt
+@@ -114,8 +114,11 @@ else()
+   # - FetchXTensor.cmake does not support duplicate inclusion.
+ 
+   # Fetch XTensor if it has not been fetched before.
++  find_package(xtensor REQUIRED)
++  find_package(xtl REQUIRED)
+   if(NOT TARGET xtensor)
+-    include(${CMAKE_SOURCE_DIR}/external/aocommon/CMake/FetchXTensor.cmake)
++    add_library(xtensor INTERFACE IMPORTED)
++    target_link_libraries(xtensor INTERFACE xtensor)
+   endif()
+ 
+   # Compile in release mode if schaapcommon is included as external dependency.

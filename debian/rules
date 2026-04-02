@@ -7,7 +7,10 @@ include /usr/share/dpkg/architecture.mk
 CMAKE_FLAGS += -DDEB_HOST_MULTIARCH=$(DEB_HOST_MULTIARCH) \
 			   -DPORTABLE=yes \
 			   -DLOFAR_STATION_RESPONSE_INCLUDE=/usr/include \
- 			   -DLOFAR_STATION_RESPONSE_LIB=/usr/lib/libstationresponse.so
+                           -DLOFAR_STATION_RESPONSE_LIB=/usr/lib/libstationresponse.so \
+			   -DSKA_SDP_FUNC_INCLUDE_DIR=/usr/include \
+                           -DSKA_SDP_FUNC_LIBRARY=/usr/lib/$(DEB_HOST_MULTIARCH)/libska-sdp-func.so \
+			   -DPYBIND11_PYTHON_VERSION=3 
 
 %:
 	dh $@

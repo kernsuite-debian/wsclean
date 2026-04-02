@@ -1,3 +1,11 @@
+wsclean (3.7-1kern1) noble; urgency=medium
+
+  [ Athanaseus Javas Ramaila ]
+  * New upstream release v3.7
+  * Build for noble
+
+ -- KERN packaging <packaging@kernsuite.info>  Thu, 02 Apr 2026 12:57:29 +0200
+
 wsclean (3.4-2kern3) jammy; urgency=medium
 
   [ Athanaseus Javas Ramaila ]
