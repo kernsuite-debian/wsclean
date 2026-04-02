@@ -54,6 +54,20 @@ class ImageSet {
   void SetImages(ImageSet&& source);
 
   /**
+   * Replace all images. The input array should have the same number of images
+   * and each image should have the same dimensions as the images already
+   * stored.
+   */
+  void SetImages(std::vector<aocommon::Image>&& images) {
+    assert(images.size() == images_.size());
+    // We could move the whole vector at once but this way each image is
+    // checked.
+    for (size_t image_index = 0; image_index != images_.size(); ++image_index) {
+      SetImage(image_index, std::move(images[image_index]));
+    }
+  }
+
+  /**
    * @param use_residual_images: True: Load residual images. False: Load model
    * images.
    */
@@ -81,11 +95,10 @@ class ImageSet {
    *
    * @pre @c work_table_.ValidatePsfs() can be called without throwing.
    */
-  [[nodiscard]] std::vector<std::vector<aocommon::Image>> LoadAndAveragePsfs()
-      const;
+  std::vector<std::vector<aocommon::Image>> LoadAndAveragePsfs() const;
 
   void InterpolateAndStoreModel(
-      const schaapcommon::fitters::SpectralFitter& fitter, size_t thread_count);
+      const schaapcommon::fitters::SpectralFitter& fitter);
 
   void AssignAndStoreResidual();
 
@@ -162,9 +175,7 @@ class ImageSet {
   /**
    * Exposes image data.
    *
-   * ImageSet only exposes a non-const pointer to the image data. When exposing
-   * non-const reference to the images themselves, the user could change the
-   * image size and violate the invariant that all images have equal sizes.
+   * ImageSet only exposes a non-const pointer to the image data.
    * @param index An image index.
    * @return A non-const pointer to the data area for the image.
    */
@@ -172,15 +183,27 @@ class ImageSet {
 
   /**
    * Exposes the images in the image set.
-   *
-   * Creating a non-const version of this operator is not desirable. See Data().
-   *
-   * @param index An image index.
-   * @return A const reference to the image with the given index.
    */
   const aocommon::Image& operator[](size_t index) const {
     return images_[index];
   }
+  aocommon::Image& operator[](size_t index) { return images_[index]; }
+
+  /**
+   * Create a non-owning view of an image
+   *
+   * This allows to modify the data (pixels) of an image.
+   * Resizing the view will not affect the image in the ImageSet.
+   * @param index An image index.
+   * @return A non-owning view of the image.
+   */
+
+  aocommon::Image GetView(size_t index) {
+    return {images_[index].Data(), images_[index].Width(),
+            images_[index].Height()};
+  }
+
+  const std::vector<aocommon::Image>& Images() const { return images_; }
 
   size_t Size() const { return images_.size(); }
 

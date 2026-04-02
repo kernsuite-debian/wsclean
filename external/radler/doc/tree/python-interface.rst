@@ -4,7 +4,7 @@ Python interface
 Radler provides an interface via the :code:`radler` module. In order to build
 this module, make sure the cmake configuration option :code:`BUILD_PYTHON_BINDINGS` is turned :code:`ON`.
 
-After successfully compiling and installing the python bindings, you should update your :code:`LD_LIBRARY_PATH`
+After successfully compiling and installing the python bindings, you may have to update your :code:`LD_LIBRARY_PATH`
 and your :code:`PYTHONPATH` as follows:
 
 ::
@@ -23,3 +23,4 @@ The :code:`radler` module can now be imported in python with:
    :maxdepth: 1
 
    python/settings
+   python/demo

@@ -1,10 +1,10 @@
 #include "tophatconvolution.h"
 
-#include <schaapcommon/fft/convolution.h>
+#include <schaapcommon/math/convolution.h>
 
 using aocommon::Image;
 
-namespace tophat_convolution {
+namespace wsclean::tophat_convolution {
 
 Image MakeTopHatImage(size_t width, size_t height, double tophat_radius) {
   const ssize_t radius_squared =
@@ -28,13 +28,12 @@ Image MakeTopHatImage(size_t width, size_t height, double tophat_radius) {
   return result;
 }
 
-void Convolve(Image& input, double radius, size_t n_threads) {
+void Convolve(Image& input, double radius) {
   size_t kernel_size = static_cast<size_t>(std::floor(radius)) * 2 + 1;
   if (kernel_size % 2 == 0) ++kernel_size;
   const Image kernel = MakeTopHatImage(kernel_size, kernel_size, radius);
-  schaapcommon::fft::ResizeAndConvolve(input.Data(), input.Width(),
-                                       input.Height(), kernel.Data(),
-                                       kernel_size, n_threads);
+  schaapcommon::math::ResizeAndConvolve(
+      input.Data(), input.Width(), input.Height(), kernel.Data(), kernel_size);
 }
 
-}  // namespace tophat_convolution
+}  // namespace wsclean::tophat_convolution

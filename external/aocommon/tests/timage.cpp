@@ -50,6 +50,35 @@ BOOST_AUTO_TEST_CASE(inequality) {
   BOOST_CHECK(Image(1, 2, 2.0) != Image(1, 2, 3.0));
 }
 
+BOOST_AUTO_TEST_CASE(index_operator) {
+  Image image(7, 3, 0.0f);
+  for (size_t i = 0; i != 21; ++i) BOOST_CHECK_EQUAL(image[i], 0.0f);
+  for (size_t i = 0; i != 21; ++i) image[i] = i + 1.5f;
+  for (size_t i = 0; i != 21; ++i) BOOST_CHECK_EQUAL(image[i], i + 1.5f);
+}
+
+BOOST_AUTO_TEST_CASE(value) {
+  Image image(7, 3, 13.37f);
+  for (size_t x = 0; x != image.Width(); ++x) {
+    for (size_t y = 0; y != image.Height(); ++y) {
+      BOOST_CHECK_EQUAL(image.Value(x, y), 13.37f);
+    }
+  }
+  for (size_t x = 0; x != image.Width(); ++x) {
+    for (size_t y = 0; y != image.Height(); ++y) {
+      image.Value(x, y) = x * 11.0f + y * 42.0 - 8.0;
+    }
+  }
+  size_t index = 0;
+  for (size_t y = 0; y != image.Height(); ++y) {
+    for (size_t x = 0; x != image.Width(); ++x) {
+      BOOST_CHECK_EQUAL(image.Value(x, y), x * 11.0f + y * 42.0 - 8.0);
+      BOOST_CHECK_EQUAL(image[index], x * 11.0f + y * 42.0 - 8.0);
+      ++index;
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(median_empty) {
   BOOST_CHECK_EQUAL(Image::Median(nullptr, 0), 0.0f);
 }
@@ -179,6 +208,23 @@ BOOST_AUTO_TEST_CASE(stddev_from_mad) {
   for (size_t i = 0; i != data.size(); ++i) data[i] = dist(rnd);
   BOOST_CHECK_CLOSE_FRACTION(Image::StdDevFromMAD(data.data(), data.size()),
                              5.0f, 0.05);
+}
+
+BOOST_AUTO_TEST_CASE(median_and_stddev_from_mad) {
+  Image image(3, 3, 1.0);
+  std::pair<float, float> result = image.MedianAndStdDevFromMAD();
+  BOOST_CHECK_CLOSE_FRACTION(result.first, 1.0, 1e-5);
+  BOOST_CHECK_CLOSE_FRACTION(result.second, 0.0, 1e-5);
+
+  image =
+      Image(3, 3, {0.0f, 1.0f, 2.0f, 10.0f, 11.0f, 12.0f, 20.0f, 21.0f, 22.0f});
+  result = image.MedianAndStdDevFromMAD();
+  BOOST_CHECK_CLOSE_FRACTION(result.first, 11.0, 1e-5);
+  constexpr double mad_to_stddev = 1.48260221850560;
+  // The median is 11. The absolute deviations from the median are therefore:
+  // 11, 10, 9, 1, 0, 1, 9, 10, 11. After sorting:
+  // 0, 1, 1, 9, 9, 10, 10, 11, 11 -> MAD is 9.
+  BOOST_CHECK_CLOSE_FRACTION(result.second, 9.0 * mad_to_stddev, 1e-5);
 }
 
 BOOST_AUTO_TEST_CASE(uninitialized_constructor) {
@@ -383,6 +429,17 @@ BOOST_AUTO_TEST_CASE(trim_and_untrim) {
   BOOST_CHECK_EQUAL(
       std::accumulate(untrimmed_image.begin(), untrimmed_image.end(), 0.0f),
       std::accumulate(trimmed_image.begin(), trimmed_image.end(), 0.0f));
+}
+
+BOOST_AUTO_TEST_CASE(untrim_equal_size) {
+  const size_t kWidth = 64;
+  const size_t kHeight = 64;
+  const Image image = CreateTestImage(kWidth, kHeight);
+  const Image trimmed = image.Untrim(kWidth, kHeight);
+  BOOST_REQUIRE_EQUAL(trimmed.Width(), kWidth);
+  BOOST_REQUIRE_EQUAL(trimmed.Height(), kHeight);
+  BOOST_CHECK_EQUAL_COLLECTIONS(image.begin(), image.end(), trimmed.begin(),
+                                trimmed.end());
 }
 
 BOOST_AUTO_TEST_CASE(resize_equal_size) {

@@ -5,7 +5,7 @@ fk5
 # The polygons below were created manually. They create areas around each of the image points.
 # The comments below contain the corresponding 0-based pixel coordinates.
 
-# The 'point' values are artifical values, for testing DS9FacetFile only.
+# The 'point' values are artificial values, for testing DS9FacetFile only.
 # These points are selected such that they coincide with one of the vertices that
 # are not located on the boundary.
 
@@ -14,8 +14,10 @@ polygon(23.0,30.5, 23.0,31.5, 21.0,31.5, 21.0,30.5) # text=CygA
 point(23.0,31.5)
 
 # Ra@(400,256). Polygon is (364,129) (366,301) (541,305) (547,128).
-polygon(23.15,31.88, 23.10,33.6, 21.0,33.6, 21.0,31.83) # text=CygAO
-point(23.10,33.6)
+polygon(23.15,31.88, 23.10,33.6, 21.0,33.6, 21.0,31.83)
+# Text label is given after point(...) instead of after polygon(...)
+# This label should be parsed as well
+point(23.10,33.6) # text=CygAO
 
 # Dec@(256,64). Polygon is (128,-9) (128,128) (384,128) (384,-9).
 polygon(25.91,30.5, 25.93,31.87, 22.92,31.87, 22.94,30.5) # text=CygTJ

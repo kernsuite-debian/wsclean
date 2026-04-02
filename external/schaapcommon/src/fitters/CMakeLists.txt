@@ -1,6 +1,9 @@
 # Copyright (C) 2022 ASTRON (Netherlands Institute for Radio Astronomy)
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+find_package(GSL REQUIRED)
+target_link_libraries(${SCHAAPCOMMON_PROJECT_NAME} GSL::gsl)
+
 get_filename_component(MODULE ${CMAKE_CURRENT_SOURCE_DIR} NAME)
 
 set(PUBLIC_HEADER_DIR ${SCHAAPCOMMON_SOURCE_DIR}/include/schaapcommon/${MODULE})

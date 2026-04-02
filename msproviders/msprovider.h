@@ -3,13 +3,13 @@
 
 #include "synchronizedms.h"
 
+#include "../structures/observationinfo.h"
+
 #include <aocommon/multibanddata.h>
 #include <aocommon/polarization.h>
 
-#include <casacore/casa/Arrays/Array.h>
-#include <casacore/tables/Tables/ArrayColumn.h>
-
 #include <complex>
+#include <optional>
 #include <set>
 #include <type_traits>
 #include <vector>
@@ -17,8 +17,25 @@
 namespace casacore {
 class MeasurementSet;
 }  // namespace casacore
+
+namespace schaapcommon::reordering {
+struct ChannelRange;
 class MSSelection;
+}  // namespace schaapcommon::reordering
+
+namespace wsclean {
 class MSReader;
+
+aocommon::MultiBandData MakeSelectedPartBands(
+    const aocommon::MultiBandData& input,
+    const aocommon::VectorMap<schaapcommon::reordering::ChannelRange>& ranges);
+
+std::vector<aocommon::MultiBandData> MakeSelectedBands(
+    const aocommon::MultiBandData& input,
+    const std::vector<
+        aocommon::VectorMap<schaapcommon::reordering::ChannelRange>>& channels);
+
+bool HasFrequencyBda(const casacore::MeasurementSet& ms);
 
 /**
  * The abstract MSProvider class is the base class for classes that read and
@@ -30,7 +47,7 @@ class MSReader;
  * passed to the @ref MSReader. MSProvider provides the visibilities weighted
  * with the visibility weight and converts the visibilities to a requested
  * polarization. The @ref ContiguousMS and
- * @ref PartitionedMS classes implement the MSProvider interface.
+ * @ref ReorderedMs classes implement the MSProvider interface.
  *
  * The class maintains an index for the write position. The index for the
  * reading position is maintained by the closely connected @ref MSReader class.
@@ -44,9 +61,14 @@ class MSReader;
 class MSProvider {
  public:
   struct MetaData {
-    double uInM, vInM, wInM;
-    size_t fieldId, antenna1, antenna2;
+    double u_in_m;
+    double v_in_m;
+    double w_in_m;
     double time;
+    uint32_t data_desc_id;
+    uint32_t field_id;
+    uint32_t antenna1;
+    uint32_t antenna2;
   };
 
   MSProvider() = default;
@@ -56,13 +78,12 @@ class MSProvider {
   MSProvider(const MSProvider&) = delete;
   MSProvider& operator=(const MSProvider&) = delete;
 
-  virtual SynchronizedMS MS() = 0;
-
   /**
-   * The column name from which data is read.
-   * Writing is done to a different column.
+   * Returns a descriptive string that identifies the part. In the case of a
+   * on-disk ms provider, this could e.g. be the filename + part index. It
+   * is used by WSClean to notify the user what it is working on.
    */
-  virtual const std::string& DataColumnName() = 0;
+  virtual std::string PartDescription() const = 0;
 
   /**
    * Move the model writing position to the next row.
@@ -94,11 +115,6 @@ class MSProvider {
   virtual double StartTime() = 0;
 
   /**
-   * To obtain a mapping between @ref RowId() and measurement set rows.
-   */
-  virtual void MakeIdToMSRowMapping(std::vector<size_t>& idToMSRow) = 0;
-
-  /**
    * Polarization that this msprovider provides.
    * Be aware that it may return 'DiagonalInstrumental' or 'Instrumental',
    * which means it provides 2 or 4 polarizations that are provided by the
@@ -107,17 +123,40 @@ class MSProvider {
   virtual aocommon::PolarizationEnum Polarization() = 0;
 
   /**
-   * The dataDescID to which this MS provider is associated. An MSProvider
-   * is associated with only one dataDescId. When an MS has multiple
-   * dataDescIds, it will have multiple MSProviders.
+   * Number of channels provided by this provider. If the set is regular,
+   * this is equal to the number of channels in every row. This value may be
+   * different from the underlying measurement set if not all channels are
+   * selected.
    */
-  virtual size_t DataDescId() = 0;
+  virtual size_t NMaxChannels() = 0;
 
   /**
-   * Number of channels provided by this provider. May be different from the
-   * underlying measurement set if not all channels are selected.
+   * Does every row have the same number of channels? If true, fixed size
+   * arrays can be allocated beforehand for reading/writing. This is also
+   * used in reordering to determine whether a size-per-row needs to be
+   * stored.
+   *
+   * Both BDA or the use of multiple spectral windows with different number of
+   * channels can make the data irregular. Even if a MS has regular subbands,
+   * the data can become irregular because of selection or output channel
+   * splitting.
+   *
+   * In the reordering, a stricter definition is used: being regular
+   * means there that a provider is strictly for one spectral window. This means
+   * that a provider for two SPWs with the same nr of channels would still
+   * return 'false'.
    */
-  virtual size_t NChannels() = 0;
+  virtual bool IsRegular() const = 0;
+
+  /**
+   * Are data_desc_ids in this measurement sets part of a BDA averaging
+   * scheme? If true, @ref IsRegular() will also always return false. If this
+   * methods returns false, the ms may still have multiple data_desc_ids, but
+   * these then represent genuine bands instead of different averaging factors.
+   * In this situation, @ref IsRegular() may still return true if those bands
+   * have different number of channels.
+   */
+  virtual bool HasFrequencyBda() const = 0;
 
   /**
    * Count of antennas in the underlying measurement set (irrespective of
@@ -133,68 +172,45 @@ class MSProvider {
    */
   virtual size_t NPolarizations() = 0;
 
-  /**
-   * Get the band information that this MSProvider covers. The BandData
-   * includes all channels in the original data, even when not all
-   * channels are selected (@sa NChannels()).
-   */
-  virtual const aocommon::BandData& Band() = 0;
+  virtual size_t NRows() = 0;
 
   /**
-   * Get a list of polarizations in the measurement set for a given data desc
-   * id. This will always list the individual polarizations, and not return one
-   * of the special polarization values (like FullJones or Instrumental).
+   * Integration time of one timestep, in seconds. If time BDA is used, then it
+   * is undefined what is returned.
    */
-  static std::vector<aocommon::PolarizationEnum> GetMSPolarizations(
-      size_t dataDescId, const casacore::MeasurementSet& ms);
+  virtual double Interval() = 0;
+
+  virtual ObservationInfo GetObservationInfo() = 0;
+
+  /**
+   * When applying facet solutions, the antenna names of the msprovider should
+   * match the names given in h5parm solution files.
+   */
+  virtual std::vector<std::string> GetAntennaNames() = 0;
+
+  /**
+   * Get the band information that this MSProvider covers after applying
+   * any selection. The indexing of channels matches therefore with
+   * the indexing of visibilities and weights by reading/writing.
+   */
+  virtual const aocommon::MultiBandData& SelectedBands() = 0;
 
   virtual std::unique_ptr<MSReader> MakeReader() = 0;
 
   /**
+   * Returns the underlying measurement set if it is available. Requiring an
+   * on-disk measurement set should be avoided as much as possible, since not
+   * all providers have an on-disk measurement set (e.g. the InMemoryProvider).
+   * Nevertheless, certain very specific features may require access to the
+   * MS to read in non-standard data. As of yet, applying the beam is one of
+   * those cases.
+   */
+  virtual std::optional<SynchronizedMS> MsIfAvailable() { return {}; }
+
+  /**
    * Reset model data in the MSProvider to zeros.
    */
-  void ResetModelColumn();
-
-  static void CopyData(std::complex<float>* dest, size_t startChannel,
-                       size_t endChannel,
-                       const std::vector<aocommon::PolarizationEnum>& polsIn,
-                       const casacore::Array<std::complex<float>>& data,
-                       aocommon::PolarizationEnum polOut);
-
-  template <typename NumType>
-  static void CopyWeights(NumType* dest, size_t startChannel, size_t endChannel,
-                          const std::vector<aocommon::PolarizationEnum>& polsIn,
-                          const casacore::Array<std::complex<float>>& data,
-                          const casacore::Array<float>& weights,
-                          const casacore::Array<bool>& flags,
-                          aocommon::PolarizationEnum polOut);
-
-  template <typename NumType>
-  static bool IsCFinite(const std::complex<NumType>& c) {
-    return std::isfinite(c.real()) && std::isfinite(c.imag());
-  }
-
-  template <bool add>
-  static void ReverseCopyData(
-      casacore::Array<std::complex<float>>& dest, size_t startChannel,
-      size_t endChannel,
-      const std::vector<aocommon::PolarizationEnum>& polsDest,
-      const std::complex<float>* source, aocommon::PolarizationEnum polSource);
-
-  static void ReverseCopyWeights(
-      casacore::Array<float>& dest, size_t startChannel, size_t endChannel,
-      const std::vector<aocommon::PolarizationEnum>& polsDest,
-      const float* source, aocommon::PolarizationEnum polSource);
-
-  static void GetRowRange(casacore::MeasurementSet& ms,
-                          const MSSelection& selection, size_t& startRow,
-                          size_t& endRow);
-
-  static void GetRowRangeAndIDMap(casacore::MeasurementSet& ms,
-                                  const MSSelection& selection,
-                                  size_t& startRow, size_t& endRow,
-                                  const std::set<size_t>& dataDescIdMap,
-                                  std::vector<size_t>& idToMSRow);
+  virtual void ResetModelColumn();
 
   static void CopyRealToComplex(std::complex<float>* dest, const float* source,
                                 size_t n) {
@@ -205,34 +221,8 @@ class MSProvider {
       ++source;
     }
   }
-
-  static void InitializeModelColumn(casacore::MeasurementSet& ms);
-
-  static casacore::ArrayColumn<float> InitializeImagingWeightColumn(
-      casacore::MeasurementSet& ms);
-
-  /**
-   * Make an arraycolumn object for the weight spectrum column if it exists and
-   * is valid. The weight spectrum column is an optional column, the weight
-   * column should be used if it doesn't exist. Moreover, some measurement sets
-   * have an empty weight spectrum column; this method only
-   * returns true if the column can be used.
-   */
-  static bool OpenWeightSpectrumColumn(
-      const casacore::MeasurementSet& ms,
-      std::unique_ptr<casacore::ArrayColumn<float>>& weightColumn);
-
-  static void ExpandScalarWeights(
-      const casacore::Array<float>& weightScalarArray,
-      casacore::Array<float>& weightSpectrumArray) {
-    casacore::Array<float>::const_contiter src = weightScalarArray.cbegin();
-    for (casacore::Array<float>::contiter i = weightSpectrumArray.cbegin();
-         i != weightSpectrumArray.cend(); ++i) {
-      *i = *src;
-      ++src;
-      if (src == weightScalarArray.cend()) src = weightScalarArray.cbegin();
-    }
-  }
 };
+
+}  // namespace wsclean
 
 #endif

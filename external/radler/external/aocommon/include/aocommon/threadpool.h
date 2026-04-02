@@ -1,186 +1,171 @@
 #ifndef AOCOMMON_THREAD_POOL_H_
 #define AOCOMMON_THREAD_POOL_H_
 
-#include "system.h"
-
-#include <sched.h>
-
+#include <cassert>
 #include <condition_variable>
-#include <functional>
-#include <map>
 #include <mutex>
 #include <thread>
-#include <vector>
+
+#include "barrier.h"
 
 namespace aocommon {
 
-/// \brief Defines a class for managing threads.
+/**
+ * This class holds a running list of threads that can be used to
+ * run multiple functions in parallel without having to stop and
+ * recreate the threads in between.
+ *
+ * There's a static instance of the pool that can be used
+ * to avoid passing the class between many functions.
+ */
 class ThreadPool {
  public:
-  /**
-   * Create a thread pool with NThreads()==system::ProcessorCount().
-   */
-  ThreadPool() : ThreadPool(aocommon::system::ProcessorCount()){};
+  ThreadPool() = default;
+  ~ThreadPool() { StopThreads(); }
 
   /**
-   * Create a thread pool with the specified number of threads.
+   * Returns a static instance of this class. It is by default initialized
+   * with only one thread, but may be changed globally using SetNThreads().
    */
-  ThreadPool(size_t nthreads) : _isStopped(false), _priority(0) {
-    if (nthreads == 0)
-      throw std::runtime_error("A ThreadPool was created with nthreads=0");
-    // We reserve one thread less, because we always want a new For loop
-    // to be able to add a new thread (with index 0).
-    _threads.reserve(nthreads - 1);
-    for (size_t i = 1; i != nthreads; ++i)
-      _threads.emplace_back(&ThreadPool::threadFunc, this, i);
+  static ThreadPool& GetInstance() {
+    static ThreadPool instance_;
+    return instance_;
   }
 
-  ThreadPool(const ThreadPool&) = delete;
-  ThreadPool& operator=(const ThreadPool&) = delete;
+  size_t NThreads() const { return threads_.size() + 1; }
 
-  ~ThreadPool() {
-    std::unique_lock<std::mutex> lock(_mutex);
-    _isStopped = true;
-    _onProgress.notify_all();
-    lock.unlock();
-    for (std::thread& t : _threads) t.join();
+  /**
+   * This makes the class ready to execute with n_threads parallel
+   * threads. It will spawn n-1 new threads,
+   * because @ref ExecuteInParallel() also uses the calling thread.
+   * The running threads can be terminated by setting n_threads to 1.
+   * This function should not be called from parallel executed
+   * functions themselves.
+   */
+  void SetNThreads(size_t n_threads) {
+    assert(execute_function_ == nullptr);
+    assert(n_threads != 0);
+    StopThreads();
+    StartThreads(n_threads);
   }
 
-  size_t NThreads() const { return _threads.size() + 1; }
+  /**
+   * Stops all threads. Afterwards, threads can be restarted with a call to
+   * SetNThreads().
+   */
+  void Stop() { SetNThreads(1); }
 
-  void SetNThreads(size_t nThreads) {
-    if (nThreads != NThreads()) {
-      std::unique_lock<std::mutex> lock(_mutex);
-      _isStopped = true;
-      _onProgress.notify_all();
+  /**
+   * Run the specified function in parallel. The function will be called
+   * n_threads times. The called function should not throw exceptions.
+   * @param execute_function Function with the thread_id as a parameter.
+   */
+  void ExecuteInParallel(std::function<void(size_t)> execute_function) {
+    assert(execute_function_ == nullptr);
+    if (threads_.empty()) {
+      execute_function(0);
+    } else {
+      std::unique_lock lock(mutex_);
+      execute_function_ = execute_function;
+      condition_.notify_all();
       lock.unlock();
-      for (std::thread& t : _threads) t.join();
 
-      _threads.clear();
-      _isStopped = false;
-      _priority = 0;
+      execute_function(0);
 
-      _threads.reserve(nThreads - 1);
-      for (size_t i = 1; i != nThreads; ++i)
-        _threads.emplace_back(&ThreadPool::threadFunc, this, i);
+      lock.lock();
+      BarrierWait(lock);
+      execute_function_ = nullptr;
     }
   }
 
   /**
-   * Iteratively call a function in parallel.
-   *
-   * The function is expected to accept two size_t parameters, the loop
-   * index and the thread id, e.g.:
-   *   void loopFunction(size_t iteration, size_t threadID);
-   * It is called (end-start) times.
+   * Similar to @ref ExecuteInParallel(), but non-blocking. This function
+   * calls the execute_function "n_threads-1" times. The calling thread
+   * is not used to call the function, thereby allowing the function to
+   * return immediately. In this case, the thread index provided to
+   * execute_function is always >= 1. A call to ExecuteInParallel() must
+   * be followed by a call to @ref FinishParallelExecution().
    */
-  template <typename Func>
-  void For(size_t start, size_t end, Func func) {
-    std::unique_lock<std::mutex> lock(_mutex);
-    size_t thisPriority = _priority;
-    ++_priority;
-    lock.unlock();
-
-    size_t progress = end - start;
-
-    std::thread localThread(&ThreadPool::threadSpecificPriorityFunc, this, 0,
-                            thisPriority, &progress);
-
-    // Queue tasks for all iterations
-    while (start != end) {
-      write(thisPriority, std::bind(func, start, std::placeholders::_1),
-            &progress);
-      ++start;
+  void StartParallelExecution(std::function<void(size_t)> execute_function) {
+    assert(execute_function_ == nullptr);
+    if (!threads_.empty()) {
+      std::lock_guard lock(mutex_);
+      execute_function_ = execute_function;
+      condition_.notify_all();
     }
-
-    localThread.join();
   }
 
-  [[deprecated(
-      "aocommon::ThreadPool::NCPUs is deprecated, use "
-      "aocommon::system::ProcessorCount() instead")]] static unsigned
-  NCPUs() {
-    return system::ProcessorCount();
+  /**
+   * Finish a call to StartParallelExecution() and wait for all executing
+   * functions to finish. This call blocks until that condition is satisfied.
+   * This function should only be called once after a call to
+   * StartParallelExecution(). It should not be called to finish a call to
+   * ExecuteInParallel().
+   */
+  void FinishParallelExecution() {
+    std::unique_lock lock(mutex_);
+    BarrierWait(lock);
+    execute_function_ = nullptr;
   }
 
  private:
-  void threadFunc(size_t threadId) {
-    std::pair<std::function<void(size_t)>, size_t*> func;
-    while (read_highest_priority(func)) {
-      func.first(threadId);
-
-      std::unique_lock<std::mutex> lock(_mutex);
-      --(*func.second);  // decrease progress counter (requires lock)
-      _onProgress.notify_all();
+  void StartThreads(size_t n_threads) {
+    assert(n_threads != 0);
+    n_executing_ = n_threads;
+    for (size_t i = 1; i != n_threads; ++i) {
+      threads_.emplace_back([i, this]() { Run(i); });
     }
   }
 
-  void threadSpecificPriorityFunc(size_t threadId, size_t priority,
-                                  size_t* progressPtr) {
-    std::pair<std::function<void(size_t)>, size_t*> func;
-    while (read_specific_priority(priority, func, progressPtr)) {
-      func.first(threadId);
+  void StopThreads() {
+    std::unique_lock lock(mutex_);
+    stop_ = true;
+    condition_.notify_all();
+    lock.unlock();
 
-      std::unique_lock<std::mutex> lock(_mutex);
-      --(*progressPtr);
-      _onProgress.notify_all();
+    for (std::thread& t : threads_) t.join();
+    threads_.clear();
+    stop_ = false;
+  }
+
+  void Run(size_t thread_index) {
+    std::unique_lock lock(mutex_);
+    while (true) {
+      while (execute_function_ == nullptr && !stop_) condition_.wait(lock);
+      if (stop_) break;
+
+      lock.unlock();
+      execute_function_(thread_index);
+      lock.lock();
+      BarrierWait(lock);
     }
   }
 
-  bool read_highest_priority(
-      std::pair<std::function<void(size_t)>, size_t*>& func) {
-    std::unique_lock<std::mutex> lock(_mutex);
-    while (!_isStopped && _tasks.empty()) _onProgress.wait(lock);
-    if (!_tasks.empty()) {
-      func = std::move(_tasks.begin()->second);
-      _tasks.erase(_tasks.begin());
-      _onProgress.notify_all();
-      return true;
+  void BarrierWait(std::unique_lock<std::mutex>& lock) {
+    --n_executing_;
+    if (n_executing_ == 0) {
+      ++barrier_cycle_;
+      n_executing_ = NThreads();
+      // All threads have finished executing their function and have arrived at
+      // the barrier: make the threads wait until the next call to
+      // ExecuteInParallel().
+      execute_function_ = nullptr;
+      condition_.notify_all();
     } else {
-      return false;
+      const size_t cycle = barrier_cycle_;
+      while (cycle == barrier_cycle_) condition_.wait(lock);
     }
   }
 
-  bool read_specific_priority(
-      size_t priority, std::pair<std::function<void(size_t)>, size_t*>& func,
-      size_t* progress) {
-    std::unique_lock<std::mutex> lock(_mutex);
-    auto iter = _tasks.find(priority);
-    while (!_isStopped && (*progress) > 0 && iter == _tasks.end()) {
-      _onProgress.wait(lock);
-      iter = _tasks.find(priority);
-    }
-    if (iter != _tasks.end()) {
-      func = std::move(iter->second);
-      _tasks.erase(iter);
-      _onProgress.notify_all();
-      return true;
-    } else {
-      return false;
-    }
-  }
-
-  void write(size_t priority, std::function<void(size_t)>&& func,
-             size_t* progressPtr) {
-    // Wait until there is space in the map (so that the map
-    // doesn't get too large)
-    std::unique_lock<std::mutex> lock(_mutex);
-    while (_tasks.count(priority) >= NThreads()) {
-      _onProgress.wait(lock);
-    }
-    _tasks.emplace(priority, std::make_pair(std::move(func), progressPtr));
-    _onProgress.notify_all();
-  }
-
-  // Priority, (function, progress*)
-  bool _isStopped;
-  size_t _priority;
-  std::multimap<size_t, std::pair<std::function<void(size_t)>, size_t*>,
-                std::greater<size_t>>
-      _tasks;
-  std::vector<std::thread> _threads;
-  std::mutex _mutex;
-  std::condition_variable _onProgress;
+  std::vector<std::thread> threads_;
+  bool stop_ = false;
+  size_t n_executing_ = 0;
+  size_t barrier_cycle_ = 0;
+  /// The function that is executed in parallel. When it is empty (nullptr),
+  /// there's no task for the threads.
+  std::function<void(size_t)> execute_function_;
+  std::mutex mutex_;
+  std::condition_variable condition_;
 };
 
 }  // namespace aocommon

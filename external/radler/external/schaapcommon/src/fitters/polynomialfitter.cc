@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "polynomialfitter.h"
+#include "nlplfitter.h"
 
 #include <stdexcept>
+#include <cassert>
 
 #include <gsl/gsl_multifit.h>
 
@@ -62,6 +64,78 @@ void PolynomialFitter::Fit(std::vector<NumT>& terms, size_t nTerms) {
   if (result) {
     throw std::runtime_error("Polynomial fit failed");
   }
+}
+
+void PowerLawToPolynomialCoefficients(std::vector<float>& terms,
+                                      const std::vector<float>& pl_terms,
+                                      float pl_reference_frequency_hz,
+                                      float polynomial_reference_frequency_hz,
+                                      float min_frequency_hz,
+                                      float max_frequency_hz) {
+  assert(max_frequency_hz >= min_frequency_hz);
+  assert(!terms.empty());
+
+  const std::size_t n_terms = terms.size();
+
+  std::vector<float> frequencies;
+  const float frequency_step =
+      terms.size() == 1
+          ? 0.5 * (min_frequency_hz + max_frequency_hz)
+          : (max_frequency_hz - min_frequency_hz) / (terms.size() - 1);
+  for (std::size_t term_index = 0; term_index != n_terms; ++term_index) {
+    frequencies.emplace_back(min_frequency_hz + frequency_step * term_index);
+  }
+
+  std::vector<float> values;
+  for (float frequency : frequencies) {
+    const float value = NonLinearPowerLawFitter::Evaluate(
+        frequency, pl_terms, pl_reference_frequency_hz);
+    values.push_back(value);
+  }
+
+  PolynomialFitter fitter;
+  for (std::size_t i = 0; i != frequencies.size(); ++i) {
+    fitter.AddDataPoint(
+        frequencies[i] / polynomial_reference_frequency_hz - 1.0, values[i], 1);
+  }
+
+  fitter.Fit(terms, n_terms);
+}
+
+void ShiftPolynomialReferenceFrequency(std::vector<float>& terms,
+                                       float input_reference_frequency_hz,
+                                       float output_reference_frequency_hz) {
+  assert(!terms.empty());
+
+  const float min_frequency = 0.5 * std::min(input_reference_frequency_hz,
+                                             output_reference_frequency_hz);
+  const float max_frequency = 2.0 * std::max(input_reference_frequency_hz,
+                                             output_reference_frequency_hz);
+
+  const std::size_t n_terms = terms.size();
+
+  std::vector<float> frequencies;
+  const float frequency_step =
+      n_terms == 1 ? 0.5 * (min_frequency + max_frequency)
+                   : (max_frequency - min_frequency) / (n_terms - 1);
+  for (std::size_t term_index = 0; term_index != n_terms; ++term_index) {
+    frequencies.emplace_back(min_frequency + frequency_step * term_index);
+  }
+
+  std::vector<float> values;
+  for (float frequency : frequencies) {
+    const float value = PolynomialFitter::Evaluate(
+        frequency / input_reference_frequency_hz - 1.0f, terms);
+    values.push_back(value);
+  }
+
+  PolynomialFitter fitter;
+  for (std::size_t i = 0; i != frequencies.size(); ++i) {
+    fitter.AddDataPoint(frequencies[i] / output_reference_frequency_hz - 1.0f,
+                        values[i], 1);
+  }
+
+  fitter.Fit(terms, n_terms);
 }
 
 }  // namespace fitters

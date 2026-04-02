@@ -4,18 +4,22 @@
 #ifndef SCHAAPCOMMON_FITTERS_SPECTRAL_FITTER_H_
 #define SCHAAPCOMMON_FITTERS_SPECTRAL_FITTER_H_
 
+#include <optional>
 #include <vector>
 
 #include <aocommon/image.h>
+
+#include "rmfitter.h"
 
 namespace schaapcommon {
 namespace fitters {
 
 enum class SpectralFittingMode {
-  kNoFitting,     /*!< No fitting, each channel gets a separate solution. */
-  kPolynomial,    /*!< Use polynomial for spectral fitting. */
-  kLogPolynomial, /*!< Use double log polynomial for spectral fitting. */
-  kForcedTerms    /*!< Use forced terms for spectral fitting. */
+  kNoFitting,      /*!< No fitting, each channel gets a separate solution. */
+  kPolynomial,     /*!< Use polynomial for spectral fitting. */
+  kLogPolynomial,  /*!< Use double log polynomial for spectral fitting. */
+  kForcedTerms,    /*!< Use forced terms for spectral fitting. */
+  kRotationMeasure /*!< Fit a rotation measure for RM synthesis. */
 };
 
 class SpectralFitter {
@@ -39,7 +43,7 @@ class SpectralFitter {
    * frequency. Using a pre-allocated vector instead of a return value avoids
    * memory allocations in this performance-critical function.
    * @param values array of size @ref NFrequencies() with the values to be
-   * fitted. values[i] should correspond Frequency(i) and Weight(i).
+   * fitted. values[i] should correspond to Frequency(i) and Weight(i).
    * @param x a pixel index giving the horizontal position
    * @param y a pixel index giving the vertical position
    */
@@ -79,6 +83,41 @@ class SpectralFitter {
     Evaluate(values, terms);
   }
 
+  /**
+   * This function behaves like @ref FitAndEvaluate(), but expects an array
+   * where the values for different polarizations are interlaced. The first
+   * n_pol values are for the first channel, the next n_pol for the second
+   * channel, etc. For fitting methods in which the polarizations are
+   * independently fit (e.g. polynomial fit), the relevant values are selected
+   * and passed to FitAndEvaluate(). For RM fitting, n_polarizations is expected
+   * to be 2 (for Stokes Q and U), and the RM fitter is called.
+   */
+  void MultiPolarizationFitAndEvaluate(NumT* values, size_t x, size_t y,
+                                       std::vector<NumT>& fitting_scratch,
+                                       size_t n_polarizations) {
+    const size_t n = frequencies_.size();
+    if (mode_ == schaapcommon::fitters::SpectralFittingMode::kRotationMeasure) {
+      assert(n_polarizations == 2);
+      rm_fitter_->Fit(std::span(values, n * 2));
+    } else {
+      for (size_t p = 0; p != n_polarizations; ++p) {
+        // Values are ordered by pol, so reshuffle so all frequencies are
+        // together. It's somewhat like an (inplace) transpose, but then for
+        // only one column.
+        for (size_t ch = 0; ch != n; ++ch) {
+          std::swap(values[ch * n_polarizations + p], values[ch]);
+        }
+        FitAndEvaluate(values, x, y, fitting_scratch);
+        // placing channel values back should be in reversed order to
+        // undo multiple moves of a single value that might have happened
+        for (size_t i = 0; i != n; ++i) {
+          const size_t ch = n - i - 1;
+          std::swap(values[ch * n_polarizations + p], values[ch]);
+        }
+      }
+    }
+  }
+
   SpectralFittingMode Mode() const { return mode_; }
 
   size_t NTerms() const { return n_terms_; }
@@ -109,6 +148,7 @@ class SpectralFitter {
   std::vector<NumT> weights_;
   double reference_frequency_;
   std::vector<aocommon::Image> forced_terms_;
+  std::optional<RmFitter> rm_fitter_;
 };
 
 }  // namespace fitters

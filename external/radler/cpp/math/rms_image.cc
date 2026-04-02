@@ -3,9 +3,11 @@
 #include "math/rms_image.h"
 
 #include <aocommon/image.h>
+#include <aocommon/logger.h>
 #include <aocommon/staticfor.h>
+#include <aocommon/units/fluxdensity.h>
 
-#include <schaapcommon/fft/restoreimage.h>
+#include <schaapcommon/math/restoreimage.h>
 
 using aocommon::Image;
 
@@ -13,16 +15,15 @@ namespace radler::math::rms_image {
 
 void Make(Image& rms_output, const Image& input_image, double window_size,
           long double beam_major, long double beam_minor, long double beam_pa,
-          long double pixel_scale_l, long double pixel_scale_m,
-          size_t thread_count) {
+          long double pixel_scale_l, long double pixel_scale_m) {
   Image image(input_image);
   image.Square();
   rms_output = Image(image.Width(), image.Height(), 0.0);
 
-  schaapcommon::fft::RestoreImage(
+  schaapcommon::math::RestoreImage(
       rms_output.Data(), image.Data(), image.Width(), image.Height(),
       beam_major * window_size, beam_minor * window_size, beam_pa,
-      pixel_scale_l, pixel_scale_m, thread_count);
+      pixel_scale_l, pixel_scale_m);
 
   const double s = std::sqrt(2.0 * M_PI);
   const long double sigmaMaj = beam_major / (2.0L * sqrtl(2.0L * logl(2.0L)));
@@ -32,13 +33,12 @@ void Make(Image& rms_output, const Image& input_image, double window_size,
   for (auto& val : rms_output) val = std::sqrt(val * norm);
 }
 
-void SlidingMinimum(Image& output, const Image& input, size_t window_size,
-                    size_t thread_count) {
+void SlidingMinimum(Image& output, const Image& input, size_t window_size) {
   const size_t width = input.Width();
   output = Image(width, input.Height());
   Image temp(output);
 
-  aocommon::StaticFor<size_t> loop(thread_count);
+  aocommon::StaticFor<size_t> loop;
 
   loop.Run(0, input.Height(), [&](size_t yStart, size_t yEnd) {
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -69,11 +69,10 @@ void SlidingMinimum(Image& output, const Image& input, size_t window_size,
   });
 }
 
-void SlidingMaximum(Image& output, const Image& input, size_t window_size,
-                    size_t thread_count) {
+void SlidingMaximum(Image& output, const Image& input, size_t window_size) {
   Image flipped(input);
   flipped.Negate();
-  SlidingMinimum(output, flipped, window_size, thread_count);
+  SlidingMinimum(output, flipped, window_size);
   output.Negate();
 }
 
@@ -81,17 +80,46 @@ void MakeWithNegativityLimit(Image& rms_output, const Image& input_image,
                              double window_size, long double beam_major,
                              long double beam_minor, long double beam_pa,
                              long double pixel_scale_l,
-                             long double pixel_scale_m, size_t thread_count) {
+                             long double pixel_scale_m) {
   Make(rms_output, input_image, window_size, beam_major, beam_minor, beam_pa,
-       pixel_scale_l, pixel_scale_m, thread_count);
+       pixel_scale_l, pixel_scale_m);
   Image slidingMinimum(input_image.Width(), input_image.Height());
   double beamInPixels = std::max(beam_major / pixel_scale_l, 1.0L);
-  SlidingMinimum(slidingMinimum, input_image, window_size * beamInPixels,
-                 thread_count);
+  SlidingMinimum(slidingMinimum, input_image, window_size * beamInPixels);
   for (size_t i = 0; i != rms_output.Size(); ++i) {
     rms_output[i] = std::max<float>(rms_output[i],
                                     std::abs(slidingMinimum[i]) * (1.5 / 5.0));
   }
+}
+
+double MakeRmsFactorImage(Image& rms_image, double local_rms_strength) {
+  const double stddev = rms_image.Min();
+  aocommon::Logger::Info << "Lowest RMS in image: "
+                         << aocommon::units::FluxDensity::ToNiceString(stddev)
+                         << '\n';
+  if (stddev < 0.0) {
+    throw std::runtime_error(
+        "RMS image can only contain values >= 0, but contains values < "
+        "0.0");
+  }
+  // Convert the RMS image to a "factor" that can be multiplied with the
+  // image. The factor will be 1 at the minimum RMS such that Jy remains
+  // somewhat interpretable.
+  if (local_rms_strength == 1.0) {
+    // Optimization of generic case to avoid unnecessary std::pow evaluation.
+    for (float& value : rms_image) {
+      if (value != 0.0) value = stddev / value;
+    }
+  } else if (local_rms_strength == 0.0) {
+    // This special case is needed to make sure that zeros in the image are
+    // still converted to one.
+    rms_image = 1.0;
+  } else {
+    for (float& value : rms_image) {
+      if (value != 0.0) value = std::pow(stddev / value, local_rms_strength);
+    }
+  }
+  return stddev;
 }
 
 }  // namespace radler::math::rms_image

@@ -13,6 +13,17 @@ using aocommon::Vector4;
   BOOST_CHECK_MESSAGE(std::fabs(VAL - REF) < 1e-6, \
                       MSG << " is " << VAL << ", should be " << REF);
 
+namespace {
+HMC4x4 GetExampleMatrix() {
+  const std::complex<double> j(0, 1);
+  return HMC4x4{
+      1.0,  2.0 + 3.0 * j,   4.0 - 5.0 * j,   6.0 + 7.0 * j,   2.0 - 3.0 * j,
+      8.0,  9.0 + 10.0 * j,  11.0 - 12.0 * j, 4.0 + 5.0 * j,   9.0 - 10.0 * j,
+      13.0, 14.0 + 15.0 * j, 6.0 - 7.0 * j,   11.0 + 12.0 * j, 14.0 - 15.0 * j,
+      16.0};
+}
+}  // namespace
+
 BOOST_AUTO_TEST_SUITE(hmatrix4x4)
 
 template <typename Matrix>
@@ -24,19 +35,45 @@ static void CheckMatrix(const Matrix& result, const Matrix& groundtruth) {
 }
 
 BOOST_AUTO_TEST_CASE(zero) {
-  HMC4x4 zero = HMC4x4::Zero();
-  HMC4x4 ref{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  constexpr HMC4x4 zero = HMC4x4::Zero();
+  constexpr HMC4x4 ref{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   CheckMatrix(zero, ref);
   CheckMatrix(zero.ToMatrix(), MC4x4::Zero());
 }
 
 BOOST_AUTO_TEST_CASE(unit) {
-  HMC4x4 unit = HMC4x4::Unit();
-  HMC4x4 ref{1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-             0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  constexpr HMC4x4 unit = HMC4x4::Unit();
+  constexpr HMC4x4 ref{1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                       0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   CheckMatrix(unit, ref);
   CheckMatrix(unit.ToMatrix(), MC4x4::Unit());
+}
+
+BOOST_AUTO_TEST_CASE(equals) {
+  static_assert(HMC4x4::Unit() == HMC4x4::Unit());
+  static_assert(!(HMC4x4::Zero() == HMC4x4::Unit()));
+  static_assert(HMC4x4::Zero() == HMC4x4::Zero());
+  static_assert(!(HMC4x4::Unit() == HMC4x4::Zero()));
+  for (size_t i = 0; i != 16; ++i) {
+    HMC4x4 m;
+    m.Data(i) = 1e-8;
+    BOOST_CHECK(m == m);
+    BOOST_CHECK(!(m == HMC4x4::Zero()));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(unequal) {
+  static_assert(!(HMC4x4::Unit() != HMC4x4::Unit()));
+  static_assert(HMC4x4::Zero() != HMC4x4::Unit());
+  static_assert(!(HMC4x4::Zero() != HMC4x4::Zero()));
+  static_assert(HMC4x4::Unit() != HMC4x4::Zero());
+  for (size_t i = 0; i != 16; ++i) {
+    HMC4x4 m;
+    m.Data(i) = 1e-8;
+    BOOST_CHECK(!(m != m));
+    BOOST_CHECK(m != HMC4x4::Zero());
+  }
 }
 
 BOOST_AUTO_TEST_CASE(buffer) {
@@ -70,6 +107,25 @@ BOOST_AUTO_TEST_CASE(diagonal_values) {
                                 ref.end());
 }
 
+BOOST_AUTO_TEST_CASE(addition) {
+  const HMC4x4 unit = HMC4x4::Unit();
+  CheckMatrix(unit + HMC4x4::Zero(), unit);
+  CheckMatrix(unit + unit, unit * 2);
+  HMC4x4 a = GetExampleMatrix();
+  MC4x4 b;
+  MC4x4 reference;
+  for (size_t col = 0; col != 4; ++col) {
+    for (size_t row = col; row != 4; ++row) {
+      if (col == row)
+        b[col + row * 4] = std::complex<double>(col + row, 0.0);
+      else
+        b[col + row * 4] = std::complex<double>(col + row, col);
+      reference[col + row * 4] = b[col + row * 4] + a[col + row * 4];
+    }
+  }
+  CheckMatrix(a + HMC4x4(b), HMC4x4(reference));
+}
+
 BOOST_AUTO_TEST_CASE(inversion) {
   HMC4x4 m1(HMC4x4::Unit());
   BOOST_CHECK(m1.Invert());
@@ -90,9 +146,6 @@ BOOST_AUTO_TEST_CASE(from_data) {
   HMC4x4 m = HMC4x4::FromData({1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
                                0.0, 0.0, 0.0, 0.0, 0.0, 1.0});
   CheckMatrix(m, HMC4x4::Unit());
-
-  auto invalid_size = {1.0, 0.0};
-  BOOST_CHECK_THROW(HMC4x4::FromData(invalid_size), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(indexing1) {
@@ -199,16 +252,127 @@ BOOST_AUTO_TEST_CASE(kronecker_product_d) {
   checkKroneckerProduct(a4, x4, b4);
 }
 
+BOOST_AUTO_TEST_CASE(diagonal_kronecker_product) {
+  using namespace std::complex_literals;
+  HMC4x4 m1;
+  {
+    MC2x2 a1{1.0 + 2.0i, 0.0, 0.0, 3.0 + 4.0i};
+    MC2x2 a2{3.0 + 4.0i, 0.0, 0.0, 1.0 + 2.0i};
+    m1 = HMC4x4::KroneckerProduct(a1, a2);
+  }
+  HMC4x4 m2;
+  {
+    std::array<double, 2> a1{1.0f, 3.0f};
+    std::array<double, 2> a2{3.0f, 1.0f};
+    m2 = HMC4x4::KroneckerProduct(a1, a2);
+  }
+  for (size_t i = 0; i != 4; ++i) {
+    BOOST_CHECK_CLOSE(m1[i].real(), m2[i].real(), 1e-12);
+    BOOST_CHECK_CLOSE(m1[i].imag(), m2[i].imag(), 1e-12);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(diagonal_hermitian_kronecker_product) {
+  using namespace std::complex_literals;
+  using aocommon::MC2x2Diag;
+  HMC4x4 m1;
+  {
+    MC2x2 a1{1.0 + 2.0i, 0.0, 0.0, 3.0 + 4.0i};
+    MC2x2 a2{3.0 + 4.0i, 0.0, 0.0, 1.0 + 2.0i};
+    m1 = HMC4x4::KroneckerProduct(a1.HermitianSquare().Transpose(),
+                                  a2.HermitianSquare());
+  }
+  HMC4x4 m2;
+  {
+    MC2x2Diag a1{1.0 + 2.0i, 3.0 + 4.0i};
+    MC2x2Diag a2{3.0 + 4.0i, 1.0 + 2.0i};
+    m2 = HMC4x4::KroneckerProduct(std::move(a1.RealHermitianSquare()),
+                                  std::move(a2.RealHermitianSquare()));
+  }
+  for (size_t i = 0; i != 4; ++i) {
+    BOOST_CHECK_CLOSE(m1[i].real(), m2[i].real(), 1e-12);
+    BOOST_CHECK_CLOSE(m1[i].imag(), m2[i].imag(), 1e-12);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(norm) {
   BOOST_CHECK_CLOSE((HMC4x4::Unit() * 2.0).Norm(), (MC4x4::Unit() * 2.0).Norm(),
                     1e-6);
-  std::complex<double> j(0, 1);
-  HMC4x4 m{
-      1.0,  2.0 + 3.0 * j,   4.0 - 5.0 * j,   6.0 + 7.0 * j,   2.0 - 3.0 * j,
-      8.0,  9.0 + 10.0 * j,  11.0 - 12.0 * j, 4.0 + 5.0 * j,   9.0 - 10.0 * j,
-      13.0, 14.0 + 15.0 * j, 6.0 - 7.0 * j,   11.0 + 12.0 * j, 11.0 + 12.0 * j,
-      16.0};
+  const HMC4x4 m = GetExampleMatrix();
   BOOST_CHECK_CLOSE(m.Norm(), m.ToMatrix().Norm(), 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(square) {
+  CheckMatrix(HMC4x4::Unit().Square(), HMC4x4::Unit());
+  CheckMatrix((HMC4x4::Unit() * 2.0).Square(), HMC4x4::Unit() * 4.0);
+  const HMC4x4 m = GetExampleMatrix();
+  const MC4x4 square = m.Square().ToMatrix();
+  const std::complex<double> m00 = m[0];
+  const std::complex<double> m01 = m[1];
+  const std::complex<double> m02 = m[2];
+  const std::complex<double> m03 = m[3];
+  const std::complex<double> m10 = m[4];
+  const std::complex<double> m11 = m[5];
+  const std::complex<double> m12 = m[6];
+  const std::complex<double> m13 = m[7];
+  const std::complex<double> m20 = m[8];
+  const std::complex<double> m21 = m[9];
+  const std::complex<double> m22 = m[10];
+  const std::complex<double> m23 = m[11];
+  const std::complex<double> m30 = m[12];
+  const std::complex<double> m31 = m[13];
+  const std::complex<double> m32 = m[14];
+  const std::complex<double> m33 = m[15];
+  // This is written out quite verbosely because when using functions to make
+  // things shorter, it is much harder to trace errors.
+  std::complex r00 = (m00 * m00) + (m01 * m10) + (m02 * m20) + (m03 * m30);
+  BOOST_CHECK_CLOSE(square[0].real(), r00.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[0].imag(), r00.imag(), 1e-6);
+  std::complex r01 = (m00 * m01) + (m01 * m11) + (m02 * m21) + (m03 * m31);
+  BOOST_CHECK_CLOSE(square[1].real(), r01.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[1].imag(), r01.imag(), 1e-6);
+  std::complex r02 = (m00 * m02) + (m01 * m12) + (m02 * m22) + (m03 * m32);
+  BOOST_CHECK_CLOSE(square[2].real(), r02.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[2].imag(), r02.imag(), 1e-6);
+  std::complex r03 = (m00 * m03) + (m01 * m13) + (m02 * m23) + (m03 * m33);
+  BOOST_CHECK_CLOSE(square[3].real(), r03.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[3].imag(), r03.imag(), 1e-6);
+
+  std::complex r11 = (m10 * m01) + (m11 * m11) + (m12 * m21) + (m13 * m31);
+  BOOST_CHECK_CLOSE(square[5].real(), r11.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[5].imag(), r11.imag(), 1e-6);
+  std::complex r12 = (m10 * m02) + (m11 * m12) + (m12 * m22) + (m13 * m32);
+  BOOST_CHECK_CLOSE(square[6].real(), r12.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[6].imag(), r12.imag(), 1e-6);
+  std::complex r13 = (m10 * m03) + (m11 * m13) + (m12 * m23) + (m13 * m33);
+  BOOST_CHECK_CLOSE(square[7].real(), r13.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[7].imag(), r13.imag(), 1e-6);
+
+  std::complex r22 = (m20 * m02) + (m21 * m12) + (m22 * m22) + (m23 * m32);
+  BOOST_CHECK_CLOSE(square[10].real(), r22.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[10].imag(), r22.imag(), 1e-6);
+  std::complex r23 = (m20 * m03) + (m21 * m13) + (m22 * m23) + (m23 * m33);
+  BOOST_CHECK_CLOSE(square[11].real(), r23.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[11].imag(), r23.imag(), 1e-6);
+
+  std::complex r33 = (m30 * m03) + (m31 * m13) + (m32 * m23) + (m33 * m33);
+  BOOST_CHECK_CLOSE(square[15].real(), r33.real(), 1e-6);
+  BOOST_CHECK_CLOSE(square[15].imag(), r33.imag(), 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(serialize) {
+  aocommon::SerialOStream o_stream;
+  const HMC4x4 m1 = HMC4x4::Zero();
+  const HMC4x4 m2 = GetExampleMatrix();
+  m1.Serialize(o_stream);
+  m2.Serialize(o_stream);
+  aocommon::SerialIStream i_stream(std::move(o_stream));
+  HMC4x4 m1result;
+  HMC4x4 m2result;
+  m1result.Unserialize(i_stream);
+  CheckMatrix(m1result, m1);
+  m2result.Unserialize(i_stream);
+  CheckMatrix(m2result, m2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

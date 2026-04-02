@@ -3,6 +3,8 @@
 
 #include "../msprovider.h"
 
+namespace wsclean {
+
 /**
  * The abstract MSReader class is the base class for classes that read
  * visibilities. Derived classes are usually instantiated via
@@ -11,11 +13,11 @@
  *
  * This class maintains a reading position, that goes sequentially through the
  * data. The interface of this class is implemented in @ref ContiguousMSReader
- * and @ref PartitionedMSReader.
+ * and @ref ReorderedMsReader.
  */
 class MSReader {
  public:
-  MSReader(MSProvider* msProvider) : _msProvider(msProvider){};
+  MSReader(MSProvider* ms_provider) : ms_provider_(ms_provider){};
 
   virtual ~MSReader(){};
 
@@ -23,8 +25,7 @@ class MSReader {
    * This provides a unique, consecutive number that corresponds to
    * the current reading position. Note that this number does not have
    * to map directly to measurement set row indices, because unselected
-   * data does not affect the RowId. @ref MSProvider::MakeIdToMSRowMapping()
-   * can be used to convert this Id to a measurement row number.
+   * data does not affect the RowId.
    */
   virtual size_t RowId() const = 0;
 
@@ -39,13 +40,9 @@ class MSReader {
   virtual void NextInputRow() = 0;
 
   /**
-   * @{
    * Read meta data from the current reading position.
    */
-  virtual void ReadMeta(double& u, double& v, double& w) = 0;
-
-  virtual void ReadMeta(MSProvider::MetaData& metaData) = 0;
-  /** @} */
+  virtual void ReadMeta(MSProvider::MetaData& metadata) = 0;
 
   /**
    * Read visibility data from current reading position.
@@ -68,8 +65,15 @@ class MSReader {
    */
   virtual void WriteImagingWeights(const float* buffer) = 0;
 
+  /// @returns MSProvider::NPolarizations().
+  size_t NPolarizations() const { return ms_provider_->NPolarizations(); }
+
+  MSProvider& Provider() const { return *ms_provider_; }
+
  protected:
-  MSProvider* _msProvider;
+  MSProvider* ms_provider_;
 };
+
+}  // namespace wsclean
 
 #endif

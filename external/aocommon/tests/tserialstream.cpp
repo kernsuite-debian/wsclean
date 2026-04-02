@@ -200,10 +200,10 @@ struct UnserializeViaConstructor {
   UnserializeViaConstructor() = default;
   explicit UnserializeViaConstructor(SerialIStream& stream)
       : istream(&stream) {}
-  void Serialize(SerialOStream& stream) { ostream = &stream; }
+  void Serialize(SerialOStream& stream) const { ostream = &stream; }
 
   SerialIStream* istream = nullptr;
-  SerialOStream* ostream = nullptr;
+  mutable SerialOStream* ostream = nullptr;  // mutable is for testing purposes.
 };
 
 BOOST_AUTO_TEST_CASE(pointer_via_constructor) {
@@ -252,12 +252,14 @@ BOOST_AUTO_TEST_CASE(object) {
 BOOST_AUTO_TEST_CASE(object_vector) {
   const std::vector<TestObject> empty;
   const std::vector<TestObject> filled{{13, 37}, {0, 42}};
+  std::vector<UnserializeViaConstructor> via_constructor(4);
 
   SerialOStream ostr;
   ostr.ObjectVector(empty)
       .ObjectVector(filled)
       .ObjectVector(empty)
-      .ObjectVector(filled);
+      .ObjectVector(filled)
+      .ObjectVector(via_constructor);
 
   SerialIStream istr(std::move(ostr));
 
@@ -265,10 +267,12 @@ BOOST_AUTO_TEST_CASE(object_vector) {
   std::vector<TestObject> out_empty2;
   std::vector<TestObject> out_filled1;
   std::vector<TestObject> out_filled2;
+  std::vector<UnserializeViaConstructor> out_via_constructor;
   istr.ObjectVector(out_empty1)
       .ObjectVector(out_filled1)
       .ObjectVector(out_empty2)
-      .ObjectVector(out_filled2);
+      .ObjectVector(out_filled2)
+      .ObjectVector(out_via_constructor);
 
   BOOST_CHECK(out_empty1.empty());
   BOOST_CHECK_EQUAL_COLLECTIONS(filled.begin(), filled.end(),
@@ -276,6 +280,15 @@ BOOST_AUTO_TEST_CASE(object_vector) {
   BOOST_CHECK(out_empty2.empty());
   BOOST_CHECK_EQUAL_COLLECTIONS(filled.begin(), filled.end(),
                                 out_filled2.begin(), out_filled2.end());
+  BOOST_CHECK_EQUAL(out_via_constructor.size(), via_constructor.size());
+  for (const UnserializeViaConstructor& element : via_constructor) {
+    BOOST_CHECK_EQUAL(element.istream, nullptr);
+    BOOST_CHECK_EQUAL(element.ostream, &ostr);
+  }
+  for (const UnserializeViaConstructor& element : out_via_constructor) {
+    BOOST_CHECK_EQUAL(element.istream, &istr);
+    BOOST_CHECK_EQUAL(element.ostream, nullptr);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

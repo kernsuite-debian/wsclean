@@ -17,6 +17,8 @@
 
 #include <aocommon/imagecoordinates.h>
 
+#include "h5cache.h"
+
 #ifndef offsetof
 #error offsetof not supported by your compiler.
 #endif
@@ -31,7 +33,7 @@ H5Parm::H5Parm(const std::string& filename, bool force_new,
       // Get the name of first non-existing solset
       std::stringstream new_sol_set_name;
       H5::Group try_group;
-      for (unsigned int sol_set_idx = 0; sol_set_idx < 100; ++sol_set_idx) {
+      for (size_t sol_set_idx = 0; sol_set_idx < 100; ++sol_set_idx) {
         try {
           H5::Exception::dontPrint();
           new_sol_set_name << "sol" << std::setfill('0') << std::setw(3)
@@ -65,7 +67,7 @@ H5Parm::H5Parm(const std::string& filename, bool force_new,
     sol_set_ = openGroup(sol_set_name_to_open);
 
     std::vector<std::string> sol_tab_names;
-    for (unsigned int i = 0; i < sol_set_.getNumObjs(); ++i) {
+    for (size_t i = 0; i < sol_set_.getNumObjs(); ++i) {
       if (sol_set_.getObjTypeByIdx(i) == H5G_GROUP) {
         sol_tab_names.push_back(sol_set_.getObjnameByIdx(i));
       }
@@ -73,8 +75,58 @@ H5Parm::H5Parm(const std::string& filename, bool force_new,
 
     for (const std::string& sol_tab_name : sol_tab_names) {
       H5::Group group = sol_set_.openGroup(sol_tab_name);
-      sol_tabs_.insert(std::map<std::string, SolTab>::value_type(
-          sol_tab_name, SolTab(group)));
+      sol_tabs_.emplace(sol_tab_name, std::make_unique<SolTab>(group));
+    }
+  }
+}
+
+H5Parm::H5Parm(const std::string& filename,
+               const std::vector<std::string>& tables_in_cache)
+    : H5::H5File(filename, H5F_ACC_RDONLY) {
+  using schaapcommon::h5parm::H5Cache;
+
+  if (getNumObjs() > 0) {
+    std::string sol_set_name_to_open;
+    if (this->getNumObjs() == 1) {
+      sol_set_name_to_open = this->getObjnameByIdx(0);
+    } else {
+      throw std::runtime_error(
+          "H5Parm " + filename + " contains more than one SolSet. " +
+          "When using caching, only one SolSet is supported.");
+    }
+
+    sol_set_ = openGroup(sol_set_name_to_open);
+
+    std::vector<std::string> sol_tab_names;
+    for (size_t i = 0; i < sol_set_.getNumObjs(); ++i) {
+      if (sol_set_.getObjTypeByIdx(i) == H5G_GROUP) {
+        sol_tab_names.push_back(sol_set_.getObjnameByIdx(i));
+      }
+    }
+
+    // Check that every table name in tables_in_cache is valid.
+    for (const std::string& table_cache : tables_in_cache) {
+      if (std::find(sol_tab_names.begin(), sol_tab_names.end(), table_cache) ==
+          sol_tab_names.end()) {
+        throw std::runtime_error("'" + table_cache +
+                                 "' does not exist in solset " +
+                                 GetSolSetName());
+      }
+    }
+
+    for (const std::string& sol_tab_name : sol_tab_names) {
+      H5::Group group = sol_set_.openGroup(sol_tab_name);
+
+      // If sol_tab_name is included in the tables_in_cache,
+      // then it creates a H5Cache, otherwise a SolTab.
+      std::unique_ptr<SolTab> sol_tab;
+      if (std::find(tables_in_cache.begin(), tables_in_cache.end(),
+                    sol_tab_name) != tables_in_cache.end()) {
+        sol_tab = std::make_unique<H5Cache>(group);
+      } else {
+        sol_tab = std::make_unique<SolTab>(group);
+      }
+      sol_tabs_.emplace(sol_tab_name, std::move(sol_tab));
     }
   }
 }
@@ -119,7 +171,7 @@ void H5Parm::AddSources(const std::vector<std::string>& names,
 
   // Prepare data
   std::vector<source_t> sources(names.size());
-  for (unsigned int src = 0; src < sources.size(); ++src) {
+  for (size_t src = 0; src < sources.size(); ++src) {
     std::strncpy(sources[src].name, names[src].c_str(), 127);
     sources[src].name[127] = 0;
     sources[src].dir[0] = dirs[src].first;
@@ -150,7 +202,7 @@ void H5Parm::AddAntennas(const std::vector<std::string>& names,
 
   // Prepare data
   std::vector<antenna_t> ants(names.size());
-  for (unsigned int ant = 0; ant < ants.size(); ++ant) {
+  for (size_t ant = 0; ant < ants.size(); ++ant) {
     std::strncpy(ants[ant].name, names[ant].c_str(), 15);
     ants[ant].name[15] = 0;
     const std::array<double, 3>& pos = positions[ant];
@@ -163,12 +215,12 @@ void H5Parm::AddAntennas(const std::vector<std::string>& names,
 }
 
 SolTab& H5Parm::GetSolTab(const std::string& name) {
-  auto item = sol_tabs_.find(name);
-  if (item == sol_tabs_.end()) {
+  decltype(sol_tabs_)::iterator item_sol_tab = sol_tabs_.find(name);
+  if (item_sol_tab == sol_tabs_.end()) {
     throw std::runtime_error("SolTab " + name + " does not exist in solset " +
                              GetSolSetName());
   }
-  return item->second;
+  return *item_sol_tab->second;
 }
 
 bool H5Parm::HasSolTab(const std::string& sol_tab_name) const {
@@ -178,10 +230,10 @@ bool H5Parm::HasSolTab(const std::string& sol_tab_name) const {
 SolTab& H5Parm::CreateSolTab(const std::string& name, const std::string& type,
                              const std::vector<AxisInfo>& axes) {
   H5::Group newgroup = sol_set_.createGroup(name);
-  std::map<std::string, SolTab>::iterator new_item =
-      sol_tabs_.insert(std::make_pair(name, SolTab(newgroup, type, axes)))
-          .first;
-  return new_item->second;
+  auto sol_tab = std::make_unique<SolTab>(newgroup, type, axes);
+  decltype(sol_tabs_)::iterator new_item =
+      sol_tabs_.emplace(name, std::move(sol_tab)).first;
+  return *new_item->second;
 }
 
 size_t H5Parm::GetNumSources() const {

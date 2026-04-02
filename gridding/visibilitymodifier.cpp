@@ -1,6 +1,7 @@
 #include "visibilitymodifier.h"
 
 #include "../msproviders/synchronizedms.h"
+#include "../structures/observationinfo.h"
 
 #ifdef HAVE_EVERYBEAM
 #include <EveryBeam/load.h>
@@ -11,7 +12,11 @@
 // Only needed for EB/H5Parm related options
 #include "../io/findmwacoefffile.h"
 
-#include <aocommon/matrix2x2.h>
+#include "solutionchannelinterpolation.h"
+
+using aocommon::MC2x2F;
+
+namespace wsclean {
 
 namespace {
 void setNonFiniteToZero(std::vector<std::complex<float>>& values) {
@@ -21,204 +26,33 @@ void setNonFiniteToZero(std::vector<std::complex<float>>& values) {
     }
   }
 }
-
-/**
- * @brief Compute the gain from the given solution matrices.
- *
- * @tparam GainEntry Which entry or entries from the gain matrices should be
- * taken into account? See GainMode for further documentation.
- */
-template <GainMode GainEntry>
-std::complex<float> ComputeGain(const aocommon::MC2x2F& gain1,
-                                const aocommon::MC2x2F& gain2);
-
-template <>
-std::complex<float> ComputeGain<GainMode::kXX>(const aocommon::MC2x2F& gain1,
-                                               const aocommon::MC2x2F& gain2) {
-  return gain2[0] * std::conj(gain1[0]);
-}
-
-template <>
-std::complex<float> ComputeGain<GainMode::kYY>(const aocommon::MC2x2F& gain1,
-                                               const aocommon::MC2x2F& gain2) {
-  return gain2[3] * std::conj(gain1[3]);
-}
-
-template <>
-std::complex<float> ComputeGain<GainMode::kDiagonal>(
-    const aocommon::MC2x2F& gain1, const aocommon::MC2x2F& gain2) {
-  return 0.5f *
-         (gain2[0] * std::conj(gain1[0]) + gain2[3] * std::conj(gain1[3]));
-}
-
-template <>
-std::complex<float> ComputeGain<GainMode::kFull>(
-    [[maybe_unused]] const aocommon::MC2x2F& gain1,
-    [[maybe_unused]] const aocommon::MC2x2F& gain2) {
-  throw std::runtime_error("ComputeGain<GainMode::kFull> not implemented!");
-}
-
-/**
- * @brief Compute the weighted squared gain based on the given gain matrices.
- *
- * @tparam GainEntry Which entry or entries from the gain matrices should be
- * taken into account? See GainMode for further documentation.
- */
-template <size_t PolarizationCount, GainMode GainEntry>
-float ComputeWeightedSquaredGain(const aocommon::MC2x2F& gain1,
-                                 const aocommon::MC2x2F& gain2,
-                                 const float* weights) {
-  const std::complex<float> g = ComputeGain<GainEntry>(gain1, gain2);
-  return std::norm(g) * *weights;
-}
-
-template <>
-float ComputeWeightedSquaredGain<2, GainMode::kDiagonal>(
-    const aocommon::MC2x2F& gain1, const aocommon::MC2x2F& gain2,
-    const float* weights) {
-  // The real gain is the average of these two terms, so requires an
-  // extra factor of 2. This is however corrected in the normalization
-  // later on.
-  return std::norm(gain1[0]) * std::norm(gain2[0]) * weights[0] +
-         std::norm(gain1[3]) * std::norm(gain2[3]) * weights[1];
-}
-
-/**
- * @brief Apply conjugated gains to the visibilities.
- *
- * @tparam PolarizationCount polarization count, 2 or 4 for IDG, 1 for all other
- * gridders.
- * @tparam GainEntry Which entry or entries from the gain matrices should be
- * taken into account when correcting the visibilities? See also the
- * documentation of GainMode.
- */
-template <size_t PolarizationCount, GainMode GainEntry>
-void ApplyConjugatedGain(std::complex<float>* visibilities,
-                         const aocommon::MC2x2F& gain1,
-                         const aocommon::MC2x2F& gain2);
-
-template <>
-void ApplyConjugatedGain<1, GainMode::kXX>(std::complex<float>* visibilities,
-                                           const aocommon::MC2x2F& gain1,
-                                           const aocommon::MC2x2F& gain2) {
-  *visibilities = std::conj(gain1[0]) * (*visibilities) * gain2[0];
-}
-
-template <>
-void ApplyConjugatedGain<1, GainMode::kYY>(std::complex<float>* visibilities,
-                                           const aocommon::MC2x2F& gain1,
-                                           const aocommon::MC2x2F& gain2) {
-  *visibilities = std::conj(gain1[3]) * (*visibilities) * gain2[3];
-}
-
-template <>
-void ApplyConjugatedGain<1, GainMode::kDiagonal>(
-    std::complex<float>* visibilities, const aocommon::MC2x2F& gain1,
-    const aocommon::MC2x2F& gain2) {
-  // Stokes-I
-  *visibilities *= 0.5f * gain2.DoubleDot(gain1.Conjugate());
-}
-
-template <>
-void ApplyConjugatedGain<2, GainMode::kDiagonal>(
-    std::complex<float>* visibilities, const aocommon::MC2x2F& gain1,
-    const aocommon::MC2x2F& gain2) {
-  visibilities[0] = std::conj(gain1[0]) * visibilities[0] * gain2[0];
-  visibilities[1] = std::conj(gain1[3]) * visibilities[1] * gain2[3];
-}
-
-template <>
-void ApplyConjugatedGain<4, GainMode::kFull>(std::complex<float>* visibilities,
-                                             const aocommon::MC2x2F& gain1,
-                                             const aocommon::MC2x2F& gain2) {
-  // All polarizations
-  const aocommon::MC2x2F visibilities_mc2x2(visibilities);
-  const aocommon::MC2x2F result =
-      gain1.HermThenMultiply(visibilities_mc2x2).Multiply(gain2);
-  result.AssignTo(visibilities);
-}
-
-/**
- * @brief Apply gains to the visibilities.
- *
- * @tparam PolarizationCount polarization count, 2 or 4 for IDG, 1 for all other
- * gridders.
- * @tparam GainEntry Which entry or entries from the gain matrices should be
- * taken into account when correcting the visibilities? See also the
- * documentation of GainMode.
- */
-template <size_t PolarizationCount, GainMode GainEntry>
-void ApplyGain(std::complex<float>* visibilities, const aocommon::MC2x2F& gain1,
-               const aocommon::MC2x2F& gain2);
-
-template <>
-void ApplyGain<1, GainMode::kXX>(std::complex<float>* visibilities,
-                                 const aocommon::MC2x2F& gain1,
-                                 const aocommon::MC2x2F& gain2) {
-  *visibilities = gain1[0] * (*visibilities) * std::conj(gain2[0]);
-}
-
-template <>
-void ApplyGain<1, GainMode::kYY>(std::complex<float>* visibilities,
-                                 const aocommon::MC2x2F& gain1,
-                                 const aocommon::MC2x2F& gain2) {
-  *visibilities = gain1[3] * (*visibilities) * std::conj(gain2[3]);
-}
-
-template <>
-void ApplyGain<1, GainMode::kDiagonal>(std::complex<float>* visibilities,
-                                       const aocommon::MC2x2F& gain1,
-                                       const aocommon::MC2x2F& gain2) {
-  // Stokes-I.
-  *visibilities *= 0.5f * gain1.DoubleDot(gain2.Conjugate());
-}
-
-template <>
-void ApplyGain<2, GainMode::kDiagonal>(std::complex<float>* visibilities,
-                                       const aocommon::MC2x2F& gain1,
-                                       const aocommon::MC2x2F& gain2) {
-  visibilities[0] = gain1[0] * visibilities[0] * std::conj(gain2[0]);
-  visibilities[1] = gain1[3] * visibilities[1] * std::conj(gain2[3]);
-}
-
-template <>
-void ApplyGain<4, GainMode::kFull>(std::complex<float>* visibilities,
-                                   const aocommon::MC2x2F& gain1,
-                                   const aocommon::MC2x2F& gain2) {
-  // All polarizations
-  const aocommon::MC2x2F visibilities_mc2x2(visibilities);
-  const aocommon::MC2x2F result =
-      gain1.Multiply(visibilities_mc2x2).MultiplyHerm(gain2);
-  result.AssignTo(visibilities);
-}
-
-/**
- * @brief Apply conjugated gains to the visibilities.
- *
- * @tparam GainEntry decides which entry or entries from the gain matrices
- * should be taken into account in the product, only the diagonal, or the full
- * matrix? See also the documentation of GainMode.
- */
-template <GainMode GainEntry>
-aocommon::MC2x2F MultiplyGains(const aocommon::MC2x2F& gain_a,
-                               const aocommon::MC2x2F& gain_b) {
-  const aocommon::MC2x2F result(gain_a[0] * gain_b[0], 0, 0,
-                                gain_a[3] * gain_b[3]);
-  return result;
-}
-
-template <>
-aocommon::MC2x2F MultiplyGains<GainMode::kFull>(
-    const aocommon::MC2x2F& gain_a, const aocommon::MC2x2F& gain_b) {
-  // All polarizations
-  return gain_a.Multiply(gain_b);
-}
-
 }  // namespace
+
+void VisibilityModifier::InitializeTimeFrequencySmearing(
+    const ObservationInfo& observation_info, double interval) {
+  /**
+   * Length of a sidereal day in seconds.
+   */
+  constexpr double kSiderealDay = 86164.0905;
+
+  const double angular_speed = 2 * M_PI * interval / kSiderealDay;
+
+  // scaled_ncp_uvw_ is initialized with the NCP for epoch J2000.
+  // The expression is simpler than for the the current epoch (of the
+  // observation). The first element is zero and that is currently assumed where
+  // scaled_ncp_uvw_ is used. If the initialization here is modified to the more
+  // accurate current epoch with a non-zero first element, please update the
+  // usage as well
+  scaled_ncp_uvw_[0] = 0.0;
+  scaled_ncp_uvw_[1] =
+      angular_speed * std::cos(observation_info.phaseCentreDec);
+  scaled_ncp_uvw_[2] =
+      angular_speed * std::sin(observation_info.phaseCentreDec);
+}
 
 void VisibilityModifier::InitializePointResponse(
     SynchronizedMS&& ms, double facet_beam_update_time,
-    const std::string& element_response, size_t n_channels,
+    const std::string& element_response, const aocommon::MultiBandData& bands,
     const std::string& data_column, const std::string& mwa_path) {
 #ifdef HAVE_EVERYBEAM
   // Hard-coded for now
@@ -247,65 +81,127 @@ void VisibilityModifier::InitializePointResponse(
   // will fill the beam response cache.
   _pointResponse = _telescope->GetPointResponse(0.0);
   _pointResponse->SetUpdateInterval(facet_beam_update_time);
-  _pointResponseBufferSize = _pointResponse->GetAllStationsBufferSize();
-  _cachedBeamResponse.resize(n_channels * _pointResponseBufferSize);
+  n_stations_ = _telescope->GetNrStations();
+  for (size_t data_desc_id : bands.DataDescIds()) {
+    std::vector<aocommon::MC2x2F>& band_response =
+        _cachedBeamResponse.AlwaysEmplace(data_desc_id);
+    band_response.resize(bands[data_desc_id].ChannelCount() * n_stations_);
+  }
 #endif
 }
 
 void VisibilityModifier::InitializeMockResponse(
-    size_t n_channels, size_t n_stations,
-    const std::vector<std::complex<double>>& beam_response,
+    size_t n_channels, size_t n_stations, size_t data_desc_id,
+    const std::vector<aocommon::MC2x2F>& beam_response,
     const std::vector<std::complex<float>>& parm_response) {
-  _pointResponseBufferSize = n_stations * 4;
-  assert(beam_response.size() == n_channels * _pointResponseBufferSize);
+  n_stations_ = n_stations;
+  assert(beam_response.size() == n_channels * n_stations);
   assert(parm_response.size() == n_channels * n_stations * 2 ||
          parm_response.size() == n_channels * n_stations * 4);
 #ifdef HAVE_EVERYBEAM
-  _cachedBeamResponse.assign(beam_response.begin(), beam_response.end());
+  std::vector<aocommon::MC2x2F>& band_beam_response =
+      _cachedBeamResponse.AlwaysEmplace(data_desc_id);
+  band_beam_response.assign(beam_response.begin(), beam_response.end());
 #endif
-  _cachedParmResponse.emplace_back(parm_response);
-  if (parm_response.size() == n_channels * n_stations * 4)
-    _h5GainType = {schaapcommon::h5parm::GainType::kFullJones};
-  else
-    _h5GainType = {schaapcommon::h5parm::GainType::kDiagonalComplex};
-  _timeOffset = {0};
+  SolutionsResponseMap& band_parm_response =
+      _cachedParmResponse.emplace(0, SolutionsResponseMap()).first->second;
+  band_parm_response.AlwaysEmplace(data_desc_id) = parm_response;
+  time_offsets_ = {std::pair(0, 0)};
 }
 
-void VisibilityModifier::CacheParmResponse(
-    double time, const std::vector<std::string>& antennaNames,
-    const aocommon::BandData& band, size_t ms_index) {
-  // Only extract DD solutions if the corresponding cache entry is empty.
-  if (_cachedParmResponse[ms_index].empty()) {
-    const size_t nparms =
-        (_h5GainType[ms_index] == schaapcommon::h5parm::GainType::kFullJones)
-            ? 4
-            : 2;
-    const std::vector<double> freqs(band.begin(), band.end());
-    const size_t responseSize = _cachedMSTimes[ms_index].size() * freqs.size() *
-                                antennaNames.size() * nparms;
-    const std::string dirName = _h5parms[ms_index]->GetNearestSource(
-        _facetDirectionRA, _facetDirectionDec);
-    const size_t dirIndex = _h5SolTabs[ms_index].first->GetDirIndex(dirName);
-    schaapcommon::h5parm::JonesParameters jonesParameters(
-        freqs, _cachedMSTimes[ms_index], antennaNames, _h5GainType[ms_index],
-        schaapcommon::h5parm::JonesParameters::InterpolationType::NEAREST,
-        dirIndex, _h5SolTabs[ms_index].first, _h5SolTabs[ms_index].second,
-        false, 0.0f, 0u,
-        schaapcommon::h5parm::JonesParameters::MissingAntennaBehavior::kUnit);
-    // parms (Casacore::Cube) is column major
-    const casacore::Cube<std::complex<float>>& parms =
-        jonesParameters.GetParms();
-    _cachedParmResponse[ms_index].assign(&parms(0, 0, 0),
-                                         &parms(0, 0, 0) + responseSize);
-    setNonFiniteToZero(_cachedParmResponse[ms_index]);
-  }
+void VisibilityModifier::InitializeCacheParmResponse(
+    const std::vector<std::string>& antennaNames,
+    const aocommon::MultiBandData& selected_bands, size_t ms_index) {
+  using schaapcommon::h5parm::JonesParameters;
 
-  const auto it =
-      std::find(_cachedMSTimes[ms_index].begin() + _timeOffset[ms_index],
-                _cachedMSTimes[ms_index].end(), time);
-  if (it != _cachedMSTimes[ms_index].end()) {
-    // Update _timeOffset value with index
-    _timeOffset[ms_index] = std::distance(_cachedMSTimes[ms_index].begin(), it);
+  const size_t solution_index = (*_h5parms).size() == 1 ? 0 : ms_index;
+
+  // Only extract DD solutions if the corresponding cache entry is empty.
+  SolutionsResponseMap& parm_response = _cachedParmResponse[ms_index];
+  if (parm_response.Empty()) {
+    const size_t nparms = NValuesPerSolution(ms_index);
+    const size_t n_times = _cachedMSTimes[ms_index]->size();
+    const std::string dir_name = (*_h5parms)[solution_index].GetNearestSource(
+        _facetDirectionRA, _facetDirectionDec);
+    schaapcommon::h5parm::SolTab* const first_solution =
+        (*_firstSolutions)[solution_index];
+    schaapcommon::h5parm::SolTab* const second_solution =
+        _secondSolutions->empty() ? nullptr
+                                  : (*_secondSolutions)[solution_index];
+    const size_t dir_index = first_solution->GetDirIndex(dir_name);
+
+    if (uses_bda_) {
+      // In BDA mode, the channels are interpolated from the data_desc_id with
+      // the most channels, to avoid rereading the file many times.
+      const size_t max_channel_id = selected_bands.DataDescIdWithMaxChannels();
+      const aocommon::BandData& band = selected_bands[max_channel_id];
+      const std::vector<double> freqs(band.begin(), band.end());
+      const size_t response_size =
+          n_times * freqs.size() * antennaNames.size() * nparms;
+      JonesParameters jones_parameters(
+          freqs, *_cachedMSTimes[ms_index], antennaNames,
+          (*_gainTypes)[solution_index],
+          JonesParameters::InterpolationType::NEAREST, dir_index,
+          first_solution, second_solution, false, 0u,
+          JonesParameters::MissingAntennaBehavior::kUnit);
+      // parms (Casacore::Cube) is column major
+      const casacore::Cube<std::complex<float>>& parms =
+          jones_parameters.GetParms();
+
+      std::vector<std::complex<float>> full_channel_response(
+          &parms(0, 0, 0), &parms(0, 0, 0) + response_size);
+      for (size_t data_desc_id : selected_bands.DataDescIds()) {
+        std::vector<std::complex<float>>& band_response =
+            parm_response.AlwaysEmplace(data_desc_id);
+        InterpolateChannels(full_channel_response, band, band_response,
+                            selected_bands[data_desc_id], n_times,
+                            antennaNames.size() * nparms);
+        setNonFiniteToZero(band_response);
+      }
+    } else {
+      for (size_t data_desc_id : selected_bands.DataDescIds()) {
+        const aocommon::BandData& band = selected_bands[data_desc_id];
+        const std::vector<double> freqs(band.begin(), band.end());
+        const size_t response_size =
+            n_times * freqs.size() * antennaNames.size() * nparms;
+        JonesParameters jones_parameters(
+            freqs, *_cachedMSTimes[ms_index], antennaNames,
+            (*_gainTypes)[solution_index],
+            JonesParameters::InterpolationType::NEAREST, dir_index,
+            first_solution, second_solution, false, 0u,
+            JonesParameters::MissingAntennaBehavior::kUnit);
+
+        const casacore::Cube<std::complex<float>>& parms =
+            jones_parameters.GetParms();
+        std::vector<std::complex<float>>& band_response =
+            parm_response.AlwaysEmplace(data_desc_id);
+        band_response.assign(&parms(0, 0, 0), &parms(0, 0, 0) + response_size);
+        setNonFiniteToZero(band_response);
+      }
+    }
+  }
+}
+
+size_t VisibilityModifier::GetCacheParmResponseSize() const {
+  size_t size = 0;
+  for (const auto& ms_info : _cachedParmResponse) {
+    for (const std::vector<std::complex<float>>& band_solutions :
+         ms_info.second) {
+      size += band_solutions.capacity();
+    }
+  }
+  return size * sizeof(std::complex<float>);
+}
+
+void VisibilityModifier::CacheParmResponse(double time,
+                                           const aocommon::MultiBandData& bands,
+                                           size_t ms_index,
+                                           size_t& time_offset) {
+  const auto it = std::find(_cachedMSTimes[ms_index]->begin() + time_offset,
+                            _cachedMSTimes[ms_index]->end(), time);
+  if (it != _cachedMSTimes[ms_index]->end()) {
+    // Update time_offsets_ value with index
+    time_offset = std::distance(_cachedMSTimes[ms_index]->begin(), it);
   } else {
     throw std::runtime_error(
         "Time not found in cached times. A potential reason could be that the "
@@ -314,482 +210,164 @@ void VisibilityModifier::CacheParmResponse(
         std::to_string(ms_index) +
         ", cache "
         "contained " +
-        std::to_string(_cachedMSTimes[ms_index].size()) + " elements.\n");
+        std::to_string(_cachedMSTimes[ms_index]->size()) + " elements.\n");
   }
 }
 
 #ifdef HAVE_EVERYBEAM
-void VisibilityModifier::CacheBeamResponse(double time, size_t fieldId,
-                                           const aocommon::BandData& band) {
+
+void VisibilityModifier::GetBeamResponse(
+    const aocommon::BandData& band, size_t field_id,
+    std::vector<aocommon::MC2x2F>& result) const {
+  std::vector<double> frequencies(band.ChannelCount());
+  std::vector<aocommon::MC2x2F> response(n_stations_ * band.ChannelCount());
+  for (size_t ch = 0; ch < band.ChannelCount(); ++ch) {
+    frequencies[ch] = band.ChannelFrequency(ch);
+  }
+  _pointResponse->ResponseAllStations(_beamMode, response.data(),
+                                      _facetDirectionRA, _facetDirectionDec,
+                                      frequencies, field_id);
+  // Transpose the structure
+  for (size_t station = 0; station != n_stations_; ++station) {
+    for (size_t ch = 0; ch < band.ChannelCount(); ++ch) {
+      result[ch * n_stations_ + station] =
+          response[station * band.ChannelCount() + ch];
+    }
+  }
+}
+
+bool VisibilityModifier::UpdateCachedBeamResponseForRow(
+    double time, size_t field_id, const aocommon::MultiBandData& bands,
+    BeamResponseMap& cached_beam_response) {
   _pointResponse->UpdateTime(time);
   if (_pointResponse->HasTimeUpdate()) {
-    for (size_t ch = 0; ch < band.ChannelCount(); ++ch) {
-      _pointResponse->ResponseAllStations(
-          _beamMode, &_cachedBeamResponse[ch * _pointResponseBufferSize],
-          _facetDirectionRA, _facetDirectionDec, band.ChannelFrequency(ch),
-          fieldId);
+    if (uses_bda_) {
+      // In BDA mode, interpolate the channels from the data_desc_id with the
+      // highest nr of channels.
+      const size_t max_channels_id = bands.DataDescIdWithMaxChannels();
+      const aocommon::BandData& band = bands[max_channels_id];
+      std::vector<aocommon::MC2x2F>& full_cached_response =
+          cached_beam_response[max_channels_id];
+      GetBeamResponse(band, field_id, full_cached_response);
+      for (size_t data_desc_id : bands.DataDescIds()) {
+        std::vector<aocommon::MC2x2F>& destination =
+            cached_beam_response[data_desc_id];
+        const aocommon::BandData& destination_band = bands[data_desc_id];
+        InterpolateChannels(full_cached_response, band, destination,
+                            destination_band, 1, n_stations_);
+      }
+    } else {
+      for (size_t data_desc_id : bands.DataDescIds()) {
+        const aocommon::BandData& band = bands[data_desc_id];
+        std::vector<aocommon::MC2x2F>& response =
+            cached_beam_response[data_desc_id];
+        GetBeamResponse(band, field_id, response);
+      }
     }
+    return true;
   }
+  return false;
 }
 
-template <size_t PolarizationCount, GainMode GainEntry>
+template <GainMode Mode>
 void VisibilityModifier::ApplyBeamResponse(std::complex<float>* data,
-                                           size_t n_channels, size_t antenna1,
+                                           size_t n_channels,
+                                           size_t data_desc_id, size_t antenna1,
                                            size_t antenna2) {
   for (size_t ch = 0; ch < n_channels; ++ch) {
-    const size_t offset = ch * _pointResponseBufferSize;
-    const size_t offset1 = offset + antenna1 * 4u;
-    const size_t offset2 = offset + antenna2 * 4u;
+    const size_t offset = ch * n_stations_;
+    const size_t offset1 = offset + antenna1;
+    const size_t offset2 = offset + antenna2;
 
-    const aocommon::MC2x2F gain1(&_cachedBeamResponse[offset1]);
-    const aocommon::MC2x2F gain2(&_cachedBeamResponse[offset2]);
-    ApplyGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-    data += PolarizationCount;
+    const MC2x2F& gain1(_cachedBeamResponse[data_desc_id][offset1]);
+    const MC2x2F& gain2(_cachedBeamResponse[data_desc_id][offset2]);
+    internal::ApplyGain<Mode>(data, gain1, gain2);
+    data += GetNVisibilities(Mode);
   }
 }
 
-template void VisibilityModifier::ApplyBeamResponse<1, GainMode::kXX>(
-    std::complex<float>* data, size_t n_channels, size_t antenna1,
-    size_t antenna2);
+template void VisibilityModifier::ApplyBeamResponse<GainMode::kXX>(
+    std::complex<float>* data, size_t n_channels, size_t data_desc_id,
+    size_t antenna1, size_t antenna2);
 
-template void VisibilityModifier::ApplyBeamResponse<1, GainMode::kYY>(
-    std::complex<float>* data, size_t n_channels, size_t antenna1,
-    size_t antenna2);
+template void VisibilityModifier::ApplyBeamResponse<GainMode::kYY>(
+    std::complex<float>* data, size_t n_channels, size_t data_desc_id,
+    size_t antenna1, size_t antenna2);
 
-template void VisibilityModifier::ApplyBeamResponse<1, GainMode::kDiagonal>(
-    std::complex<float>* data, size_t n_channels, size_t antenna1,
-    size_t antenna2);
+template void VisibilityModifier::ApplyBeamResponse<GainMode::kTrace>(
+    std::complex<float>* data, size_t n_channels, size_t data_desc_id,
+    size_t antenna1, size_t antenna2);
 
-template void VisibilityModifier::ApplyBeamResponse<2, GainMode::kDiagonal>(
-    std::complex<float>* data, size_t n_channels, size_t antenna1,
-    size_t antenna2);
+template void VisibilityModifier::ApplyBeamResponse<GainMode::k2VisDiagonal>(
+    std::complex<float>* data, size_t n_channels, size_t data_desc_id,
+    size_t antenna1, size_t antenna2);
 
-template void VisibilityModifier::ApplyBeamResponse<4, GainMode::kFull>(
-    std::complex<float>* data, size_t n_channels, size_t antenna1,
-    size_t antenna2);
-
-template <size_t PolarizationCount, GainMode GainEntry>
-float VisibilityModifier::ApplyConjugatedBeamResponse(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t antenna1, size_t antenna2, bool apply_forward) {
-  float correction_sum = 0.0;
-  for (size_t ch = 0; ch < n_channels; ++ch) {
-    const size_t offset = ch * _pointResponseBufferSize;
-    const size_t offset1 = offset + antenna1 * 4u;
-    const size_t offset2 = offset + antenna2 * 4u;
-
-    const aocommon::MC2x2F gain1(&_cachedBeamResponse[offset1]);
-    const aocommon::MC2x2F gain2(&_cachedBeamResponse[offset2]);
-    if (apply_forward) {
-      ApplyGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-    }
-    ApplyConjugatedGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-    const float weighted_squared_gain =
-        ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(gain1, gain2,
-                                                                 weights);
-    correction_sum += image_weights[ch] * weighted_squared_gain;
-
-    data += PolarizationCount;
-    weights += PolarizationCount;
-  }
-  return correction_sum;
-}
-
-template float
-VisibilityModifier::ApplyConjugatedBeamResponse<1, GainMode::kXX>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t antenna1, size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedBeamResponse<1, GainMode::kYY>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t antenna1, size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedBeamResponse<1, GainMode::kDiagonal>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t antenna1, size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedBeamResponse<2, GainMode::kDiagonal>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t antenna1, size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedBeamResponse<4, GainMode::kFull>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t antenna1, size_t antenna2, bool apply_forward);
-
+template void VisibilityModifier::ApplyBeamResponse<GainMode::kFull>(
+    std::complex<float>* data, size_t n_channels, size_t data_desc_id,
+    size_t antenna1, size_t antenna2);
 #endif
 
-void VisibilityModifier::SetH5Parms(
-    size_t n_measurement_sets, const std::vector<std::string>& solutionFiles,
-    const std::vector<std::string>& solutionTables) {
-  _h5parms.resize(n_measurement_sets);
-  _h5SolTabs.resize(n_measurement_sets);
-  _h5GainType.resize(n_measurement_sets);
-
-  for (size_t i = 0; i < _h5parms.size(); ++i) {
-    if (solutionFiles.size() > 1) {
-      _h5parms[i].reset(new schaapcommon::h5parm::H5Parm(solutionFiles[i]));
-    } else {
-      _h5parms[i].reset(new schaapcommon::h5parm::H5Parm(solutionFiles[0]));
-    }
-
-    if (solutionTables.size() == 1) {
-      _h5SolTabs[i] =
-          std::make_pair(&_h5parms[i]->GetSolTab(solutionTables[0]), nullptr);
-      _h5GainType[i] =
-          schaapcommon::h5parm::JonesParameters::H5ParmTypeStringToGainType(
-              _h5SolTabs[i].first->GetType());
-    } else if (solutionTables.size() == 2) {
-      const std::array<std::string, 2> solTabTypes{
-          _h5parms[i]->GetSolTab(solutionTables[0]).GetType(),
-          _h5parms[i]->GetSolTab(solutionTables[1]).GetType()};
-
-      const std::array<std::string, 2>::const_iterator amplitude_iter =
-          std::find(solTabTypes.begin(), solTabTypes.end(), "amplitude");
-      const std::array<std::string, 2>::const_iterator phase_iter =
-          std::find(solTabTypes.begin(), solTabTypes.end(), "phase");
-
-      if (amplitude_iter == solTabTypes.end() ||
-          phase_iter == solTabTypes.end()) {
-        throw std::runtime_error(
-            "WSClean expects solution tables with name 'amplitude' and "
-            "'phase', but received " +
-            solTabTypes[0] + " and " + solTabTypes[1]);
-      } else {
-        const size_t amplitude_index =
-            std::distance(solTabTypes.begin(), amplitude_iter);
-        const size_t phase_index =
-            std::distance(solTabTypes.begin(), phase_iter);
-        _h5SolTabs[i] = std::make_pair(
-            &_h5parms[i]->GetSolTab(solutionTables[amplitude_index]),
-            &_h5parms[i]->GetSolTab(solutionTables[phase_index]));
-      }
-
-      const size_t n_amplitude_pol =
-          _h5SolTabs[i].first->HasAxis("pol")
-              ? _h5SolTabs[i].first->GetAxis("pol").size
-              : 1;
-      const size_t n_phase_pol = _h5SolTabs[i].second->HasAxis("pol")
-                                     ? _h5SolTabs[i].second->GetAxis("pol").size
-                                     : 1;
-      if (n_amplitude_pol == 1 && n_phase_pol == 1) {
-        _h5GainType[i] = schaapcommon::h5parm::GainType::kScalarComplex;
-      } else if (n_amplitude_pol == 2 && n_phase_pol == 2) {
-        _h5GainType[i] = schaapcommon::h5parm::GainType::kDiagonalComplex;
-      } else if (n_amplitude_pol == 4 && n_phase_pol == 4) {
-        _h5GainType[i] = schaapcommon::h5parm::GainType::kFullJones;
-      } else {
-        throw std::runtime_error(
-            "Incorrect or mismatching number of polarizations in the "
-            "provided amplitude and phase soltabs. The number of polarizations "
-            "should both be either 1, 2 or 4, but received " +
-            std::to_string(n_amplitude_pol) + " for amplitude and " +
-            std::to_string(n_phase_pol) + " for phase");
-      }
-    } else {
-      throw std::runtime_error(
-          "Specify the solution table name(s) with "
-          "-soltab-names=soltabname1[OPTIONAL,soltabname2]");
-    }
-  }
-}
-
-template <size_t PolarizationCount, GainMode GainEntry>
-void VisibilityModifier::ApplyParmResponse(std::complex<float>* data,
-                                           size_t ms_index, size_t n_channels,
-                                           size_t n_antennas, size_t antenna1,
-                                           size_t antenna2) {
-  const size_t nparms =
-      (_h5GainType[ms_index] == schaapcommon::h5parm::GainType::kFullJones) ? 4
-                                                                            : 2;
+template <GainMode Mode>
+void VisibilityModifier::ApplyParmResponseWithTime(
+    std::complex<float>* data, size_t ms_index, size_t n_channels,
+    size_t data_desc_id, size_t n_antennas, size_t antenna1, size_t antenna2,
+    size_t time_offset) {
+  const size_t nparms = NValuesPerSolution(ms_index);
+  const std::vector<std::complex<float>>& parm_response =
+      _cachedParmResponse[ms_index][data_desc_id];
   if (nparms == 2) {
     for (size_t ch = 0; ch < n_channels; ++ch) {
       // Column major indexing
       const size_t offset =
-          (_timeOffset[ms_index] * n_channels + ch) * n_antennas * nparms;
+          (time_offset * n_channels + ch) * n_antennas * nparms;
       const size_t offset1 = offset + antenna1 * nparms;
       const size_t offset2 = offset + antenna2 * nparms;
-      const aocommon::MC2x2F gain1(_cachedParmResponse[ms_index][offset1], 0, 0,
-                                   _cachedParmResponse[ms_index][offset1 + 1]);
-      const aocommon::MC2x2F gain2(_cachedParmResponse[ms_index][offset2], 0, 0,
-                                   _cachedParmResponse[ms_index][offset2 + 1]);
-      ApplyGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-      data += PolarizationCount;
+      const MC2x2F gain1(parm_response[offset1], 0, 0,
+                         parm_response[offset1 + 1]);
+      const MC2x2F gain2(parm_response[offset2], 0, 0,
+                         parm_response[offset2 + 1]);
+      internal::ApplyGain<Mode>(data, gain1, gain2);
+      data += GetNVisibilities(Mode);
     }
   } else {
     for (size_t ch = 0; ch < n_channels; ++ch) {
       // Column major indexing
       const size_t offset =
-          (_timeOffset[ms_index] * n_channels + ch) * n_antennas * nparms;
+          (time_offset * n_channels + ch) * n_antennas * nparms;
       const size_t offset1 = offset + antenna1 * nparms;
       const size_t offset2 = offset + antenna2 * nparms;
-      const aocommon::MC2x2F gain1(&_cachedParmResponse[ms_index][offset1]);
-      const aocommon::MC2x2F gain2(&_cachedParmResponse[ms_index][offset2]);
-      ApplyGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-      data += PolarizationCount;
+      const MC2x2F gain1(&parm_response[offset1]);
+      const MC2x2F gain2(&parm_response[offset2]);
+      internal::ApplyGain<Mode>(data, gain1, gain2);
+      data += GetNVisibilities(Mode);
     }
   }
 }
 
-template void VisibilityModifier::ApplyParmResponse<1, GainMode::kXX>(
+template void VisibilityModifier::ApplyParmResponseWithTime<GainMode::kXX>(
     std::complex<float>* data, size_t ms_index, size_t n_channels,
-    size_t n_antennas, size_t antenna1, size_t antenna2);
+    size_t data_desc_id, size_t n_antennas, size_t antenna1, size_t antenna2,
+    size_t time_offset);
 
-template void VisibilityModifier::ApplyParmResponse<1, GainMode::kYY>(
+template void VisibilityModifier::ApplyParmResponseWithTime<GainMode::kYY>(
     std::complex<float>* data, size_t ms_index, size_t n_channels,
-    size_t n_antennas, size_t antenna1, size_t antenna2);
+    size_t data_desc_id, size_t n_antennas, size_t antenna1, size_t antenna2,
+    size_t time_offset);
 
-template void VisibilityModifier::ApplyParmResponse<1, GainMode::kDiagonal>(
+template void VisibilityModifier::ApplyParmResponseWithTime<GainMode::kTrace>(
     std::complex<float>* data, size_t ms_index, size_t n_channels,
-    size_t n_antennas, size_t antenna1, size_t antenna2);
+    size_t data_desc_id, size_t n_antennas, size_t antenna1, size_t antenna2,
+    size_t time_offset);
 
-template void VisibilityModifier::ApplyParmResponse<2, GainMode::kDiagonal>(
+template void
+VisibilityModifier::ApplyParmResponseWithTime<GainMode::k2VisDiagonal>(
     std::complex<float>* data, size_t ms_index, size_t n_channels,
-    size_t n_antennas, size_t antenna1, size_t antenna2);
+    size_t data_desc_id, size_t n_antennas, size_t antenna1, size_t antenna2,
+    size_t time_offset);
 
-template void VisibilityModifier::ApplyParmResponse<4, GainMode::kFull>(
+template void VisibilityModifier::ApplyParmResponseWithTime<GainMode::kFull>(
     std::complex<float>* data, size_t ms_index, size_t n_channels,
-    size_t n_antennas, size_t antenna1, size_t antenna2);
+    size_t data_desc_id, size_t n_antennas, size_t antenna1, size_t antenna2,
+    size_t time_offset);
 
-template <size_t PolarizationCount, GainMode GainEntry>
-float VisibilityModifier::ApplyConjugatedParmResponse(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t ms_index, size_t n_channels, size_t n_antennas, size_t antenna1,
-    size_t antenna2, bool apply_forward) {
-  const size_t nparms =
-      (_h5GainType[ms_index] == schaapcommon::h5parm::GainType::kFullJones) ? 4
-                                                                            : 2;
-
-  float correctionSum = 0.0;
-
-  // Conditional could be templated once C++ supports partial function
-  // specialization
-  if (nparms == 2) {
-    for (size_t ch = 0; ch < n_channels; ++ch) {
-      // Column major indexing
-      const size_t offset =
-          (_timeOffset[ms_index] * n_channels + ch) * n_antennas * nparms;
-      const size_t offset1 = offset + antenna1 * nparms;
-      const size_t offset2 = offset + antenna2 * nparms;
-      const aocommon::MC2x2F gain1(_cachedParmResponse[ms_index][offset1], 0, 0,
-                                   _cachedParmResponse[ms_index][offset1 + 1]);
-      const aocommon::MC2x2F gain2(_cachedParmResponse[ms_index][offset2], 0, 0,
-                                   _cachedParmResponse[ms_index][offset2 + 1]);
-      if (apply_forward) {
-        ApplyGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-      }
-      ApplyConjugatedGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-      const float weighted_squared_gain =
-          ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(gain1, gain2,
-                                                                   weights);
-      correctionSum += image_weights[ch] * weighted_squared_gain;
-
-      data += PolarizationCount;
-      weights += PolarizationCount;
-    }
-  } else {
-    for (size_t ch = 0; ch < n_channels; ++ch) {
-      // Column major indexing
-      const size_t offset =
-          (_timeOffset[ms_index] * n_channels + ch) * n_antennas * nparms;
-      const size_t offset1 = offset + antenna1 * nparms;
-      const size_t offset2 = offset + antenna2 * nparms;
-      const aocommon::MC2x2F gain1(&_cachedParmResponse[ms_index][offset1]);
-      const aocommon::MC2x2F gain2(&_cachedParmResponse[ms_index][offset2]);
-      if (apply_forward) {
-        ApplyGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-      }
-      ApplyConjugatedGain<PolarizationCount, GainEntry>(data, gain1, gain2);
-      const float weighted_squared_gain =
-          ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(gain1, gain2,
-                                                                   weights);
-      correctionSum += image_weights[ch] * weighted_squared_gain;
-
-      data += PolarizationCount;
-      weights += PolarizationCount;
-    }
-  }
-  return correctionSum;
-}
-
-template float
-VisibilityModifier::ApplyConjugatedParmResponse<1, GainMode::kXX>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t ms_index, size_t n_channels, size_t n_antennas, size_t antenna1,
-    size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedParmResponse<1, GainMode::kYY>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t ms_index, size_t n_channels, size_t n_antennas, size_t antenna1,
-    size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedParmResponse<1, GainMode::kDiagonal>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t ms_index, size_t n_channels, size_t n_antennas, size_t antenna1,
-    size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedParmResponse<2, GainMode::kDiagonal>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t ms_index, size_t n_channels, size_t n_antennas, size_t antenna1,
-    size_t antenna2, bool apply_forward);
-
-template float
-VisibilityModifier::ApplyConjugatedParmResponse<4, GainMode::kFull>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t ms_index, size_t n_channels, size_t n_antennas, size_t antenna1,
-    size_t antenna2, bool apply_forward);
-
-#ifdef HAVE_EVERYBEAM
-template <size_t PolarizationCount, GainMode GainEntry>
-VisibilityModifier::DualResult VisibilityModifier::ApplyConjugatedDual(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t n_stations, size_t antenna1, size_t antenna2,
-    size_t ms_index, bool apply_forward) {
-  DualResult result;
-  const size_t nparms =
-      (_h5GainType[ms_index] == schaapcommon::h5parm::GainType::kFullJones) ? 4
-                                                                            : 2;
-
-  // Conditional could be templated once C++ supports partial function
-  // specialization
-  if (nparms == 2) {
-    for (size_t ch = 0; ch < n_channels; ++ch) {
-      // Compute facet beam
-      const size_t beam_offset = ch * _pointResponseBufferSize;
-      const size_t beam_offset1 = beam_offset + antenna1 * 4u;
-      const size_t beam_offset2 = beam_offset + antenna2 * 4u;
-
-      const aocommon::MC2x2F gain_b_1(&_cachedBeamResponse[beam_offset1]);
-      const aocommon::MC2x2F gain_b_2(&_cachedBeamResponse[beam_offset2]);
-
-      // Get H5 solutions
-      // Column major indexing
-      const size_t h5_offset =
-          (_timeOffset[ms_index] * n_channels + ch) * n_stations * nparms;
-      const size_t h5_offset1 = h5_offset + antenna1 * nparms;
-      const size_t h5_offset2 = h5_offset + antenna2 * nparms;
-      const aocommon::MC2x2F gain_h5_1(
-          _cachedParmResponse[ms_index][h5_offset1], 0, 0,
-          _cachedParmResponse[ms_index][h5_offset1 + 1]);
-      const aocommon::MC2x2F gain_h5_2(
-          _cachedParmResponse[ms_index][h5_offset2], 0, 0,
-          _cachedParmResponse[ms_index][h5_offset2 + 1]);
-
-      // Combine H5parm and beam
-      const aocommon::MC2x2F gain_combined_1 =
-          MultiplyGains<GainEntry>(gain_h5_1, gain_b_1);
-      const aocommon::MC2x2F gain_combined_2 =
-          MultiplyGains<GainEntry>(gain_h5_2, gain_b_2);
-
-      if (apply_forward) {
-        ApplyGain<PolarizationCount, GainEntry>(data, gain_combined_1,
-                                                gain_combined_2);
-      }
-      ApplyConjugatedGain<PolarizationCount, GainEntry>(data, gain_combined_1,
-                                                        gain_combined_2);
-
-      const float weighted_squared_gain_h5 =
-          ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(
-              gain_h5_1, gain_h5_2, weights);
-      result.h5Sum += weighted_squared_gain_h5 * image_weights[ch];
-
-      const float weighted_squared_gain_combined =
-          ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(
-              gain_combined_1, gain_combined_2, weights);
-
-      result.correctionSum +=
-          weighted_squared_gain_combined * image_weights[ch];
-
-      data += PolarizationCount;
-      weights += PolarizationCount;
-    }
-  } else {
-    for (size_t ch = 0; ch < n_channels; ++ch) {
-      // Apply facet beam
-      const size_t beam_offset = ch * _pointResponseBufferSize;
-      const size_t beam_offset1 = beam_offset + antenna1 * 4u;
-      const size_t beam_offset2 = beam_offset + antenna2 * 4u;
-
-      const aocommon::MC2x2F gain_b_1(&_cachedBeamResponse[beam_offset1]);
-      const aocommon::MC2x2F gain_b_2(&_cachedBeamResponse[beam_offset2]);
-      if (apply_forward) {
-        ApplyGain<PolarizationCount, GainEntry>(data, gain_b_1, gain_b_2);
-      }
-      ApplyConjugatedGain<PolarizationCount, GainEntry>(data, gain_b_1,
-                                                        gain_b_2);
-      // Apply h5
-      // Column major indexing
-      const size_t offset_h5 =
-          (_timeOffset[ms_index] * n_channels + ch) * n_stations * nparms;
-      const size_t offset_h5_1 = offset_h5 + antenna1 * nparms;
-      const size_t offset_h5_2 = offset_h5 + antenna2 * nparms;
-      const aocommon::MC2x2F gain_h5_1(
-          &_cachedParmResponse[ms_index][offset_h5_1]);
-      const aocommon::MC2x2F gain_h5_2(
-          &_cachedParmResponse[ms_index][offset_h5_2]);
-      if (apply_forward) {
-        ApplyGain<PolarizationCount, GainEntry>(data, gain_h5_1, gain_h5_2);
-      }
-      ApplyConjugatedGain<PolarizationCount, GainEntry>(data, gain_h5_1,
-                                                        gain_h5_2);
-      const float weighted_squared_gain_h5 =
-          ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(
-              gain_h5_1, gain_h5_2, weights);
-      result.h5Sum += weighted_squared_gain_h5 * image_weights[ch];
-
-      const aocommon::MC2x2F gain_combined_1(gain_b_1[0] * gain_h5_1[0], 0, 0,
-                                             gain_b_1[3] * gain_h5_1[3]);
-      const aocommon::MC2x2F gain_combined_2(gain_b_2[0] * gain_h5_2[0], 0, 0,
-                                             gain_b_2[3] * gain_h5_2[3]);
-
-      const float weighted_squared_gain_combined =
-          ComputeWeightedSquaredGain<PolarizationCount, GainEntry>(
-              gain_combined_1, gain_combined_2, weights);
-
-      result.correctionSum +=
-          weighted_squared_gain_combined * image_weights[ch];
-
-      data += PolarizationCount;
-      weights += PolarizationCount;
-    }
-  }
-  return result;
-}
-
-template VisibilityModifier::DualResult
-VisibilityModifier::ApplyConjugatedDual<1, GainMode::kXX>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t n_stations, size_t antenna1, size_t antenna2,
-    size_t ms_index, bool apply_forward);
-
-template VisibilityModifier::DualResult
-VisibilityModifier::ApplyConjugatedDual<1, GainMode::kYY>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t n_stations, size_t antenna1, size_t antenna2,
-    size_t ms_index, bool apply_forward);
-
-template VisibilityModifier::DualResult
-VisibilityModifier::ApplyConjugatedDual<1, GainMode::kDiagonal>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t n_stations, size_t antenna1, size_t antenna2,
-    size_t ms_index, bool apply_forward);
-
-template VisibilityModifier::DualResult
-VisibilityModifier::ApplyConjugatedDual<2, GainMode::kDiagonal>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t n_stations, size_t antenna1, size_t antenna2,
-    size_t ms_index, bool apply_forward);
-
-template VisibilityModifier::DualResult
-VisibilityModifier::ApplyConjugatedDual<4, GainMode::kFull>(
-    std::complex<float>* data, const float* weights, const float* image_weights,
-    size_t n_channels, size_t n_stations, size_t antenna1, size_t antenna2,
-    size_t ms_index, bool apply_forward);
-
-#endif  // HAVE_EVERYBEAM
+}  // namespace wsclean

@@ -49,6 +49,9 @@ SpectralFitter::SpectralFitter(SpectralFittingMode mode, size_t n_terms,
     throw std::invalid_argument(
         "SpectralFitter: Frequency count does not match weight count.");
   }
+  if (mode == SpectralFittingMode::kRotationMeasure) {
+    rm_fitter_ = RmFitter(frequencies_, weights_);
+  }
 }
 
 void SpectralFitter::SetForcedTerms(std::vector<aocommon::Image>&& terms) {
@@ -71,6 +74,8 @@ void SpectralFitter::Fit(std::vector<NumT>& terms, const NumT* values, size_t x,
   switch (mode_) {
     default:
     case SpectralFittingMode::kNoFitting:
+    case SpectralFittingMode::kRotationMeasure:  // only works via multi pol
+                                                 // function
       break;
 
     case SpectralFittingMode::kPolynomial: {
@@ -143,7 +148,6 @@ void SpectralFitter::Evaluate(NumT* values,
   switch (mode_) {
     default:
     case SpectralFittingMode::kNoFitting:
-    case SpectralFittingMode::kForcedTerms:
       break;
 
     case SpectralFittingMode::kPolynomial: {
@@ -154,7 +158,10 @@ void SpectralFitter::Evaluate(NumT* values,
       }
     } break;
 
-    case SpectralFittingMode::kLogPolynomial: {
+    // Both logarithmic polynomial and forced-spectra fitting use the
+    // same basis functions, i.e. terms have the same meaning.
+    case SpectralFittingMode::kLogPolynomial:
+    case SpectralFittingMode::kForcedTerms: {
       const double reference = ReferenceFrequency();
       for (size_t i = 0; i != frequencies_.size(); ++i) {
         values[i] = NonLinearPowerLawFitter::Evaluate(frequencies_[i], terms,

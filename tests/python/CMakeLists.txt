@@ -11,23 +11,38 @@ configure_file(config_vars.py.in config_vars.py)
 add_custom_target(
   integrationchecks
   COMMAND
-    python3 -B -m pytest --exitfirst -v
+    python3 -B -m pytest --exitfirst -v --durations=0
     --junitxml=${CMAKE_BINARY_DIR}/check_integration.xml
     ${CMAKE_CURRENT_SOURCE_DIR}/basic_checks.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/reuse_reorder_checks.py
     ${CMAKE_CURRENT_SOURCE_DIR}/spectral_imaging_checks.py)
 
 add_custom_target(
   facetchecks
   COMMAND
-    python3 -B -m pytest --exitfirst -v
+    python3 -B -m pytest --exitfirst -v --durations=0
     --junitxml=${CMAKE_BINARY_DIR}/check_facets.xml
     ${CMAKE_CURRENT_SOURCE_DIR}/facet_checks.py)
+
+add_custom_target(
+  gridderchecks
+  COMMAND
+    python3 -B -m pytest --exitfirst -v --durations=0
+    --junitxml=${CMAKE_BINARY_DIR}/check_gridder.xml
+    ${CMAKE_CURRENT_SOURCE_DIR}/gridder_checks.py)
+
+add_custom_target(
+  subpixelrendererchecks
+  COMMAND
+    python3 -B -m pytest --exitfirst -v --durations=0
+    --junitxml=${CMAKE_BINARY_DIR}/check_gridder.xml
+    ${CMAKE_CURRENT_SOURCE_DIR}/sub_pixel_renderer_checks.py)
 
 # Test a number of wsclean commands, which can be considered system level tests
 add_custom_target(
   longsystemchecks
   COMMAND
-    python3 -B -m pytest --exitfirst -v
+    python3 -B -m pytest --exitfirst -v --durations=0
     --junitxml=${CMAKE_BINARY_DIR}/check_long_system.xml
     ${CMAKE_CURRENT_SOURCE_DIR}/vela_deconvolution_checks.py
     ${CMAKE_CURRENT_SOURCE_DIR}/aterms_checks.py

@@ -19,16 +19,17 @@
 #include <cassert>
 #include <cstring>
 
+namespace wsclean {
+
 ImageWeights::ImageWeights()
-    : _weightMode(WeightMode::UniformWeighted),
+    : _weightMode(WeightClass::Uniform),
       _imageWidth(0),
       _imageHeight(0),
       _pixelScaleX(0),
       _pixelScaleY(0),
       _totalSum(0.0),
       _isGriddingFinished(false),
-      _weightsAsTaper(false),
-      _threadCount(aocommon::system::ProcessorCount()) {}
+      _weightsAsTaper(false) {}
 
 ImageWeights::ImageWeights(const WeightMode& weightMode, size_t imageWidth,
                            size_t imageHeight, double pixelScaleX,
@@ -41,8 +42,7 @@ ImageWeights::ImageWeights(const WeightMode& weightMode, size_t imageWidth,
       _pixelScaleY(pixelScaleY),
       _totalSum(0.0),
       _isGriddingFinished(false),
-      _weightsAsTaper(weightsAsTaper),
-      _threadCount(aocommon::system::ProcessorCount()) {
+      _weightsAsTaper(weightsAsTaper) {
   if (_imageWidth % 2 != 0) ++_imageWidth;
   if (_imageHeight % 2 != 0) ++_imageHeight;
   _grid.assign(_imageWidth * _imageHeight / 2, 0.0);
@@ -72,34 +72,34 @@ void ImageWeights::Unserialize(aocommon::SerialIStream& stream) {
       .Bool(_weightsAsTaper);
 }
 
-void ImageWeights::Grid(MSProvider& msProvider,
-                        const aocommon::BandData& selectedBand) {
+void ImageWeights::Grid(MSProvider& msProvider) {
   assert(!_isGriddingFinished);
   const size_t polarizationCount = msProvider.NPolarizations();
+  const aocommon::MultiBandData& selected_bands = msProvider.SelectedBands();
   if (_weightMode.RequiresGridding()) {
-    assert(selectedBand.ChannelCount() == msProvider.NChannels());
-    aocommon::UVector<float> weightBuffer(selectedBand.ChannelCount() *
+    aocommon::UVector<float> weightBuffer(selected_bands.MaxBandChannels() *
                                           polarizationCount);
 
     std::unique_ptr<MSReader> msReader = msProvider.MakeReader();
     while (msReader->CurrentRowAvailable()) {
-      double uInM, vInM, wInM;
-      msReader->ReadMeta(uInM, vInM, wInM);
+      MSProvider::MetaData meta_data;
+      msReader->ReadMeta(meta_data);
       msReader->ReadWeights(weightBuffer.data());
       if (_weightsAsTaper) {
         for (float& w : weightBuffer) {
           if (w != 0.0) w = 1.0;
         }
       }
-      if (vInM < 0.0) {
-        uInM = -uInM;
-        vInM = -vInM;
+      if (meta_data.v_in_m < 0.0) {
+        meta_data.u_in_m = -meta_data.u_in_m;
+        meta_data.v_in_m = -meta_data.v_in_m;
       }
 
       const float* weightIter = weightBuffer.data();
-      for (size_t ch = 0; ch != selectedBand.ChannelCount(); ++ch) {
-        const double u = uInM / selectedBand.ChannelWavelength(ch);
-        const double v = vInM / selectedBand.ChannelWavelength(ch);
+      const aocommon::BandData& band = selected_bands[meta_data.data_desc_id];
+      for (size_t ch = 0; ch != band.ChannelCount(); ++ch) {
+        const double u = meta_data.u_in_m / band.ChannelWavelength(ch);
+        const double v = meta_data.v_in_m / band.ChannelWavelength(ch);
         for (size_t p = 0; p != polarizationCount; ++p) {
           Grid(u, v, *weightIter);
           ++weightIter;
@@ -116,8 +116,8 @@ void ImageWeights::FinishGridding() {
     throw std::runtime_error("FinishGridding() called twice");
   _isGriddingFinished = true;
 
-  switch (_weightMode.Mode()) {
-    case WeightMode::BriggsWeighted: {
+  switch (_weightMode.Class()) {
+    case WeightClass::Briggs: {
       double avgW = 0.0;
       for (double val : _grid) avgW += val * val;
       avgW /= _totalSum;
@@ -130,7 +130,7 @@ void ImageWeights::FinishGridding() {
         if (val != 0.0) val = 1.0 / (1.0 + val * sSq);
       }
     } break;
-    case WeightMode::UniformWeighted: {
+    case WeightClass::Uniform: {
       for (double& val : _grid) {
         if (val != 0.0)
           val = 1.0 / val;
@@ -138,7 +138,7 @@ void ImageWeights::FinishGridding() {
           val = 0.0;
       }
     } break;
-    case WeightMode::NaturalWeighted: {
+    case WeightClass::Natural: {
       for (double& val : _grid) {
         if (val != 0.0) val = 1.0;
       }
@@ -149,7 +149,7 @@ void ImageWeights::FinishGridding() {
 void ImageWeights::SetMinUVRange(double minUVInLambda) {
   const double minSq = minUVInLambda * minUVInLambda;
   int halfWidth = _imageWidth / 2;
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     auto iter = _grid.begin() + yStart * _imageWidth;
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -167,7 +167,7 @@ void ImageWeights::SetMinUVRange(double minUVInLambda) {
 void ImageWeights::SetMaxUVRange(double maxUVInLambda) {
   const double maxSq = maxUVInLambda * maxUVInLambda;
   int halfWidth = _imageWidth / 2;
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     auto iter = _grid.begin() + yStart * _imageWidth;
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -187,7 +187,7 @@ void ImageWeights::SetTukeyTaper(double transitionSizeInLambda,
   const double maxUVSq = maxUVInLambda * maxUVInLambda;
   const double transitionDistSq = (maxUVInLambda - transitionSizeInLambda) *
                                   (maxUVInLambda - transitionSizeInLambda);
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     auto iter = _grid.begin() + yStart * _imageWidth;
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -212,7 +212,7 @@ void ImageWeights::SetTukeyInnerTaper(double transitionSizeInLambda,
   const double minUVSq = minUVInLambda * minUVInLambda;
   const double totalSizeSq = (minUVInLambda + transitionSizeInLambda) *
                              (minUVInLambda + transitionSizeInLambda);
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     auto iter = _grid.begin() + yStart * _imageWidth;
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -235,7 +235,7 @@ void ImageWeights::SetTukeyInnerTaper(double transitionSizeInLambda,
 void ImageWeights::SetEdgeTaper(double sizeInLambda) {
   double maxU, maxV;
   xyToUV(_imageWidth, _imageHeight / 2, maxU, maxV);
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     auto iter = _grid.begin() + yStart * _imageWidth;
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -256,7 +256,7 @@ void ImageWeights::SetEdgeTukeyTaper(double transitionSizeInLambda,
   double maxU, maxV;
   xyToUV(_imageWidth, _imageHeight / 2, maxU, maxV);
   double totalSize = transitionSizeInLambda + edgeSizeInLambda;
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     auto iter = _grid.begin() + yStart * _imageWidth;
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -282,7 +282,7 @@ void ImageWeights::SetEdgeTukeyTaper(double transitionSizeInLambda,
 }
 
 void ImageWeights::GetGrid(double* image) const {
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     const double* srcPtr = _grid.data() + (yStart * _imageWidth);
     for (size_t y = yStart; y != yEnd; ++y) {
@@ -309,7 +309,7 @@ void ImageWeights::Save(const string& filename) const {
 
 void ImageWeights::RankFilter(double rankLimit, size_t windowSize) {
   std::vector<double> newGrid(_grid);
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     for (size_t y = yStart; y != yEnd; ++y) {
       for (size_t x = 0; x != _imageWidth; ++x) {
@@ -334,7 +334,7 @@ void ImageWeights::SetGaussianTaper(double beamSize) {
   double minusTwoSigmaSq = halfPowerUV * sigmaToHP;
   aocommon::Logger::Debug << "UV taper: " << minusTwoSigmaSq << '\n';
   minusTwoSigmaSq *= -2.0 * minusTwoSigmaSq;
-  aocommon::StaticFor<size_t> loop(_threadCount);
+  aocommon::StaticFor<size_t> loop;
   loop.Run(0, _imageHeight / 2, [&](size_t yStart, size_t yEnd) {
     for (size_t y = yStart; y != yEnd; ++y) {
       for (size_t x = 0; x != _imageWidth; ++x) {
@@ -386,3 +386,5 @@ double ImageWeights::windowMean(size_t x, size_t y, size_t windowSize) {
   }
   return windowSum / double(windowCount);
 }
+
+}  // namespace wsclean

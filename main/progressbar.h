@@ -3,6 +3,8 @@
 
 #include <string>
 
+namespace wsclean {
+
 class ProgressBar {
  public:
   explicit ProgressBar(const std::string& taskDescription);
@@ -10,11 +12,13 @@ class ProgressBar {
 
   void SetProgress(size_t taskIndex, size_t taskCount);
 
-  ProgressBar& operator=(ProgressBar&& rhs);
+  ProgressBar& operator=(ProgressBar&& rhs) noexcept;
 
  private:
   std::string _taskDescription;
   int _displayedDots;
 };
+
+}  // namespace wsclean
 
 #endif

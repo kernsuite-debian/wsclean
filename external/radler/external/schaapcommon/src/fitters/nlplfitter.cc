@@ -216,8 +216,8 @@ void NonLinearPowerLawFitter::Fit(NumT& exponent, NumT& factor) {
   } else {
     exponent = 0.0;
     factor = 0.0;
-    for (size_t i = 0; i != data_->points.size(); ++i) {
-      factor += data_->points[i].second;
+    for (const std::pair<double, double>& point : data_->points) {
+      factor += point.second;
     }
     factor /= NumT(data_->points.size());
   }

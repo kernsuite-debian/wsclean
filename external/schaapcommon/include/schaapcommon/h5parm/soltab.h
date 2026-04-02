@@ -17,8 +17,41 @@ namespace h5parm {
 /// A name and the length of an exis, e.g. ('freq', 800) for 800 frequencies
 struct AxisInfo {
   std::string name;
-  unsigned int size;
+  size_t size;
 };
+
+struct TimesAndFrequencies {
+  std::vector<double> time_axis;
+  size_t start_time_index;
+  size_t num_times;
+  std::vector<double> freq_axis;
+  size_t start_freq_index;
+  size_t num_freqs;
+};
+
+/**
+ * Determine the axis values (e.g. times) that fall within a requested
+ * range. The unit tests give a number of examples which may help
+ * understanding.
+ * @param axis a sorted non-empty vector with axis values. This vector is
+ * reused as return value to avoid an allocation.
+ * @param requested_start First axis value that is needed.
+ * @param requested_end Last axis value that is needed.
+ * @param nearest If @c true, the requested values are rounded to the nearest
+ * axis values. If @c false, it is assumed that interpolation is required.
+ * This makes sure that there are samples available at the beginning and the
+ * end of the result for interpolation. Particularly, the first selected
+ * value is equal or lower than @p requested_start, and the last
+ * selected value is equal or higher than @p requested_end, if such values
+ * exist. Otherwise, the most extreme values are returned.
+ * @param [out] start_index index of the first axis value returned.
+ * @returns sorted vector with axis values that correspond with the requested
+ * selection.
+ */
+std::vector<double> SelectAxisValues(std::vector<double>&& axis,
+                                     double requested_start,
+                                     double requested_end, bool nearest,
+                                     size_t& start_index);
 
 /// @brief SolTab is a solution table as defined in the H5Parm standard. It
 /// contains one solution, e.g. all TEC values, with different axes
@@ -45,7 +78,7 @@ class SolTab : private H5::Group {
 
   const std::vector<AxisInfo>& GetAxes() const { return axes_; }
 
-  AxisInfo GetAxis(unsigned int i) const;
+  AxisInfo GetAxis(size_t i) const;
 
   /// Get an axis, throw an exception if it does not exist
   AxisInfo GetAxis(const std::string& axis_name) const;
@@ -129,46 +162,89 @@ class SolTab : private H5::Group {
 
   std::string GetType() const { return type_; }
 
+  bool Exists(const std::string name) const { return nameExists(name); }
+
   /// Get the values of this SolTab for a given antenna.
   std::vector<double> GetValues(const std::string& ant_name,
-                                unsigned int starttimeslot, unsigned int ntime,
-                                unsigned int timestep, unsigned int startfreq,
-                                unsigned int nfreq, unsigned int freqstep,
-                                unsigned int pol, unsigned int dir) const {
-    return GetValuesOrWeights("val", ant_name, starttimeslot, ntime, timestep,
-                              startfreq, nfreq, freqstep, pol, dir);
+                                size_t starttimeslot, size_t ntime,
+                                size_t timestep, size_t startfreq, size_t nfreq,
+                                size_t freqstep, size_t pol, size_t dir) const {
+    return GetSubArray("val", ant_name, starttimeslot, ntime, timestep,
+                       startfreq, nfreq, freqstep, pol, dir);
   }
 
   /// Get the weights of this SolTab for a given antenna.
   std::vector<double> GetWeights(const std::string& ant_name,
-                                 unsigned int starttimeslot, unsigned int ntime,
-                                 unsigned int timestep, unsigned int startfreq,
-                                 unsigned int nfreq, unsigned int freqstep,
-                                 unsigned int pol, unsigned int dir) const {
-    return GetValuesOrWeights("weight", ant_name, starttimeslot, ntime,
-                              timestep, startfreq, nfreq, freqstep, pol, dir);
+                                 size_t starttimeslot, size_t ntime,
+                                 size_t timestep, size_t startfreq,
+                                 size_t nfreq, size_t freqstep, size_t pol,
+                                 size_t dir) const {
+    return GetSubArray("weight", ant_name, starttimeslot, ntime, timestep,
+                       startfreq, nfreq, freqstep, pol, dir);
   }
 
-  /// Get the values or weights (method made virtual and public to facilitate
-  /// mocking)
-  virtual std::vector<double> GetValuesOrWeights(
-      const std::string& val_or_weight, const std::string& ant_name,
-      const std::vector<double>& times, const std::vector<double>& freqs,
-      unsigned int pol, unsigned int dir, bool nearest) const;
+  /// Get the values of this SolTab for a given antenna.
+  /// Also reads the corresponding weights, which should be one or zero.
+  /// If a weight is zero, the corresponding value becomes NaN.
+  virtual std::vector<double> GetValues(const std::string& antenna_name,
+                                        const std::vector<double>& times,
+                                        const std::vector<double>& frequencies,
+                                        size_t polarization, size_t direction,
+                                        bool nearest) const;
 
- private:
-  static double TakeAbs(std::complex<double> c) { return std::abs(c); }
-  static double TakeArg(std::complex<double> c) { return std::arg(c); }
+  // Find the nearest time and frequency indices from H5 file for the
+  // time and frequencies in the arguments.
+  TimesAndFrequencies GetTimesAndFrequencies(const std::vector<double>& times,
+                                             const std::vector<double>& freqs,
+                                             size_t pol, size_t dir,
+                                             bool nearest) const;
+
+  std::tuple<int, int, int, int, int> GetSubArray(
+      const std::string& val_or_weight, const size_t start_antenna_index,
+      const size_t n_antennas, const size_t antenna_step,
+      const size_t start_time_index, const size_t n_times,
+      const size_t time_step, const size_t start_freq_index,
+      const size_t n_freqs, const size_t freq_step,
+      const size_t start_polarization_index, const size_t n_polarizations,
+      const size_t polarization_step, const size_t start_direction_index,
+      const size_t n_directions, const size_t direction_step,
+      std::vector<double>& buffer) const;
+
+  /// @param antenna_name Antenna name. Is ignored if there is no "ant" table.
+  /// @throw std::runtime_error If the "ant" table exists but it does not
+  /// contain @p antenna_name .
+  std::vector<double> GetSubArray(const std::string& val_or_weight,
+                                  const std::string& antenna_name,
+                                  size_t start_time_index, size_t n_times,
+                                  size_t time_step, size_t start_freq_index,
+                                  size_t n_freqs, size_t freq_step, size_t pol,
+                                  size_t dir) const;
+
+  std::vector<double> GetCompleteArray(
+      const std::string& value_or_weight, const size_t n_axes,
+      const std::array<size_t, 5>& size_axis) const;
 
   /// Get the values or weights of this SolTab for a given antenna given an
   /// antenna name, a direction index, and a (range of) times and frequencies.
   /// In the returned vector, the freq will be the fastest changing index,
   /// irrespective of the axis ordering in the underlying h5 data structure.
-  std::vector<double> GetValuesOrWeights(
-      const std::string& val_or_weight, const std::string& ant_name,
-      unsigned int starttimeslot, unsigned int ntime, unsigned int timestep,
-      unsigned int startfreq, unsigned int nfreq, unsigned int freqstep,
-      unsigned int pol, unsigned int dir) const;
+  std::vector<double> GetValuesOrWeights(const std::string& val_or_weight,
+                                         const std::string& antenna_name,
+                                         const std::vector<double>& times,
+                                         const std::vector<double>& frequencies,
+                                         size_t polarization, size_t direction,
+                                         bool nearest) const;
+
+  /**
+   * Depending on 'weights' some 'values' are discarded,
+   * i.e. replaced by not-a-number.
+   */
+  static void ApplyFlags(std::vector<double>& values,
+                         const std::vector<double>& weights);
+
+ private:
+  static double TakeAbs(std::complex<double> c) { return std::abs(c); }
+  static double TakeArg(std::complex<double> c) { return std::arg(c); }
 
   void ReadAxes();
 
@@ -189,8 +265,10 @@ class SolTab : private H5::Group {
   // The entries below are mutable since they implement caching.
   mutable std::vector<std::string> ant_list_;
   mutable std::vector<std::string> dir_list_;
+  mutable std::vector<std::string> pol_list_;
   mutable std::map<std::string, hsize_t> ant_map_;
   mutable std::map<std::string, hsize_t> dir_map_;
+  mutable std::map<std::string, hsize_t> pol_map_;
 };
 }  // namespace h5parm
 }  // namespace schaapcommon

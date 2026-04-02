@@ -1,7 +1,7 @@
 #ifndef NOT_IMPLEMENTED_GRIDDER_H
 #define NOT_IMPLEMENTED_GRIDDER_H
 
-#include "msgridderbase.h"
+#include "msgridder.h"
 #include "../structures/resources.h"
 
 #include <aocommon/image.h>
@@ -10,22 +10,36 @@
 #include <stdexcept>
 #include <string>
 
-class UnavailableGridder final : public MSGridderBase {
+namespace wsclean {
+
+class UnavailableGridder final : public MsGridder {
  public:
-  UnavailableGridder(const class Settings& settings, const Resources& resources)
-      : MSGridderBase(settings) {
+  UnavailableGridder(const class Settings& settings, const Resources& resources,
+                     MsProviderCollection& ms_provider_collection)
+      : MsGridder(settings, ms_provider_collection) {
     doThrow();
   }
 
-  virtual ~UnavailableGridder() override { doThrow(); }
+  ~UnavailableGridder() = default;
 
-  virtual void Invert() override { doThrow(); }
-
-  virtual void Predict(std::vector<aocommon::Image>&&) override { doThrow(); }
-
-  virtual std::vector<aocommon::Image> ResultImages() override {
+  void StartInversion() final { doThrow(); }
+  size_t GridMeasurementSet(const MsProviderCollection::MsData& ms_data) final {
     doThrow();
-    return {aocommon::Image()};
+    return 0;
+  }
+  void FinishInversion() final { doThrow(); }
+
+  void StartPredict(std::vector<aocommon::Image>&& images) final { doThrow(); }
+  size_t PredictMeasurementSet(
+      const MsProviderCollection::MsData& /*ms_data*/) final {
+    doThrow();
+    return 0;
+  }
+  void FinishPredict() final { doThrow(); }
+
+  std::vector<aocommon::Image> ResultImages() final {
+    doThrow();
+    return {};
   }
 
   static void SavePBCorrectedImages(aocommon::FitsWriter& /*writer*/,
@@ -46,7 +60,7 @@ class UnavailableGridder final : public MSGridderBase {
   }
 
  private:
-  virtual size_t getSuggestedWGridSize() const override {
+  size_t GetSuggestedWGridSize() const final {
     doThrow();
     return 0;
   }
@@ -58,5 +72,7 @@ class UnavailableGridder final : public MSGridderBase {
         "make sure the necessary prerequisites are satisfied.");
   }
 };
+
+}  // namespace wsclean
 
 #endif

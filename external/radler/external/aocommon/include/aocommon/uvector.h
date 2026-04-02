@@ -356,8 +356,7 @@ class UVector : private Alloc {
       _endOfStorage = _begin + n;
     }
     _end = _begin + n;
-    if (oldSize < n)
-      std::uninitialized_fill<Tp*, size_t>(_begin + oldSize, _end, val);
+    if (oldSize < n) std::uninitialized_fill<Tp*>(_begin + oldSize, _end, val);
   }
 
   /** @brief Get the number of elements the container can currently hold without
@@ -726,10 +725,11 @@ class UVector : private Alloc {
    * @param args List of arguments to be forwarded to construct the new element.
    */
   template <typename... Args>
-  void emplace_back(Args&&... args) {
+  Tp& emplace_back(Args&&... args) {
     if (_end == _endOfStorage) enlarge(enlarge_size(1));
     *_end = Tp(std::forward<Args>(args)...);
     ++_end;
+    return back();
   }
 
   /** @brief Get a copy of the allocator. */

@@ -2,6 +2,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+namespace wsclean {
+
 namespace {
 const std::string header =
     "FORMAT = Name, Type, Patch, Ra, Dec, I, Q, U, V, MajorAxis, MinorAxis, "
@@ -46,4 +48,25 @@ BOOST_AUTO_TEST_CASE(read_gaussian_source) {
   BOOST_CHECK_CLOSE_FRACTION(reference_frequency, 147500000.0, 1e-6);
 }
 
+BOOST_AUTO_TEST_CASE(check_last_keyword) {
+  const std::string header =
+      "FORMAT = Name, Patch, Ra, Dec, I, Q, U, V, "
+      "ReferenceFrequency='147500000.0', SpectralIndex='[]', Type\n";
+  const std::string point_source =
+      "J154128.2+341103, , 15:41:28.2192, 34.11.03.336, "
+      "4.8242, 0, 0, 0, , [-0.73], POINT\n";
+  const std::string bad_source =
+      "J154128.2+341103, , 15:41:28.2192, 34.11.03.336, "
+      "4.8242, 0, 0, 0, , [-0.73], NOT_A_TYPE\n";
+
+  std::istringstream input1(header + point_source);
+  const Model model = BBSModel::Read(input1);
+  BOOST_REQUIRE_EQUAL(model.SourceCount(), 1);
+
+  std::istringstream input2(header + bad_source);
+  BOOST_CHECK_THROW(BBSModel::Read(input1), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
+
+}  // namespace wsclean

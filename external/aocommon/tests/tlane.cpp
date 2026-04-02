@@ -1,8 +1,10 @@
-#include <iostream>
-
 #include <aocommon/lane.h>
 
+#include <cassert>
+#include <condition_variable>
 #include <fstream>
+#include <iostream>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -10,6 +12,34 @@
 #include <boost/make_unique.hpp>
 
 using aocommon::Lane;
+
+/**
+ * This replicates std::binary_semaphore from C++20.
+ */
+class BinarySemaphore {
+ public:
+  BinarySemaphore(bool acquire) : acquired_(acquire) {}
+
+  void Acquire() {
+    std::unique_lock lock(mutex_);
+    while (acquired_) {
+      condition_.wait(lock);
+    }
+    acquired_ = true;
+  }
+
+  void Release() {
+    std::scoped_lock lock(mutex_);
+    assert(acquired_);
+    acquired_ = false;
+    condition_.notify_one();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  bool acquired_;
+};
 
 // These are "first order" tests: none of these tests explicitly test
 // multi-threading / thread-safety features of Lane
@@ -21,6 +51,8 @@ BOOST_AUTO_TEST_CASE(construct_default) {
   BOOST_CHECK_EQUAL(l.capacity(), 0);
   BOOST_CHECK_EQUAL(l.size(), 0);
   BOOST_CHECK(l.empty());
+  BOOST_CHECK(!l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
 }
 
 BOOST_AUTO_TEST_CASE(construct_with_capacity) {
@@ -28,6 +60,8 @@ BOOST_AUTO_TEST_CASE(construct_with_capacity) {
   BOOST_CHECK_EQUAL(l.capacity(), 7);
   BOOST_CHECK_EQUAL(l.size(), 0);
   BOOST_CHECK(l.empty());
+  BOOST_CHECK(!l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
 }
 
 BOOST_AUTO_TEST_CASE(read_write) {
@@ -197,11 +231,15 @@ BOOST_AUTO_TEST_CASE(clear) {
   l.write_end();
   l.clear();
   BOOST_CHECK_EQUAL(l.capacity(), 3);
+  BOOST_CHECK(!l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
   BOOST_CHECK(l.empty());
   BOOST_CHECK_EQUAL(l.size(), 0);
   const int values_b[n] = {5, 6};
   l.write(values_b, n);
   l.write_end();
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
   for (size_t i = 0; i != n; ++i) {
     int result;
     BOOST_REQUIRE(l.read(result));
@@ -210,20 +248,28 @@ BOOST_AUTO_TEST_CASE(clear) {
   int result;
   BOOST_CHECK(!l.read(result));
   BOOST_CHECK(l.empty());
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(l.is_end_and_empty());
 }
 
 BOOST_AUTO_TEST_CASE(resize) {
   Lane<int> l(1);
   l.write(17);
   l.write_end();
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
   l.resize(3);
   BOOST_CHECK_EQUAL(l.capacity(), 3);
   BOOST_CHECK(l.empty());
   BOOST_CHECK_EQUAL(l.size(), 0);
+  BOOST_CHECK(!l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
   constexpr size_t n = 2;
   const int values[n] = {3, 4};
   l.write(values, n);
   l.write_end();
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
   for (size_t i = 0; i != n; ++i) {
     int result;
     BOOST_REQUIRE(l.read(result));
@@ -232,6 +278,8 @@ BOOST_AUTO_TEST_CASE(resize) {
   int result;
   BOOST_CHECK(!l.read(result));
   BOOST_CHECK(l.empty());
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(l.is_end_and_empty());
 }
 
 BOOST_AUTO_TEST_CASE(wait_for_empty) {
@@ -266,6 +314,28 @@ BOOST_AUTO_TEST_CASE(multiple_threads) {
 
   t.join();
   BOOST_CHECK(l.empty());
+}
+
+BOOST_AUTO_TEST_CASE(write_end) {
+  Lane<int> l(1);
+  l.write(1);
+  BinarySemaphore sync(true);
+  std::thread t([&]() {
+    sync.Release();
+    l.write(0);  // Blocks, since the lane is already full.
+  });
+  sync.Acquire();
+  // write_end() should abort any pending writes...
+  l.write_end();
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(!l.is_end_and_empty());
+  t.join();
+  int result = 2;
+  BOOST_CHECK(l.read(result));
+  BOOST_CHECK_EQUAL(result, 1);
+  BOOST_CHECK(l.empty());
+  BOOST_CHECK(l.is_end());
+  BOOST_CHECK(l.is_end_and_empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

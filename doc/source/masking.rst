@@ -27,7 +27,8 @@ Auto-masking allows automated deep cleaning and solves the two problems mentione
  * Only one run of wsclean is required;
  * It maintains scale-dependent masks, which improves multi-scale cleaning.
 
-Auto-masking works in all modes since :doc:`WSClean 2.2 <changelogs/v2.2>`. The general syntax is as follows:
+Auto-masking was first described in `Offringa and Smirnov (2017)  <http://arxiv.org/abs/1706.06786>`_.
+It works in all modes since :doc:`WSClean 2.2 <changelogs/v2.2>`. The general syntax is as follows:
 
 .. code-block:: bash
 
@@ -41,7 +42,7 @@ A scale-dependent mask makes sure that when a certain scale-kernel size was clea
 
 The combination ``-auto-mask 3 -auto-threshold 0.3`` seems like a good general setting, which normally leaves almost no residuals behind.
 
-In cases where the RMS varies strongly over the field of view, for example because of calibration artefacts, it might be useful to use [local RMS thresholding](LocalRMSThresholding), instead of thresholding relative to the global RMS.
+In cases where the RMS varies strongly over the field of view, for example because of calibration artefacts, it might be useful to use :doc:`local RMS thresholding <local_rms_thresholding>`, instead of thresholding relative to the global RMS.
 
 Combining auto-masking with a regular mask
 ------------------------------------------

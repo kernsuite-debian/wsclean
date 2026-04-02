@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
+#include <type_traits>
 #include <vector>
 
 namespace aocommon {
@@ -89,6 +91,54 @@ class ImageCoordinates {
     // Rounding errors sometimes cause cosVal to be slightly larger than 1,
     // which would cause a NaN return value.
     return cosVal <= 1.0 ? std::acos(cosVal) : 0.0;
+  }
+
+  /**
+   * This function calculates the mean ra, dec position from a list of ra, dec
+   * positions. It does this by transforming the equatorial coordinates to
+   * 3-dimensional Cartesian positions on the unit sphere, then takes the
+   * average and then converts back to equatorial coordinates. In the unlikely
+   * case that the mean position falls in the origin of the sphere (e.g. with
+   * two positions 180 degree apart), a value of ra 0, dec 0 is returned.
+   * @tparam CoordinateType A std::pair or std::array of size 2 with numeric
+   * values.
+   */
+  template <typename CoordinateType>
+  static CoordinateType MeanPosition(
+      std::span<CoordinateType> equatorial_coordinates) {
+    using NumType =
+        decltype(std::get<0>(std::remove_const_t<CoordinateType>()));
+    // The x-axis is in the direction ra=0, dec=0.
+    // The y-axis is in the direction ra=90, dec=0.
+    // The z-axis is in the direction dec=90.
+    if (equatorial_coordinates.empty())
+      return CoordinateType{NumType(0.0), NumType(0.0)};
+    NumType sum_x(0.0);
+    NumType sum_y(0.0);
+    NumType sum_z(0.0);
+    for (const CoordinateType& coordinate : equatorial_coordinates) {
+      sum_z += std::sin(std::get<1>(coordinate));
+      const NumType cos_dec = std::cos(std::get<1>(coordinate));
+      sum_x += cos_dec * std::cos(std::get<0>(coordinate));
+      sum_y += cos_dec * std::sin(std::get<0>(coordinate));
+    }
+    const NumType ra = std::atan2(sum_y, sum_x);
+    const NumType r = std::sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z);
+    if (r == 0.0) return CoordinateType{NumType(0.0), NumType(0.0)};
+    const NumType dec = 0.5 * M_PI - std::acos(sum_z / r);
+    return CoordinateType{ra, dec};
+  }
+
+  /**
+   * Same as the overload with a std::span parameter, but for a vector. This is
+   * for convenience: A std::vector is normally implicitly convertable to a
+   * std::span, but because of the templated item type, this must be done
+   * explicitly.
+   */
+  template <typename CoordinateType>
+  static CoordinateType MeanPosition(
+      const std::vector<CoordinateType>& equatorial_coordinates) {
+    return MeanPosition(std::span(equatorial_coordinates));
   }
 
   template <typename T>

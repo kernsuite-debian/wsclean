@@ -14,6 +14,9 @@ WSCLEAN_DATA_URL = "@WSCLEAN_DATA_URL@"
 WSCLEAN = "@CMAKE_BINARY_DIR@/wsclean"
 WSCLEAN_MP = "@CMAKE_BINARY_DIR@/wsclean-mp"
 
+# Wrapper for 'mpirun'
+MPIRUN = "@CMAKE_SOURCE_DIR@/scripts/mpirun-no-slurm.sh"
+
 DIMS_LARGE = "-size 1024 1024 -scale 1amin"
 DIMS_SMALL = "-size 256 256 -scale 4amin"
 DIMS_RECTANGULAR = "-size 1536 1024 -scale 1amin"
@@ -22,16 +25,21 @@ FACETFILE_2FACETS = "@CMAKE_SOURCE_DIR@/tests/data/ds9_2facets.reg"
 FACETFILE_4FACETS = "@CMAKE_SOURCE_DIR@/tests/data/ds9_4facets.reg"
 FACETFILE_NFACETS = "@CMAKE_SOURCE_DIR@/tests/data/ds9_nfacets.reg"
 
+SKYMODEL_3C196 = "3C196-SH-offringa.skymodel"
+
 # MWA beam coefficient file and dummy MODEL_IMAGE
 MWA_COEFF_ARCHIVE = "mwa_full_embedded_element_pattern.tar.bz2"
 MWA_COEFF_FILE = "mwa_full_embedded_element_pattern.h5"
 MODEL_IMAGE = "point-source-model.fits"
 
+# Trimmed down LOFAR 3c196 measurement set
+LOFAR_3C196_MS = "LOFAR_3C196.ms"
+
 # Large MWA measurement set
 MWA_MS = "MWA-1052736496-averaged.ms"
 
 # Mock MWA measurement set
-MWA_MOCK_ARCHIVE="MWA_ARCHIVE.tar.bz2"
+MWA_MOCK_ARCHIVE = "MWA_ARCHIVE.tar.bz2"
 MWA_MOCK_MS = "MWA_MOCK.ms"
 MWA_MOCK_FULL = "MWA_MOCK_FULL.ms"
 MWA_MOCK_FACET = "MWA_MOCK_FACET.ms"
@@ -47,3 +55,6 @@ SKA_MS = "ska-low-sim-averaged.ms"
 
 # GMRT set with RR polarization
 GMRT_MS = "GMRT_MOCK.ms"
+
+# Mock solution file with two polarizations
+MOCK_SOLTAB_2POL = "mock_soltab_2pol.h5"

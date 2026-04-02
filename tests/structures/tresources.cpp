@@ -5,6 +5,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+namespace wsclean {
+
 namespace {
 const int64_t gb = 1024u * 1024u * 1024u;
 }
@@ -26,7 +28,7 @@ BOOST_AUTO_TEST_CASE(get_part) {
 }
 
 BOOST_AUTO_TEST_CASE(get_available_memory) {
-  aocommon::Logger::SetVerbosity(aocommon::Logger::kQuietVerbosity);
+  aocommon::Logger::SetVerbosity(aocommon::LogVerbosityLevel::kQuiet);
   const int64_t all_memory = GetAvailableMemory(1.0, 0.0);
   BOOST_TEST(all_memory > 0);
 
@@ -44,3 +46,5 @@ BOOST_AUTO_TEST_CASE(get_available_memory) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+}  // namespace wsclean

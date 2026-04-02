@@ -4,28 +4,34 @@
 #include <aocommon/image.h>
 #include <aocommon/lane.h>
 
-#include "msgridderbase.h"
+#include "msgridder.h"
 
+#include "../main/progressbar.h"
 #include "../structures/resources.h"
+
+namespace wsclean {
 
 class ProgressBar;
 
 template <typename num_t>
-class DirectMSGridder final : public MSGridderBase {
+class DirectMSGridder final : public MsGridder {
  public:
-  const static size_t num_t_factor =
-      (sizeof(num_t) + sizeof(double) - 1) / sizeof(double);
+  DirectMSGridder(const Settings& settings, const Resources& resources,
+                  MsProviderCollection& ms_provider_collection);
 
-  DirectMSGridder(const Settings& settings, const Resources& resources);
+  void StartInversion() final;
+  size_t GridMeasurementSet(const MsProviderCollection::MsData& ms_data) final;
+  void FinishInversion() final;
 
-  virtual void Invert() override;
+  void StartPredict(std::vector<aocommon::Image>&& images) final;
+  size_t PredictMeasurementSet(
+      const MsProviderCollection::MsData& ms_data) final;
+  void FinishPredict() final;
 
-  virtual void Predict(std::vector<aocommon::Image>&& images) override;
-
-  virtual std::vector<aocommon::Image> ResultImages() override {
+  std::vector<aocommon::Image> ResultImages() final {
     return {std::move(_image)};
   }
-  virtual size_t getSuggestedWGridSize() const override { return 1; }
+  size_t GetSuggestedWGridSize() const final { return 1; }
 
  private:
   struct InversionSample {
@@ -34,18 +40,17 @@ class DirectMSGridder final : public MSGridderBase {
   };
   const Resources _resources;
   aocommon::Image _image;
-  num_t* _sqrtLMTable;
-  std::vector<num_t*> _layers;
+  aocommon::ImageBase<num_t> _sqrtLMTable;
+  std::vector<aocommon::ImageBase<num_t>> _layers;
   aocommon::Lane<InversionSample> _inversionLane;
 
-  void invertMeasurementSet(const MSData& msData, ProgressBar& progress,
-                            size_t msIndex);
-  void inversionWorker(size_t layer);
+  void InvertMeasurementSet(const MsProviderCollection::MsData& ms_data,
+                            size_t ms_index);
   void gridSample(const InversionSample& sample, size_t layer);
-  void initializeSqrtLMLookupTable();
-
-  num_t* allocate() { return new num_t[ImageWidth() * ImageHeight()]; }
-  void freeImg(num_t* ptr) { delete[] ptr; }
+  aocommon::ImageBase<num_t> GetSqrtLMLookupTable() const;
+  std::unique_ptr<ProgressBar> progress_bar_;
 };
+
+}  // namespace wsclean
 
 #endif

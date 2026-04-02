@@ -7,6 +7,8 @@
 
 #include <boost/tokenizer.hpp>
 
+namespace wsclean {
+
 ParsetReader::ParsetReader(const std::string& filename) {
   std::ifstream stream(filename);
   if (!stream)
@@ -53,7 +55,7 @@ ParsetReader::ParsetEntry::ParsetEntry(const std::string& line) {
     boost::tokenizer<boost::char_separator<char>> listTokenizer(valStr,
                                                                 listSep);
     std::unique_ptr<StringListValue> value(new StringListValue());
-    for (auto item : listTokenizer) value->_value.push_back(item);
+    for (const auto& item : listTokenizer) value->_value.push_back(item);
     _value = std::move(value);
   }
 }
@@ -139,3 +141,5 @@ double ParsetReader::GetDoubleOr(const std::string& key, double orValue) const {
   else
     return atof(iter->second.GetStringValue().c_str());
 }
+
+}  // namespace wsclean

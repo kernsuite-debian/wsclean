@@ -11,9 +11,11 @@
 #include <fstream>
 #include <stdexcept>
 
+namespace wsclean {
+
 class ModelParser : private Tokenizer {
  public:
-  ModelParser() : _fileVersion1_0(false) {}
+  ModelParser() : Tokenizer(), _fileVersion1_0(false) {}
 
   /**
    * Test if the first line of this stream corresponds with the
@@ -271,5 +273,7 @@ class ModelParser : private Tokenizer {
     sed.SetIsLogarithmic(isLogarithmic);
   }
 };
+
+}  // namespace wsclean
 
 #endif

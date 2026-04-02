@@ -5,6 +5,11 @@
 
 #Script configuration for this repo. Adjust it when copying to a different repo.
 
+# Disable globbing. This is needed when defining patterns that have wildcards.
+set -e -f
+
+CLANG_FORMAT_BINARY=clang-format-14
+
 #The directory that contains the source files.
 SOURCE_DIR=$(dirname "$0")/..
 

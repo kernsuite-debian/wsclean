@@ -1,5 +1,10 @@
 #include <boost/test/unit_test.hpp>
 
+// Because current Casacore versions aren't suporting C++20 yet in the Ubuntu
+// versions, the casacore overloads are removed using this macro. This prevents
+// having to compile Casacore in CI only for a few overloads that are not tested
+// anyway. This macro can be removed once Casacore support is improved.
+#define DISABLE_CASACORE_IN_BANDDATA
 #include <aocommon/banddata.h>
 
 using aocommon::BandData;
@@ -76,8 +81,10 @@ BOOST_AUTO_TEST_CASE(extrema_and_reference) {
   BOOST_CHECK_EQUAL(a.HighestFrequency(), 170e6);
   BOOST_CHECK_EQUAL(a.LowestFrequency(), 150e6);
   BOOST_CHECK_EQUAL(a.ReferenceFrequency(), 160e6);
-  BOOST_CHECK_CLOSE(a.SmallestWavelength(), aocommon::c() / 170e6, 1e-8);
-  BOOST_CHECK_CLOSE(a.LongestWavelength(), aocommon::c() / 150e6, 1e-8);
+  BOOST_CHECK_CLOSE(a.SmallestWavelength(), aocommon::kSpeedOfLight / 170e6,
+                    1e-8);
+  BOOST_CHECK_CLOSE(a.LongestWavelength(), aocommon::kSpeedOfLight / 150e6,
+                    1e-8);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

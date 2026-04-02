@@ -4,11 +4,11 @@
 #define RADLER_ALGORITHMS_SUB_MINOR_LOOP_H_
 
 #include <cstring>
-#include <optional>
 #include <vector>
 
 #include <aocommon/image.h>
 #include <aocommon/logger.h>
+#include <aocommon/optionalnumber.h>
 
 #include "component_list.h"
 #include "image_set.h"
@@ -53,10 +53,7 @@ class SubMinorModel {
  public:
   SubMinorModel(size_t width, size_t /*height*/) : _width(width) {}
 
-  // TODO(AST-912) Make copy/move operations Google Style compliant.
-  SubMinorModel(const SubMinorModel&) = delete;
   SubMinorModel(SubMinorModel&&) = default;
-  SubMinorModel& operator=(const SubMinorModel&) = delete;
   SubMinorModel& operator=(SubMinorModel&&) = default;
 
   void AddPosition(size_t x, size_t y) {
@@ -118,14 +115,9 @@ class SubMinorLoop {
         _parentAlgorithm(nullptr),
         _subMinorModel(width, height),
         _fluxCleaned(0.0),
-        _logReceiver(log_receiver),
-        _threadCount(1) {}
+        _logReceiver(log_receiver) {}
 
-  // TODO(AST-912) Make copy/move operations Google Style compliant.
-  SubMinorLoop(const SubMinorLoop&) = delete;
   SubMinorLoop(SubMinorLoop&&) = default;
-  SubMinorLoop& operator=(const SubMinorLoop&) = delete;
-  SubMinorLoop& operator=(SubMinorLoop&&) = delete;
 
   /**
    * @param threshold The threshold to which this subminor run should clean
@@ -171,13 +163,20 @@ class SubMinorLoop {
     _rmsFactorImage = image;
   }
 
-  void SetThreadCount(size_t thread_count) { _threadCount = thread_count; }
+  void SetDivergenceLimit(float divergence_limit) {
+    _divergenceLimit = divergence_limit;
+  }
 
   size_t CurrentIteration() const { return _currentIteration; }
 
   float FluxCleaned() const { return _fluxCleaned; }
 
-  std::optional<float> Run(
+  /**
+   * @returns a pair for which the first value specifies whether divergence has
+   * taken place, and the second value is the peak on which the algorithm
+   * finished, if a peak exists.
+   */
+  std::pair<bool, aocommon::OptionalNumber<float>> Run(
       ImageSet& convolvedResidual,
       const std::vector<aocommon::Image>& twiceConvolvedPsfs);
 
@@ -211,6 +210,11 @@ class SubMinorLoop {
   bool _allowNegativeComponents, _stopOnNegativeComponent;
   const bool* _mask;
   /**
+   * A value of 0 means that divergence checking is disabled.
+   * @see Settings::divergence_limit for more info.
+   */
+  float _divergenceLimit = 0.0f;
+  /**
    * The parent algorithm is used to perform spectral fitting.
    */
   DeconvolutionAlgorithm* _parentAlgorithm;
@@ -218,7 +222,6 @@ class SubMinorLoop {
   float _fluxCleaned;
   aocommon::Image _rmsFactorImage;
   aocommon::LogReceiver& _logReceiver;
-  size_t _threadCount;
 };
 }  // namespace radler::algorithms
 #endif  // RADLER_ALGORITHMS_SUB_MINOR_LOOP_H_

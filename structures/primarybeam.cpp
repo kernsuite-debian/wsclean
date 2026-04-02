@@ -18,7 +18,11 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/algorithm/string/case_conv.hpp>
 
+#include <optional>
 #include <stdexcept>
+
+#include <casacore/measures/Measures/MEpoch.h>
+#include <casacore/measures/TableMeasures/ScalarMeasColumn.h>
 
 #ifdef HAVE_EVERYBEAM
 #include <EveryBeam/aterms/atermconfig.h>
@@ -33,6 +37,10 @@ using aocommon::Image;
 using aocommon::Logger;
 using aocommon::Polarization;
 using aocommon::PolarizationEnum;
+
+using schaapcommon::reordering::MSSelection;
+
+namespace wsclean {
 
 namespace {
 
@@ -49,18 +57,32 @@ aocommon::FitsWriter MakeWriter(const CoordinateSystem& coordinates,
   return writer;
 }
 
+std::string BeamFilename(const Settings& settings,
+                         const ImageFilename& image_name,
+                         std::optional<size_t> element_index) {
+  const std::string prefix = image_name.GetBeamPrefix(settings);
+  return element_index ? prefix + "-" + std::to_string(*element_index) + ".fits"
+                       : prefix + ".fits";
+}
+
+/**
+ * @param element_index when given, the index is used in the filename (e.g.
+ * "wsclean-beam-3.fits"). Otherwise, a filename without index is used (e.g.
+ * "wsclean-beam.fits").
+ */
 void WriteBeamElement(const ImageFilename& image_name, const Image& beam_image,
-                      const Settings& settings, size_t element_index,
+                      const Settings& settings,
+                      std::optional<size_t> element_index,
                       const aocommon::FitsWriter& writer) {
-  writer.Write(image_name.GetBeamPrefix(settings) + "-" +
-                   std::to_string(element_index) + ".fits",
-               beam_image.Data());
+  const std::string filename =
+      BeamFilename(settings, image_name, element_index);
+  writer.Write(filename, beam_image.Data());
 }
 
 aocommon::Image Load(const Settings& settings, const ImageFilename& image_name,
-                     size_t element) {
-  const std::string filename = image_name.GetBeamPrefix(settings) + "-" +
-                               std::to_string(element) + ".fits";
+                     std::optional<size_t> element_index) {
+  const std::string filename =
+      BeamFilename(settings, image_name, element_index);
   if (boost::filesystem::exists(filename)) {
     aocommon::FitsReader reader(filename);
     Image image(reader.ImageWidth(), reader.ImageHeight());
@@ -73,82 +95,114 @@ aocommon::Image Load(const Settings& settings, const ImageFilename& image_name,
 
 #ifdef HAVE_EVERYBEAM
 void WriteBeamImages(const ImageFilename& image_name,
-                     const std::vector<aocommon::HMC4x4>& beam,
+                     std::vector<aocommon::HMC4x4>&& beam,
                      const Settings& settings, const ImagingTableEntry& entry,
                      const CoordinateSystem& coordinates,
                      size_t undersampling_factor) {
-  std::vector<size_t> required_elements;
-  const bool pseudo_correction = settings.polarizations.size() == 1 &&
-                                 (entry.polarization == Polarization::RR ||
-                                  entry.polarization == Polarization::LL);
-  const bool stokes_i_correction = settings.polarizations.size() == 1 &&
-                                   entry.polarization == Polarization::StokesI;
-  if (pseudo_correction || stokes_i_correction) {
-    // m_00 and m_33 ; see aocommon::HMC4x4::Data()
-    required_elements = {0, 15};
-  } else if (settings.polarizations ==
-             std::set<aocommon::PolarizationEnum>{aocommon::Polarization::XX,
-                                                  aocommon::Polarization::YY}) {
-    // m_00, m_11, m_22 and m_33
-    required_elements = {0, 3, 8, 15};
-  } else {
-    required_elements = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-  }
+  using everybeam::griddedresponse::GriddedResponse;
+  const bool use_squared_beam = settings.UseFacetCorrections();
   const aocommon::FitsWriter writer = MakeWriter(coordinates, entry);
   Image upsampled(coordinates.width, coordinates.height);
-  for (size_t element : required_elements) {
-    Logger::Debug << "Upsampling beam element " << element << "...\n";
-    using everybeam::griddedresponse::GriddedResponse;
-    GriddedResponse::UpsampleResponse(upsampled.Data(), element,
-                                      coordinates.width, coordinates.height,
-                                      beam, undersampling_factor);
-    WriteBeamElement(image_name, upsampled, settings, element, writer);
+  if (use_squared_beam) {
+    for (aocommon::HMC4x4& pixel : beam) {
+      if (pixel.Invert()) {
+        const double stokes_i_sqrt = std::sqrt(
+            0.5 * (pixel.Data(0) + 2.0 * pixel.Data(9) + pixel.Data(15)));
+        pixel.Data(0) = stokes_i_sqrt == 0.0 ? 0.0 : 1.0 / stokes_i_sqrt;
+      } else {
+        pixel.Data(0) = 0.0;
+      }
+    }
+    GriddedResponse::UpsampleCorrection(upsampled.Data(), 0, coordinates.width,
+                                        coordinates.height, beam,
+                                        undersampling_factor);
+    WriteBeamElement(image_name, upsampled, settings, {}, writer);
+  } else {
+    std::vector<size_t> required_elements;
+    const bool pseudo_correction = settings.polarizations.size() == 1 &&
+                                   (entry.polarization == Polarization::RR ||
+                                    entry.polarization == Polarization::LL);
+    const bool stokes_i_correction =
+        settings.polarizations.size() == 1 &&
+        entry.polarization == Polarization::StokesI;
+    const bool diagonal_correction =
+        settings.polarizations ==
+        std::set{aocommon::Polarization::XX, aocommon::Polarization::YY};
+    if (pseudo_correction || stokes_i_correction) {
+      // Require: m_00, m_03, m_30 and m_33 ; see aocommon::HMC4x4::Data()
+      // m_03 is complex conjugate of m_30. The imaginary value is not
+      // necessary for Stokes I correction as it cancels out.
+      required_elements = {0, 9, 15};
+    } else if (diagonal_correction) {
+      // In diagonal (=xx,yy) correction, a 2x2 matrix with the xx-to-xx,
+      // xx-to-yy, yy-to-xx and yy-to-yy values needs to be inverted. This
+      // matrix inversion is affected (I think) by the imaginary value of
+      // the off-diagonal, so we need image 10 too.
+      required_elements = {0, 9, 10, 15};
+    } else {
+      required_elements = {0, 1, 2,  3,  4,  5,  6,  7,
+                           8, 9, 10, 11, 12, 13, 14, 15};
+    }
+    for (size_t element : required_elements) {
+      Logger::Debug << "Upsampling beam element " << element << "...\n";
+      GriddedResponse::UpsampleCorrection(upsampled.Data(), element,
+                                          coordinates.width, coordinates.height,
+                                          beam, undersampling_factor);
+      WriteBeamElement(image_name, upsampled, settings, element, writer);
+    }
   }
 }
 #endif
 
-void ApplyFacetCorrections(
-    const ImageFilename& imageName, const Settings& settings,
-    const CoordinateSystem& coordinates, const ImagingTable& table,
-    const std::map<size_t, std::unique_ptr<MetaDataCache>>& metaCache) {
-  if (settings.polarizations ==
-      std::set<PolarizationEnum>{Polarization::XX, Polarization::YY}) {
-    // FIXME: to be implemented
-    // This should multiply the 16 images (representing a Hermitian 4x4
-    // matrix) with the diagonal 4x4 matrix with diagonal entries [1/sqrt(mx*
-    // mx) ; 0 ; 0 ; 1/sqrt(my* my)] where mx the weighted h5 sum for the
-    // XX-polarization and my the weighted h5sum for the YY-polarization the
-    // result is, however, not Hermitian anymore.
-    throw std::runtime_error(
-        "Correcting the restored image both for H5Parm solutions and beam "
-        "effects is not yet implemented for XX/YY imaging.");
-  } else {
-    schaapcommon::facets::FacetImage facet_image(coordinates.width,
-                                                 coordinates.height, 1);
+void ApplyFacetCorrections(const ImageFilename& image_name,
+                           const Settings& settings,
+                           const CoordinateSystem& coordinates,
+                           const ImagingTable::Group& group,
+                           const OutputChannelInfo& channel_info) {
+  schaapcommon::facets::FacetImage facet_image(coordinates.width,
+                                               coordinates.height, 1);
 
-    // table.Front() can be used, because the central frequency and start/end
-    // frequency are equal inside a FacetGroup
-    const aocommon::FitsWriter writer = MakeWriter(coordinates, table.Front());
+  // group.front() can be used, because the central frequency and start/end
+  // frequency are equal inside a FacetGroup
+  const aocommon::FitsWriter writer = MakeWriter(coordinates, *group.front());
 
-    // Process the images one by one to avoid loading all of them in memory
-    // at the same time.
-    for (size_t i = 0; i != 16; ++i) {
-      Image beam_image = Load(settings, imageName, i);
-      if (!beam_image.Empty()) {
-        std::vector<float*> imagePtr{beam_image.Data()};
-        for (const ImagingTableEntry& entry : table) {
-          // The final image needs to be corrected by 1/sqrt(..). However, since
-          // we are scaling the beam images, we need to apply the inverse of
-          // that.
-          const float factor =
-              std::sqrt(metaCache.at(entry.index)->h5Sum / entry.imageWeight);
-          facet_image.SetFacet(*entry.facet, true);
-          facet_image.MultiplyImageInsideFacet(imagePtr, factor);
-        }
-
-        WriteBeamElement(imageName, beam_image, settings, i, writer);
-      }
+  // When facet corrections are applied, only a scalar correction is left to
+  // be applied on the images.
+  Image beam_image = Load(settings, image_name, {});
+  if (!beam_image.Empty()) {
+    std::vector<float*> image_pointer = {beam_image.Data()};
+    for (const std::shared_ptr<ImagingTableEntry>& entry : group) {
+      // The visibilities are weighted by the beam and h5 facet solutions
+      // when gridding, and the visibilities themselves are "apparent"
+      // causing the images to be weighted by the square of those gains.
+      // The images are then per facet fully Mueller corrected to make them
+      // flat gain (=true instrinsic flux), after which they are again divided
+      // by the sqrt of the Stokes I gain (a scalar correction) to make them
+      // approximately flat noise for deconvolution. What's left to do here is
+      // therefore to take out that sqrt of Stokes I gain. This is done in
+      // two steps: an estimate of the average squared beam is corrected as a
+      // smooth image correction, whereas the residual facet solution gains
+      // are facet-based. In case the facet gains are near unity, this would
+      // result in a smooth image. Otherwise, the beam and solution
+      // contributions aren't easily separable (as they are averages of
+      // squares), so we just use (full_correction / beam_correction) as
+      // factor. The final image needs to be divided by this factor. However,
+      // since we are scaling the beam images, we need to apply the inverse of
+      // that.
+      const double beam_factor =
+          channel_info.averageBeamFacetCorrection[entry->facetIndex]
+              .GetStokesIValue();
+      const double full_factor =
+          channel_info.averageFacetCorrection[entry->facetIndex]
+              .GetStokesIValue();
+      const double correction =
+          beam_factor == 0.0 ? full_factor : full_factor / beam_factor;
+      facet_image.SetFacet(*entry->facet, true);
+      facet_image.MultiplyImageInsideFacet(image_pointer,
+                                           std::sqrt(correction));
     }
+
+    WriteBeamElement(image_name, beam_image, settings, {}, writer);
   }
 }
 
@@ -177,9 +231,50 @@ std::unique_ptr<everybeam::telescope::Telescope> PrepareEveryBeam(
   // Make telescope
   return everybeam::Load(ms.MS(), options);
 }
+
 #endif  // HAVE_EVERYBEAM
 
 }  // namespace
+
+/**
+ * Returns the intervals to which a beam is calculated over.
+ * The returned vector holds for each interval the start and
+ * end row indices, as well as the central time of the interval.
+ */
+std::vector<BeamInterval> GetBeamIntervals(MSProvider& ms_provider,
+                                           double seconds_before_beam_update) {
+  double start_time = 0.0;
+  double previous_time = 0.0;
+  std::unique_ptr<MSReader> ms_reader = ms_provider.MakeReader();
+  size_t row = 0;
+  size_t start_row = 0;
+  std::vector<BeamInterval> result;
+  if (ms_reader->CurrentRowAvailable()) {
+    MSProvider::MetaData meta;
+    ms_reader->ReadMeta(meta);
+    start_time = meta.time;
+    previous_time = meta.time;
+    ms_reader->NextInputRow();
+    ++row;
+    while (ms_reader->CurrentRowAvailable()) {
+      ms_reader->ReadMeta(meta);
+      if (std::abs(meta.time - start_time) > seconds_before_beam_update) {
+        result.emplace_back(BeamInterval{start_row, row - 1,
+                                         (start_time + previous_time) * 0.5});
+        start_row = row;
+        start_time = meta.time;
+      }
+      previous_time = meta.time;
+      ms_reader->NextInputRow();
+      ++row;
+    }
+    if (row - 1 != start_row)
+      result.emplace_back(
+          BeamInterval{start_row, row - 1, (start_time + previous_time) * 0.5});
+  }
+
+  return result;
+}
 
 PrimaryBeam::PrimaryBeam(const Settings& settings)
     : settings_(settings),
@@ -205,8 +300,8 @@ void PrimaryBeam::AddMS(std::unique_ptr<MSDataDescription> description) {
 }
 
 void PrimaryBeam::CorrectBeamForFacetGain(
-    const ImageFilename& image_name, const ImagingTable& table,
-    const std::map<size_t, std::unique_ptr<MetaDataCache>>& meta_cache) {
+    const ImageFilename& image_name, const ImagingTable::Group& group,
+    const OutputChannelInfo& channel_info) {
   const CoordinateSystem coordinates{settings_.trimmedImageWidth,
                                      settings_.trimmedImageHeight,
                                      phase_centre_ra_,
@@ -215,14 +310,34 @@ void PrimaryBeam::CorrectBeamForFacetGain(
                                      settings_.pixelScaleY,
                                      l_shift_,
                                      m_shift_};
-  ApplyFacetCorrections(image_name, settings_, coordinates, table, meta_cache);
+  ApplyFacetCorrections(image_name, settings_, coordinates, group,
+                        channel_info);
 }
 
-void PrimaryBeam::CorrectImages(
-    aocommon::FitsWriter& writer, const ImageFilename& image_name,
-    const std::string& filename_kind, const ImagingTable& table,
-    const std::map<size_t, std::unique_ptr<MetaDataCache>>& meta_cache) {
-  if (settings_.polarizations.size() == 1 || filename_kind == "psf") {
+void PrimaryBeam::CorrectImages(aocommon::FitsWriter& writer,
+                                const ImageFilename& image_name,
+                                const std::string& filename_kind) {
+  // In the future, this condition could potentially also include IDG to allow
+  // making image sets other than only I or IQUV with IDG.
+  const bool use_squared_beam = settings_.UseFacetCorrections();
+  if (use_squared_beam) {
+    // This creates four images of which only one is used, so this can be
+    // made more efficient with some refactoring.
+    const PrimaryBeamImageSet beam_images = LoadStokesI(image_name);
+    for (PolarizationEnum polarization : settings_.polarizations) {
+      ImageFilename name(image_name);
+      name.SetPolarization(polarization);
+      aocommon::FitsReader reader(name.GetPrefix(settings_) + "-" +
+                                  filename_kind + ".fits");
+      Image image(reader.ImageWidth(), reader.ImageHeight());
+      reader.Read(image.Data());
+
+      beam_images.ApplyStokesI(image.Data(), settings_.primaryBeamLimit);
+      writer.SetPolarization(polarization);
+      writer.Write(name.GetPrefix(settings_) + "-" + filename_kind + "-pb.fits",
+                   image.Data());
+    }
+  } else if (settings_.polarizations.size() == 1 || filename_kind == "psf") {
     const PrimaryBeamImageSet beam_images = LoadStokesI(image_name);
     PolarizationEnum pol = *settings_.polarizations.begin();
 
@@ -325,24 +440,22 @@ PrimaryBeamImageSet PrimaryBeam::Load(const ImageFilename& image_name,
   // This function will be called for Stokes I, diagonal or Full Jones
   // correction, so we can assume that the first element is always required:
   assert(*elements.begin() == 0);
-  if (settings_.gridderType == GridderType::IDG) {
+  const bool use_squared_beam = settings_.UseFacetCorrections();
+  if (use_squared_beam || settings_.gridderType == GridderType::IDG) {
     PrimaryBeamImageSet beam_images;
-    // IDG produces only a Stokes I beam, and has already corrected for the
-    // rest. Currently we just load that beam into the diagonal entries of the
-    // real component of XX and YY. This is
-    // a bit wasteful so might require a better strategy for big images.
+    // IDG and facet-based imaging produce only a Stokes I beam, and images
+    // have already been corrected for the rest. Currently we just load that
+    // beam into the 4 diagonal entries. This is a bit wasteful so might
+    // require a better strategy for big images.
     ImageFilename pol_name(image_name);
     pol_name.SetPolarization(aocommon::Polarization::StokesI);
     aocommon::FitsReader reader(pol_name.GetBeamPrefix(settings_) + ".fits");
     beam_images[0] =
         Image(settings_.trimmedImageWidth, settings_.trimmedImageHeight);
     reader.Read(beam_images[0].Data());
-    for (size_t i = 0;
-         i != settings_.trimmedImageWidth * settings_.trimmedImageHeight; ++i)
-      beam_images[0][i] = std::sqrt(beam_images[0][i]);
 
-    // Copy zero entry to images on the diagonal (see aocommon::HMC4x4)
-    std::array<size_t, 3> diagonal_entries = {3, 8, 15};
+    // Copy image zero to images on the diagonal (see aocommon::HMC4x4)
+    const std::array<size_t, 3> diagonal_entries = {3, 8, 15};
     for (size_t element : diagonal_entries) {
       if (elements.count(element)) beam_images[element] = beam_images[0];
     }
@@ -351,11 +464,30 @@ PrimaryBeamImageSet PrimaryBeam::Load(const ImageFilename& image_name,
     PrimaryBeamImageSet beam_images;
     for (size_t element = 0; element != beam_images.NImages(); ++element) {
       if (elements.count(element)) {
-        beam_images[element] = ::Load(settings_, image_name, element);
+        beam_images[element] = wsclean::Load(settings_, image_name, element);
       }
     }
     return beam_images;
   }
+}
+
+void PrimaryBeam::MakeUnitary(const ImagingTableEntry& entry,
+                              const ImageFilename& image_name,
+                              const Settings& settings) {
+  const size_t width = settings.trimmedImageWidth;
+  const size_t height = settings.trimmedImageHeight;
+  const aocommon::CoordinateSystem coordinates{width,
+                                               height,
+                                               phase_centre_ra_,
+                                               phase_centre_dec_,
+                                               settings_.pixelScaleX,
+                                               settings_.pixelScaleY,
+                                               l_shift_,
+                                               m_shift_};
+  const aocommon::FitsWriter writer = MakeWriter(coordinates, entry);
+  const Image image(width, height, 1.0f);
+  Logger::Debug << "Writing unitary beam...\n";
+  WriteBeamElement(image_name, image, settings, {}, writer);
 }
 
 #ifndef HAVE_EVERYBEAM
@@ -398,7 +530,7 @@ void PrimaryBeam::MakeOrReuse(const ImageFilename& image_name,
   }
   if (!use_existing_beam) {
     Logger::Info << " == Constructing primary beam ==\n";
-    MakeImage(image_name, entry, image_weights, field_id);
+    MakeImage(image_name, entry, std::move(image_weights), field_id);
   }
 }
 
@@ -428,30 +560,30 @@ void PrimaryBeam::MakeImage(const ImageFilename& image_name,
   std::vector<aocommon::HMC4x4> result;
   double ms_weight_sum = 0;
   for (const MSProviderInfo& ms_provider_info : ms_providers_) {
-    const MSSelection& selection = *ms_provider_info.selection;
-    double central_frequency;
-    {
-      aocommon::BandData band(ms_provider_info.provider->Band(),
-                              selection.ChannelRangeStart(),
-                              selection.ChannelRangeEnd());
-      central_frequency = band.CentreFrequency();
-    }
+    const double central_frequency =
+        ms_provider_info.provider->SelectedBands().CentreFrequency();
 
+    const MSSelection& selection = *ms_provider_info.selection;
     std::vector<aocommon::HMC4x4> ms_beam;
     const double ms_weight =
         MakeBeamForMS(ms_beam, *ms_provider_info.provider, selection,
                       *image_weights, coordinates, central_frequency, field_id);
-    if (ms_weight > 0.0) {
-      if (result.empty()) {
-        result = std::move(ms_beam);
+    if (result.empty()) {
+      result = std::move(ms_beam);
+      if (ms_weight > 0.0) {
         for (aocommon::HMC4x4& m : result) {
           m *= ms_weight;
         }
+        ms_weight_sum += ms_weight;
       } else {
-        assert(ms_beam.size() == result.size());
-        for (size_t i = 0; i != result.size(); ++i) {
-          result[i] += ms_beam[i] * ms_weight;
-        }
+        // In case of a zero weight beam, the beam might contain NaNs or be
+        // otherwise bad, so explicitly set it to zero.
+        result.assign(result.size(), aocommon::HMC4x4::Zero());
+      }
+    } else if (ms_weight > 0.0) {
+      assert(ms_beam.size() == result.size());
+      for (size_t i = 0; i != result.size(); ++i) {
+        result[i] += ms_beam[i] * ms_weight;
       }
       ms_weight_sum += ms_weight;
     }
@@ -462,7 +594,7 @@ void PrimaryBeam::MakeImage(const ImageFilename& image_name,
     result[i] /= ms_weight_sum;
   }
 
-  WriteBeamImages(image_name, result, settings_, entry, coordinates,
+  WriteBeamImages(image_name, std::move(result), settings_, entry, coordinates,
                   undersample_);
 }
 
@@ -471,13 +603,18 @@ double PrimaryBeam::MakeBeamForMS(
     const MSSelection& selection, const ImageWeights& image_weights,
     const aocommon::CoordinateSystem& coordinateSystem,
     double central_frequency, size_t field_id) {
-  // Get time info
-  double start_time;
-  double end_time;
-  size_t interval_count;
-  std::tie(start_time, end_time, interval_count) = GetTimeInfo(ms_provider);
+  Logger::Debug << "Counting timesteps...\n";
+  const std::vector<BeamInterval> intervals =
+      GetBeamIntervals(ms_provider, seconds_before_beam_update_);
+  Logger::Debug << "Dividing MS in " << intervals.size() << " intervals.\n";
 
-  SynchronizedMS ms = ms_provider.MS();
+  std::optional<SynchronizedMS> optional_ms = ms_provider.MsIfAvailable();
+  if (!optional_ms) {
+    throw std::runtime_error(
+        "To correct for the beam, an on-disk measurement set is currently "
+        "required");
+  }
+  SynchronizedMS& ms = *optional_ms;
   const everybeam::TelescopeType telescope_type =
       everybeam::GetTelescopeType(*ms);
   std::unique_ptr<everybeam::telescope::Telescope> telescope =
@@ -491,38 +628,41 @@ double PrimaryBeam::MakeBeamForMS(
   std::unique_ptr<everybeam::griddedresponse::GriddedResponse> grid_response =
       telescope->GetGriddedResponse(coordinateSystem);
 
-  // Time array and baseline weights only relevant for LOFAR, MWA (and probably
-  // SKA-LOW). MWA beam needs scrutiny, this telescope might be amenable to a
+  // Time array and baseline weights only relevant for LOFAR, MWA and SKA.
+  // MWA beam needs scrutiny, this telescope might be amenable to a
   // more efficient implementation
   double ms_weight = 0;
   switch (telescope_type) {
+    // These are the telescopes that require time information OR are
+    // heterogenous (not all antennas have the same response)
     case everybeam::TelescopeType::kLofarTelescope:
     case everybeam::TelescopeType::kAARTFAAC:
     case everybeam::TelescopeType::kMWATelescope:
     case everybeam::TelescopeType::kOSKARTelescope:
-    case everybeam::TelescopeType::kSkaMidTelescope: {
-      std::vector<double> baseline_weights(n_baselines * interval_count, 0);
-      std::vector<double> time_array(interval_count, 0);
+    case everybeam::TelescopeType::kSkaMidTelescope:
+    case everybeam::TelescopeType::kOvroLwaTelescope: {
+      std::vector<double> baseline_weights(n_baselines * intervals.size(), 0.0);
+      std::vector<double> time_array(intervals.size(), 0.0);
       // Loop over the intervalCounts
-      ms_provider.ResetWritePosition();
-      for (size_t interval_index = 0; interval_index != interval_count;
+      std::unique_ptr<MSReader> reader = ms_provider.MakeReader();
+      size_t current_row = 0;
+
+      for (size_t interval_index = 0; interval_index != intervals.size();
            ++interval_index) {
-        // Find the mid time step
-        double first_time = start_time + (end_time - start_time) *
-                                             interval_index / interval_count;
-        double last_time = start_time + (end_time - start_time) *
-                                            (interval_index + 1) /
-                                            interval_count;
-        casacore::MEpoch time_epoch = casacore::MEpoch(
-            casacore::MVEpoch((0.5 / 86400.0) * (first_time + last_time)),
-            time_column(0).getRef());
+        const BeamInterval& interval = intervals[interval_index];
+
+        // Skip to the start row
+        while (current_row < interval.start_row) {
+          reader->NextInputRow();
+          ++current_row;
+        }
 
         // Set value in time array
-        time_array[interval_index] = time_epoch.getValue().get() * 86400.0;
+        time_array[interval_index] = interval.central_time;
 
         WeightMatrix weights(telescope->GetNrStations());
-        CalculateStationWeights(image_weights, weights, ms, ms_provider,
-                                selection, last_time);
+        CalculateStationWeights(image_weights, weights, ms, *reader, selection,
+                                current_row, interval.end_row);
 
         // Get the baseline weights from the baseline_weight matrix
         aocommon::UVector<double> interval_weights =
@@ -533,14 +673,13 @@ double PrimaryBeam::MakeBeamForMS(
       // Compute MS weight
       ms_weight = std::accumulate(baseline_weights.begin(),
                                   baseline_weights.end(), 0.0);
-      result = grid_response->UndersampledIntegratedResponse(
+      const bool use_squared_beam = settings_.UseFacetCorrections();
+      result = grid_response->UndersampledIntegratedCorrection(
           beam_mode_, time_array, central_frequency, field_id, undersample_,
-          baseline_weights);
+          baseline_weights, use_squared_beam);
     } break;
-    case everybeam::TelescopeType::kATCATelescope:
-    case everybeam::TelescopeType::kGMRTTelescope:
-    case everybeam::TelescopeType::kMeerKATTelescope:
-    case everybeam::TelescopeType::kVLATelescope: {
+    // Using 'default:' gives compatibility with different EveryBeam versions
+    default: {
       if (telescope_type == everybeam::TelescopeType::kATCATelescope ||
           telescope_type == everybeam::TelescopeType::kGMRTTelescope) {
         Logger::Warn << "Warning: ATCA and GMRT primary beam corrections have "
@@ -552,19 +691,21 @@ double PrimaryBeam::MakeBeamForMS(
       ms_weight = 1.0;
       // baseline weights have no effect on homogeneous arrays, so leave at 1
       std::vector<double> baseline_weights(n_baselines, 1);
-      if (settings_.fieldIds[0] == MSSelection::ALL_FIELDS) {
+      if (settings_.fieldIds[0] == MSSelection::kAllFields) {
         Logger::Warn
             << "Warning: primary beam correction together with '-fields "
                "ALL' is not properly supported\n";
         Logger::Warn << "       : The beam will be calculated only for the "
                         "first field!\n";
       }
-      result = grid_response->UndersampledIntegratedResponse(
+      result = grid_response->UndersampledIntegratedCorrection(
           beam_mode_, time_array, central_frequency, field_id, undersample_,
-          baseline_weights);
+          baseline_weights, false);
     } break;
     case everybeam::TelescopeType::kUnknownTelescope:
-      throw std::runtime_error("Warning: Unknown telescope type!");
+      throw std::runtime_error(
+          "Unknown telescope type! If your telescope is supposed to be "
+          "supported, try upgrading EveryBeam.");
   }
 
   return ms_weight;
@@ -573,75 +714,35 @@ double PrimaryBeam::MakeBeamForMS(
 void PrimaryBeam::CalculateStationWeights(const ImageWeights& imageWeights,
                                           WeightMatrix& baselineWeights,
                                           SynchronizedMS& ms,
-                                          MSProvider& msProvider,
+                                          MSReader& ms_reader,
                                           const MSSelection& selection,
-                                          double endTime) {
+                                          size_t& current_row, size_t end_row) {
   casacore::MSAntenna antenna_table(ms->antenna());
   aocommon::UVector<double> per_antenna_weights(antenna_table.nrow(), 0.0);
 
-  aocommon::MultiBandData multi_band(ms->spectralWindow(),
-                                     ms->dataDescription());
-  const size_t n_channels =
-      selection.ChannelRangeEnd() - selection.ChannelRangeStart();
-  const size_t n_polarizations = msProvider.NPolarizations();
-  aocommon::UVector<float> weight_array(n_channels * n_polarizations);
-  std::unique_ptr<MSReader> ms_reader = msProvider.MakeReader();
-  const aocommon::BandData band = multi_band[msProvider.DataDescId()];
-  while (ms_reader->CurrentRowAvailable()) {
-    MSProvider::MetaData meta_data;
-    ms_reader->ReadMeta(meta_data);
-    if (meta_data.time >= endTime) break;
-    ms_reader->ReadWeights(weight_array.data());
+  const aocommon::MultiBandData& multi_band =
+      ms_reader.Provider().SelectedBands();
+  const size_t n_polarizations = ms_reader.NPolarizations();
+  aocommon::UVector<float> weight_array(multi_band.MaxBandChannels() *
+                                        n_polarizations);
+  while (ms_reader.CurrentRowAvailable() && current_row <= end_row) {
+    MSProvider::MetaData metadata;
+    ms_reader.ReadMeta(metadata);
+    ms_reader.ReadWeights(weight_array.data());
+    const aocommon::BandData band = multi_band[metadata.data_desc_id];
 
-    for (size_t ch = 0; ch != n_channels; ++ch) {
-      const double u = meta_data.uInM / band.ChannelWavelength(ch);
-      const double v = meta_data.vInM / band.ChannelWavelength(ch);
+    for (size_t ch = 0; ch != band.ChannelCount(); ++ch) {
+      const double u = metadata.u_in_m / band.ChannelWavelength(ch);
+      const double v = metadata.v_in_m / band.ChannelWavelength(ch);
       const double iw = imageWeights.GetWeight(u, v);
       const double w = weight_array[ch * n_polarizations] * iw;
-      baselineWeights.Value(meta_data.antenna1, meta_data.antenna2) += w;
+      baselineWeights.Value(metadata.antenna1, metadata.antenna2) += w;
     }
-    ms_reader->NextInputRow();
+    ms_reader.NextInputRow();
+    ++current_row;
   }
 }
 
-std::tuple<double, double, size_t> PrimaryBeam::GetTimeInfo(
-    MSProvider& ms_provider) {
-  Logger::Debug << "Counting timesteps...\n";
-  ms_provider.ResetWritePosition();
-  size_t n_timesteps = 0;
-  double start_time = 0.0;
-  double end_time = 0.0;
-  std::unique_ptr<MSReader> ms_reader = ms_provider.MakeReader();
-  if (ms_reader->CurrentRowAvailable()) {
-    MSProvider::MetaData meta;
-    ms_reader->ReadMeta(meta);
-    start_time = meta.time;
-    end_time = meta.time;
-    ++n_timesteps;
-    ms_reader->NextInputRow();
-    while (ms_reader->CurrentRowAvailable()) {
-      ms_reader->ReadMeta(meta);
-      if (end_time != meta.time) {
-        ++n_timesteps;
-        end_time = meta.time;
-      }
-      ms_reader->NextInputRow();
-    }
-  }
-  if (start_time == end_time) {
-    ++end_time;
-    --start_time;
-  }
-  const double total_seconds = end_time - start_time;
-  size_t n_intervals =
-      std::max<size_t>(1, (total_seconds + seconds_before_beam_update_ - 1) /
-                              seconds_before_beam_update_);
-  if (n_intervals > n_timesteps) n_intervals = n_timesteps;
-
-  Logger::Debug << "MS spans " << total_seconds << " seconds, dividing in "
-                << n_intervals << " intervals.\n";
-  return std::make_tuple(start_time, end_time, n_intervals);
-}
 #endif  // HAVE_EVERYBEAM
 
 size_t PrimaryBeam::computeUndersamplingFactor(const Settings& settings) {
@@ -650,3 +751,5 @@ size_t PrimaryBeam::computeUndersamplingFactor(const Settings& settings) {
                settings.trimmedImageHeight / settings.primaryBeamGridSize),
       (size_t)1);
 }
+
+}  // namespace wsclean

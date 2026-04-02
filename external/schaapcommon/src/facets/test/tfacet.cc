@@ -71,6 +71,31 @@ Facet CreateDiamondFacet(int offset_x = 0, int offset_y = 0,
 }
 
 /**
+ * Creates a facet with a triangle shape. The top left its bounding box is at
+ * the centre, but the facet itself does not cover the centre.
+ * C o    C: Center point (50, 50 in pixels).
+ *  /|    o: Facet points.
+ * o-o
+ * (50,50).
+ */
+Facet CreateTriangleFacet() {
+  Facet::InitializationData data(kScale, kImageSize);
+  data.phase_centre.ra = 0;
+  data.phase_centre.dec = 0;
+
+  std::vector<Coord> coords{{0.0, 0.01}, {-0.01, 0.01}, {-0.01, 0.0}};
+  const size_t n_coords = coords.size();
+
+  Facet facet(data, std::move(coords), {});
+  const std::vector<PixelPosition>& pixels = facet.GetPixels();
+  BOOST_REQUIRE_EQUAL(pixels.size(), n_coords);
+  BOOST_CHECK_EQUAL(pixels[0], PixelPosition(50, 60));
+  BOOST_CHECK_EQUAL(pixels[1], PixelPosition(60, 60));
+  BOOST_CHECK_EQUAL(pixels[2], PixelPosition(60, 50));
+  return facet;
+}
+
+/**
  * Creates a facet with a rectangular shape.
  */
 Facet CreateRectangularFacet(double padding, size_t align, bool make_square,
@@ -519,7 +544,7 @@ BOOST_AUTO_TEST_CASE(clip_bottom_left) {
   BOOST_CHECK_EQUAL(facet.Dec(), 0.01);
 }
 
-BOOST_AUTO_TEST_CASE(point_in_polygon) {
+BOOST_AUTO_TEST_CASE(contains_with_diamond_facet) {
   const Facet facet = CreateDiamondFacet();
 
   BOOST_CHECK(facet.Contains(PixelPosition(50, 50)));
@@ -531,6 +556,28 @@ BOOST_AUTO_TEST_CASE(point_in_polygon) {
   // Pixel outside facet
   BOOST_CHECK(!facet.Contains(PixelPosition(29, 50)));
   BOOST_CHECK(!facet.Contains(PixelPosition(50, 61)));
+}
+
+BOOST_AUTO_TEST_CASE(contains_with_triangular_facet) {
+  const Facet facet = CreateTriangleFacet();
+
+  BOOST_CHECK(facet.Contains(PixelPosition(58, 58)));
+  BOOST_CHECK(facet.Contains(PixelPosition(59, 59)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(50, 50)));
+
+  // On the diagonal boundary:
+  for (size_t i = 1; i != 10; ++i)
+    BOOST_CHECK(facet.Contains(PixelPosition(50 + i, 60 - i)));
+  // On the diagonal boundary, but on the end interval and therefore
+  // not part of this facet (would be part of a potential adjacent facet
+  // with the same boundary) :
+  BOOST_CHECK(!facet.Contains(PixelPosition(50, 60)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(60, 50)));
+  BOOST_CHECK(!facet.Contains(PixelPosition(60, 60)));
+
+  // pixels to the left of the diagonal
+  for (size_t i = 0; i != 11; ++i)
+    BOOST_CHECK(!facet.Contains(PixelPosition(49 + i, 60 - i)));
 }
 
 BOOST_AUTO_TEST_CASE(facet_bounding_boxes) {

@@ -1,22 +1,23 @@
+#include <aocommon/recursivefor.h>
 #include <aocommon/staticfor.h>
 
+#include <atomic>
+#include <set>
 #include <mutex>
 
 #include <unistd.h>  // for sleep
 
 #include <boost/test/unit_test.hpp>
 
+using aocommon::RecursiveFor;
 using aocommon::StaticFor;
+using aocommon::ThreadPool;
 
 BOOST_AUTO_TEST_SUITE(staticfor)
 
-BOOST_AUTO_TEST_CASE(construct) {
-  StaticFor<size_t> sFor(4);
-  BOOST_CHECK_EQUAL(sFor.NThreads(), 4);
-}
-
 BOOST_AUTO_TEST_CASE(run) {
-  StaticFor<size_t> loop(4);
+  ThreadPool::GetInstance().SetNThreads(4);
+  StaticFor<size_t> loop;
   std::mutex mutex;
   std::vector<size_t> counts(10, 0);
   loop.Run(0, 10, [&](size_t a, size_t b) {
@@ -31,8 +32,19 @@ BOOST_AUTO_TEST_CASE(run) {
                                 ref.end());
 }
 
+BOOST_AUTO_TEST_CASE(empty_loop) {
+  ThreadPool::GetInstance().SetNThreads(4);
+  StaticFor<size_t> loop;
+  std::atomic<bool> fail = false;
+  loop.Run(10, 10, [&](size_t a, size_t b) {
+    if (a != b) fail = true;
+  });
+  BOOST_CHECK(!fail);
+}
+
 BOOST_AUTO_TEST_CASE(single_threaded) {
-  StaticFor<size_t> loop(1);
+  ThreadPool::GetInstance().SetNThreads(1);
+  StaticFor<size_t> loop;
   std::vector<size_t> counts(10, 0);
   loop.Run(0, 10, [&](size_t a, size_t b) {
     for (size_t iter = a; iter != b; ++iter) {
@@ -48,7 +60,8 @@ BOOST_AUTO_TEST_CASE(single_threaded) {
 BOOST_AUTO_TEST_CASE(resume_run) {
   std::vector<size_t> counts(20, 0);
   std::mutex mutex;
-  StaticFor<size_t> loop(40);
+  ThreadPool::GetInstance().SetNThreads(40);
+  StaticFor<size_t> loop;
   loop.Run(0, 10, [&](size_t a, size_t b) {
     for (size_t iter = a; iter != b; ++iter) {
       std::unique_lock<std::mutex> lock(mutex);
@@ -72,7 +85,8 @@ BOOST_AUTO_TEST_CASE(resume_run) {
 }
 
 BOOST_AUTO_TEST_CASE(run_with_thread_id) {
-  StaticFor<size_t> loop(4);
+  ThreadPool::GetInstance().SetNThreads(4);
+  StaticFor<size_t> loop;
   std::mutex mutex;
   std::vector<size_t> counts(10, 0);
   std::vector<size_t> threads(4, 0);
@@ -95,6 +109,103 @@ BOOST_AUTO_TEST_CASE(run_with_thread_id) {
   // Therefore all we can check is whether there weren't more than
   // 4 blocks:
   for (size_t i = 0; i != threads.size(); ++i) BOOST_CHECK_LT(threads[i], 5);
+}
+
+BOOST_AUTO_TEST_CASE(inside_recursive_for) {
+  const size_t kNThreads = 7;
+  ThreadPool::GetInstance().SetNThreads(kNThreads);
+  RecursiveFor recursive_for;
+  std::mutex mutex;
+  std::map<std::pair<size_t, size_t>, size_t> counter;
+  recursive_for.Run(0, 10, [&](size_t outer, size_t) {
+    StaticFor<size_t> nested_for;
+    nested_for.Run(0, 10, [&, outer](size_t start, size_t end) {
+      for (size_t inner = start; inner != end; ++inner) {
+        std::lock_guard lock(mutex);
+        counter[std::make_pair(outer, inner)]++;
+      }
+    });
+  });
+  BOOST_CHECK_EQUAL(counter.size(), 100);
+  for (const std::pair<const std::pair<size_t, size_t>, size_t>& count :
+       counter) {
+    BOOST_CHECK_LT(count.first.first, 10);   // outer
+    BOOST_CHECK_LT(count.first.second, 10);  // inner
+    BOOST_CHECK_EQUAL(count.second, 1);      // count
+  }
+}
+
+BOOST_AUTO_TEST_CASE(constrained_run_without_id) {
+  ThreadPool::GetInstance().SetNThreads(4);
+  StaticFor<size_t> loop;
+  std::mutex mutex;
+  std::vector<size_t> counts(10, 0);
+  std::set<std::thread::id> thread_ids;
+  const size_t kMaxThreads = 3;
+  loop.ConstrainedRun(0, 10, kMaxThreads, [&](size_t a, size_t b) {
+    for (size_t iter = a; iter != b; ++iter) {
+      std::scoped_lock<std::mutex> lock(mutex);
+      counts[iter]++;
+    }
+    std::scoped_lock<std::mutex> lock(mutex);
+    thread_ids.emplace(std::this_thread::get_id());
+  });
+
+  std::vector<size_t> ref(10, 1);
+  BOOST_CHECK_EQUAL(thread_ids.size(), kMaxThreads);
+  BOOST_CHECK_EQUAL_COLLECTIONS(counts.begin(), counts.end(), ref.begin(),
+                                ref.end());
+}
+
+BOOST_AUTO_TEST_CASE(constrained_run_with_id) {
+  ThreadPool::GetInstance().SetNThreads(4);
+  StaticFor<size_t> loop;
+  std::mutex mutex;
+  std::vector<size_t> counts(10, 0);
+  std::set<std::thread::id> thread_ids;
+  std::set<size_t> thread_indices;
+  const size_t kMaxThreads = 3;
+  loop.ConstrainedRun(0, 10, kMaxThreads,
+                      [&](size_t a, size_t b, size_t thread_index) {
+                        for (size_t iter = a; iter != b; ++iter) {
+                          std::scoped_lock<std::mutex> lock(mutex);
+                          counts[iter]++;
+                        }
+                        std::scoped_lock<std::mutex> lock(mutex);
+                        thread_ids.emplace(std::this_thread::get_id());
+                        thread_indices.emplace(thread_index);
+                      });
+
+  BOOST_CHECK_EQUAL(thread_ids.size(), kMaxThreads);
+  BOOST_CHECK_EQUAL(thread_indices.size(), kMaxThreads);
+  const std::set<size_t> expected_indices{0, 1, 2};
+  BOOST_CHECK_EQUAL_COLLECTIONS(thread_indices.begin(), thread_indices.end(),
+                                expected_indices.begin(),
+                                expected_indices.end());
+  std::vector<size_t> expected_counts(10, 1);
+  BOOST_CHECK_EQUAL_COLLECTIONS(counts.begin(), counts.end(),
+                                expected_counts.begin(), expected_counts.end());
+}
+
+BOOST_AUTO_TEST_CASE(conditional_nested_run) {
+  // Test the special case in which no RecursiveFor exists and a static for
+  // is nested nevertheless, but constrained to one thread max. This allows
+  // nested parallelization and the making of a RecursiveFor to be done
+  // conditional, which for certain cases is useful to use as many threads as
+  // possible.
+  size_t iteration_count = 0;
+  std::mutex mutex;
+  BOOST_CHECK(aocommon::RecursiveFor::GetInstance() == nullptr);
+  aocommon::RunStaticFor<size_t>(0, 1000, [&](size_t start, size_t end) {
+    for (size_t outer_index = start; outer_index != end; ++outer_index) {
+      aocommon::RunConstrainedStaticFor<size_t>(
+          0, 10, 1, [&](size_t nested_start, size_t nested_end) {
+            std::lock_guard lock(mutex);
+            iteration_count += nested_end - nested_start;
+          });
+    }
+  });
+  BOOST_CHECK_EQUAL(iteration_count, 10000);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

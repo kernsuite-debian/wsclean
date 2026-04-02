@@ -9,9 +9,18 @@
 
 using aocommon::Logger;
 
+namespace wsclean {
+
 namespace {
 double RoundOneDecimal(double value) { return std::round(value * 10.0) / 10.0; }
 }  // namespace
+
+Resources Resources::GetCombined(size_t num_combined) const {
+  assert(num_combined != 0);
+  const size_t n_cpus = n_cpus_ * num_combined;
+  const int64_t memory = memory_ * num_combined;
+  return Resources(n_cpus, memory);
+}
 
 Resources Resources::GetPart(size_t part_size) const {
   assert(part_size != 0);
@@ -61,3 +70,5 @@ int64_t GetAvailableMemory(double memory_fraction, double abs_memory_limit) {
   }
   return memory;
 }
+
+}  // namespace wsclean

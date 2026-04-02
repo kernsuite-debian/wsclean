@@ -10,4 +10,5 @@ add_unittest(
   tnlplfitter.cc
   tpolynomialchannelfitter.cc
   tpolynomialfitter.cc
+  trmfitter.cc
   tspectralfitter.cc)
